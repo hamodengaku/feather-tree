@@ -7,8 +7,6 @@ out/
 dist/
 # electron-builder の出力（portable exe / zip / win-unpacked）
 release/
-# scripts/make-icon.mjs が build/icon.png から生成する（npm run icon で再生成）
-build/icon-app.png
 # TypeScript のインクリメンタルビルド情報
 *.tsbuildinfo
 

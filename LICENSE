@@ -36,8 +36,7 @@ SOFTWARE.
 
 対象となるもの:
 
-  - build/icon.png（ロゴ・アプリケーションアイコンの原画）
-  - build/icon.png から生成される画像（build/icon-app.png など）
+  - build/icon-app.png（ロゴ・アプリケーションアイコン）
   - 配布物（exe / zip）に埋め込まれたアプリケーションアイコン
   - 今後追加されるロゴ・イラスト・デザイン素材
 
@@ -53,8 +52,7 @@ Illustrations and design assets
 
 The following are NOT covered by the MIT License above:
 
-  - build/icon.png (the source artwork for the logo and application icon)
-  - Images derived from build/icon.png (e.g. build/icon-app.png)
+  - build/icon-app.png (the logo and application icon)
   - The application icon embedded in distributed binaries (exe / zip)
   - Any logos, illustrations, or design assets added in the future
 

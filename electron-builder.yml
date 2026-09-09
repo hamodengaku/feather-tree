@@ -24,8 +24,8 @@ electronLanguages:
   - en-US
 
 win:
-  # build/icon.png（原画）は正方形でなく背景も不透明なため直接は使わない。
-  # scripts/make-icon.mjs で正方形化・透過した icon-app.png を使う（npm run icon で再生成）。
+  # アプリアイコンは build/icon-app.png（正方形・背景透過）を正とする。
+  # 変換スクリプトは廃止したので、差し替えるときはこのファイル自体を置き換える。
   icon: build/icon-app.png
   target:
     - target: portable
