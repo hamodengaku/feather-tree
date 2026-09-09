@@ -1,0 +1,248 @@
+import {
+  GitCancelledError,
+  GitCommandError,
+  GitNotFoundError,
+  getFileDiff,
+  getLog,
+  getStatus,
+  getUntrackedFileDiff,
+  listBranches,
+  listRemotes,
+  resolveRepository,
+  type BranchRef,
+  type CommitSummary,
+  type FileDiff,
+  type GitContext,
+  type StatusSnapshot,
+} from '@feathertree/git';
+import type { CommandLog } from '@feathertree/base-core';
+import { mapGitStderr, type MappedError } from '../policy/errorMapping.js';
+import type { AppSettings } from '../settings/schema.js';
+import { pageEntries, type StatusFilter, type StatusPage, type StatusSummary } from './statusView.js';
+
+export interface SessionDeps {
+  readonly gitPath: string;
+  readonly tempDir: string;
+  readonly commandLog: CommandLog;
+  readonly settings: () => AppSettings;
+}
+
+export type SessionChange = 'status' | 'branches' | 'remotes' | 'log';
+
+/**
+ * タブ 1 つ = セッション 1 つ。
+ *
+ * status のスナップショットの正本はここに置く。renderer には可視範囲だけを渡す
+ * （docs/01-architecture.md 6 章）。セッション間で状態を共有しない。
+ */
+export class RepositorySession {
+  readonly id: string;
+  readonly #deps: SessionDeps;
+  #root: string;
+  #gitDir = '';
+
+  #status: StatusSnapshot | null = null;
+  /** スナップショットの世代番号。renderer が古い応答を捨てるために使う。 */
+  #statusSeq = 0;
+  #branches: readonly BranchRef[] = [];
+  #remotes: readonly string[] = [];
+
+  readonly #listeners = new Set<(change: SessionChange) => void>();
+
+  constructor(id: string, root: string, deps: SessionDeps) {
+    this.id = id;
+    this.#root = root;
+    this.#deps = deps;
+  }
+
+  get root(): string {
+    return this.#root;
+  }
+
+  get gitDir(): string {
+    return this.#gitDir;
+  }
+
+  get statusSeq(): number {
+    return this.#statusSeq;
+  }
+
+  get branches(): readonly BranchRef[] {
+    return this.#branches;
+  }
+
+  get remotes(): readonly string[] {
+    return this.#remotes;
+  }
+
+  onChange(listener: (change: SessionChange) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  /** 一覧を取得済みか。復元したタブは未取得の状態で始まる。 */
+  get loaded(): boolean {
+    return this.#status !== null;
+  }
+
+  /**
+   * 対応表 #1 のみ。リポジトリの実在確認とルート解決だけを行う。
+   *
+   * 起動時のタブ復元ではこれだけを実行する。
+   * 「起動時に全リポジトリの状態を先読みしない」を守るため
+   * （docs/00-decisions.md やらないこと）。
+   */
+  async resolve(signal?: AbortSignal): Promise<void> {
+    const location = await resolveRepository(this.context(signal));
+    this.#root = location.root;
+    this.#gitDir = location.gitDir;
+  }
+
+  /**
+   * 対応表の許可された例外: タブを開いた瞬間のみ #1 から #4 を続けて実行する。
+   */
+  async open(signal?: AbortSignal): Promise<void> {
+    await this.resolve(signal);
+    await this.ensureLoaded(signal);
+  }
+
+  /** 未取得なら一覧を取得する。取得済みなら git を 1 度も実行しない。 */
+  async ensureLoaded(signal?: AbortSignal): Promise<void> {
+    if (this.loaded) return;
+    await this.refreshStatus(signal);
+    await this.refreshBranches(signal);
+    await this.refreshRemotes(signal);
+  }
+
+  /** 対応表 #2。ウィンドウ復帰時と手動更新のみが入口。 */
+  async refreshStatus(signal?: AbortSignal): Promise<void> {
+    const settings = this.#deps.settings();
+    this.#status = await this.track(['status'], () =>
+      getStatus(this.context(signal), {
+        noRenames: settings.noRenames,
+        untrackedFiles: settings.untrackedFiles,
+      }),
+    );
+    this.#statusSeq += 1;
+    this.#emit('status');
+  }
+
+  /** 対応表 #3。 */
+  async refreshBranches(signal?: AbortSignal): Promise<void> {
+    this.#branches = await this.track(['for-each-ref'], () => listBranches(this.context(signal)));
+    this.#emit('branches');
+  }
+
+  /** 対応表 #4。 */
+  async refreshRemotes(signal?: AbortSignal): Promise<void> {
+    this.#remotes = await this.track(['remote'], () => listRemotes(this.context(signal)));
+    this.#emit('remotes');
+  }
+
+  /** renderer へ返すページ。IPC にパス配列を流さないための境界。 */
+  getStatusPage(offset: number, limit: number, filter?: StatusFilter): StatusPage {
+    if (this.#status === null) return { offset: 0, entries: [], filteredTotal: 0 };
+    return pageEntries(this.#status, offset, limit, filter ?? {});
+  }
+
+  getStatusSummary(): StatusSummary {
+    if (this.#status === null) {
+      return {
+        counts: { staged: 0, unstaged: 0, untracked: 0, unmerged: 0, total: 0 },
+        hasSnapshot: false,
+      };
+    }
+    return { counts: this.#status.counts, hasSnapshot: true };
+  }
+
+  /** 内部利用（操作対象の解決など）。スナップショットそのものは renderer へ渡さない。 */
+  get snapshot(): StatusSnapshot | null {
+    return this.#status;
+  }
+
+  /** 対応表 #18 / #19。選択された 1 件に対してのみ実行する。 */
+  async getDiff(path: string, staged: boolean, signal?: AbortSignal): Promise<FileDiff | null> {
+    const settings = this.#deps.settings();
+    const options = { contextLines: settings.diffContextLines, maxLines: settings.diffMaxLines };
+
+    const entry = this.#status?.entries.find((e) => e.path === path);
+    if (entry?.kind === 'untracked' && !staged) {
+      return this.track(['read-untracked', path], () =>
+        getUntrackedFileDiff(this.context(signal), path, options),
+      );
+    }
+
+    return this.track(['diff', path], () => getFileDiff(this.context(signal), path, staged, options));
+  }
+
+  /** 対応表 #20。 */
+  async getLogPage(skip: number, signal?: AbortSignal): Promise<CommitSummary[]> {
+    const settings = this.#deps.settings();
+    return this.track(['log'], () =>
+      getLog(this.context(signal), { maxCount: settings.logPageSize, skip }),
+    );
+  }
+
+  /** 書き込み操作（SessionOperations）からも使うので公開する。 */
+  context(signal?: AbortSignal): GitContext {
+    return {
+      gitPath: this.#deps.gitPath,
+      cwd: this.#root,
+      tempDir: this.#deps.tempDir,
+      ...(signal === undefined ? {} : { signal }),
+    };
+  }
+
+  /**
+   * 実行を必ずコマンドログへ記録する。透明性の担保（決定 16）。
+   * 読み取りだけでなく**書き込み操作もここを通す**（SessionOperations から使う）。
+   */
+  async track<T>(args: readonly string[], run: () => Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      const result = await run();
+      this.#deps.commandLog.add({
+        cwd: this.#root,
+        args,
+        exitCode: 0,
+        elapsedMs: Date.now() - startedAt,
+      });
+      return result;
+    } catch (err) {
+      const mapped = toMappedError(err);
+      this.#deps.commandLog.add({
+        cwd: this.#root,
+        args,
+        exitCode: mapped.exitCode ?? -1,
+        elapsedMs: Date.now() - startedAt,
+        ...(mapped.detail === undefined ? {} : { stderr: mapped.detail }),
+      });
+      throw err;
+    }
+  }
+
+  #emit(change: SessionChange): void {
+    for (const listener of this.#listeners) listener(change);
+  }
+}
+
+/** git 層の例外を UI 向けの構造へ写す。core が Result への変換点を持つ。 */
+export function toMappedError(err: unknown): MappedError {
+  if (err instanceof GitNotFoundError) {
+    return {
+      kind: 'git-not-found',
+      message: 'git を実行できませんでした。Git for Windows を導入してください。',
+      detail: err.gitPath,
+    };
+  }
+  if (err instanceof GitCancelledError) {
+    return { kind: 'cancelled', message: '操作を中断しました。' };
+  }
+  if (err instanceof GitCommandError) {
+    return mapGitStderr(err.stderr, err.exitCode);
+  }
+  if (err instanceof Error) {
+    return { kind: 'internal', message: '内部エラーが発生しました。', detail: err.message };
+  }
+  return { kind: 'internal', message: '内部エラーが発生しました。' };
+}

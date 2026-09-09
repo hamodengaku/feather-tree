@@ -1,0 +1,15 @@
+{
+  "name": "@feathertree/main",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@feathertree/core": "*",
+    "@feathertree/ipc": "*"
+  }
+}

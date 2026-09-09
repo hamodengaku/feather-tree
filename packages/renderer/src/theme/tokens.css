@@ -1,0 +1,41 @@
+/*
+ * FeatherTree のトークン既定値。実際の値は lib/theme.ts が style.setProperty で流し込む。
+ *
+ * リセットと基本コントロール（button / input / スクロールバー）のスタイルは
+ * 土台の @feathertree/base-ui/src/base.css にある。
+ * コンポーネントの CSS に色・寸法のリテラルを書かず、必ず var(--app-*) を経由する。
+ */
+:root {
+  --app-bg-app: #1b1d21;
+  --app-bg-surface: #23262b;
+  --app-bg-raised: #2b2f35;
+  --app-bg-hover: #2f343b;
+  --app-bg-selected: #33465c;
+  --app-border-subtle: #33373d;
+  --app-border-strong: #454b53;
+  --app-text-primary: #e6e8ea;
+  --app-text-secondary: #9ba1a8;
+  --app-text-muted: #6f767e;
+  --app-text-added: #7fce7f;
+  --app-text-removed: #e07a7a;
+  --app-text-modified: #d8c169;
+  --app-text-untracked: #8ab4d8;
+  --app-text-conflict: #e0a05c;
+  --app-text-danger: #e05c5c;
+  --app-accent: #5b9dd9;
+  --app-diff-added-bg: #1e2f22;
+  --app-diff-removed-bg: #33211f;
+
+  --app-font-ui: "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  --app-font-mono: "Cascadia Mono", "Consolas", monospace;
+  --app-font-size-ui: 13px;
+  --app-font-size-mono: 12px;
+
+  --app-metric-row-height: 22px;
+  --app-metric-radius: 4px;
+  --app-metric-gap: 8px;
+}
+
+#app {
+  height: 100%;
+}
