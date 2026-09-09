@@ -1,0 +1,15 @@
+{
+  "name": "@feathertree/base-core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "土台: 純 Node のユーティリティ（設定の永続化・コマンドログ・直列化・パス検証）",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@feathertree/base-contract": "*"
+  }
+}

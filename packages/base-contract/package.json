@@ -1,0 +1,12 @@
+{
+  "name": "@feathertree/base-contract",
+  "version": "0.0.0",
+  "private": true,
+  "description": "土台: main と renderer が共有できる汎用の Result 型（依存ゼロ）",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

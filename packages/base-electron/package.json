@@ -1,0 +1,16 @@
+{
+  "name": "@feathertree/base-electron",
+  "version": "0.0.0",
+  "private": true,
+  "description": "土台: main プロセス側（userData の解決・ウィンドウの安全設定・起動計測・IPC ラッパ）",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@feathertree/base-contract": "*",
+    "@feathertree/base-core": "*"
+  }
+}

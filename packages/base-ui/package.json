@@ -1,0 +1,15 @@
+{
+  "name": "@feathertree/base-ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "土台: renderer 側（テーマトークン適用・仮想化リスト・preload ブリッジ）",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@feathertree/base-contract": "*"
+  }
+}

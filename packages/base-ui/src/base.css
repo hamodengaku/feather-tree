@@ -1,0 +1,77 @@
+/*
+ * 土台の基本スタイル。
+ *
+ * 色・寸法は必ず var(--app-*) を経由する。値はアプリ側で定義する
+ * （このファイルには具体的な色を書かない）。
+ */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--app-bg-app);
+  color: var(--app-text-primary);
+  font-family: var(--app-font-ui);
+  font-size: var(--app-font-size-ui);
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--app-text-primary);
+  background: var(--app-bg-raised);
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--app-metric-radius);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--app-bg-hover);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: var(--app-text-danger);
+  color: var(--app-text-danger);
+}
+
+textarea,
+input[type="text"],
+input[type="search"] {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--app-text-primary);
+  background: var(--app-bg-app);
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--app-metric-radius);
+  padding: 5px 7px;
+}
+
+textarea:focus,
+input:focus {
+  outline: 1px solid var(--app-accent);
+  outline-offset: -1px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--app-border-strong);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

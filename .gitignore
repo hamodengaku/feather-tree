@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------- 依存
+node_modules/
+
+# ---------------------------------------------------------------- ビルド成果物
+# electron-vite の出力
+out/
+dist/
+# electron-builder の出力（portable exe / zip / win-unpacked）
+release/
+# scripts/make-icon.mjs が build/icon.png から生成する（npm run icon で再生成）
+build/icon-app.png
+# TypeScript のインクリメンタルビルド情報
+*.tsbuildinfo
+
+# ---------------------------------------------------------------- ローカル専用
+# npm / Electron / electron-builder のキャッシュ、開発時の userData
+.cache/
+# テスト用の使い捨てリポジトリ、一時ファイル
+.tmp/
+
+# AI 支援開発のためのローカル設定（公開しない）
+.claude/
+CLAUDE.md
+
+# 設計文書と開発記録（公開しない）
+docs/
+
+# ---------------------------------------------------------------- エディタ / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------- ログ
+*.log
+npm-debug.log*

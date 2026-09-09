@@ -1,0 +1,42 @@
+appId: com.feathertree.app
+productName: FeatherTree
+copyright: FeatherTree
+
+directories:
+  output: release
+
+# out/ は electron-vite がバンドル済み。実行時 npm 依存はゼロなので node_modules は含めない。
+files:
+  - out/**/*
+  - package.json
+
+# Electron 本体 zip の取得先。既定は %LOCALAPPDATA%electronCache だが、
+# CLAUDE.md 規約 2（リポジトリ外に書かない）によりリポジトリ内へ向ける。
+electronDownload:
+  cache: .cache/electron
+
+asar: true
+compression: maximum
+
+# 不要ロケールを落として配布サイズを削る
+electronLanguages:
+  - ja
+  - en-US
+
+win:
+  # build/icon.png（原画）は正方形でなく背景も不透明なため直接は使わない。
+  # scripts/make-icon.mjs で正方形化・透過した icon-app.png を使う（npm run icon で再生成）。
+  icon: build/icon-app.png
+  target:
+    - target: portable
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+
+portable:
+  artifactName: FeatherTree-${version}-portable.exe
+
+# 未署名配布（README に SmartScreen 警告の注意を記載する）
+forceCodeSigning: false

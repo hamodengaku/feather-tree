@@ -1,0 +1,75 @@
+FeatherTree
+
+ソースコードは MIT ライセンスで提供します。
+ロゴ等のイラスト・デザイン領域は MIT ライセンスの対象外です
+（末尾の「イラスト・デザイン領域について」を参照してください）。
+
+The source code is provided under the MIT License.
+Illustrations and design assets (including the logo) are NOT covered by the
+MIT License; see "Illustrations and design assets" at the end of this file.
+
+================================================================================
+MIT License
+
+Copyright (c) 2026 FeatherTree
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+イラスト・デザイン領域について
+
+対象となるもの:
+
+  - build/icon.png（ロゴ・アプリケーションアイコンの原画）
+  - build/icon.png から生成される画像（build/icon-app.png など）
+  - 配布物（exe / zip）に埋め込まれたアプリケーションアイコン
+  - 今後追加されるロゴ・イラスト・デザイン素材
+
+これらは上記 MIT ライセンスの対象に含まれません。
+二次利用は良心に基づく範囲でのみ認めます。
+ご利用にあたっては、開発者への事前のご連絡を強く推奨します。
+
+ソースコードを流用してアプリケーションを制作する場合は、
+アイコンをご自身のものに差し替えてください。
+
+--------------------------------------------------------------------------------
+Illustrations and design assets
+
+The following are NOT covered by the MIT License above:
+
+  - build/icon.png (the source artwork for the logo and application icon)
+  - Images derived from build/icon.png (e.g. build/icon-app.png)
+  - The application icon embedded in distributed binaries (exe / zip)
+  - Any logos, illustrations, or design assets added in the future
+
+Reuse of these assets is permitted only in good faith.
+Contacting the developer in advance is strongly encouraged.
+
+If you reuse the source code to build your own application,
+please replace the icon with your own.
+
+================================================================================
+同梱される第三者ソフトウェア / Third-party software
+
+配布物（exe / zip）には Electron、Chromium、Node.js、Svelte などが同梱されます。
+これらはそれぞれの権利者に著作権があり、各ライセンス（MIT / BSD / Apache-2.0 等）
+の条件に従います。
+
+Distributed binaries bundle Electron, Chromium, Node.js, Svelte and other
+third-party software, each under its own license terms.
