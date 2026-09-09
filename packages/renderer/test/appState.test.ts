@@ -32,7 +32,7 @@ describe('起動', () => {
     });
 
     expect(app.environment?.gitPath).toBe('C:/git/git.exe');
-    expect(app.settings?.theme).toBe('dark');
+    expect(app.settings?.theme).toBe('classic-dark');
     expect(app.sessions).toHaveLength(2);
     expect(app.activeId).toBe('s1');
     expect(app.staged.total).toBe(1);

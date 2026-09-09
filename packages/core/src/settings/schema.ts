@@ -1,6 +1,6 @@
 import { boolOr, clampInt, pickFrom, record, stringArray, stringOrNull } from '@feathertree/base-core';
 
-export type ThemeName = 'dark' | 'light';
+export type ThemeName = 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
 export type UntrackedMode = 'normal' | 'all';
 
 export interface PaneWidths {
@@ -27,7 +27,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   gitPath: null,
-  theme: 'dark',
+  theme: 'phoenix-light',
   noRenames: false,
   untrackedFiles: 'normal',
   diffContextLines: 3,
@@ -38,7 +38,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   openRepositories: [],
 };
 
-const THEMES: readonly ThemeName[] = ['dark', 'light'];
+const THEMES: readonly ThemeName[] = ['classic-dark', 'classic-light', 'phoenix-dark', 'phoenix-light'];
 const UNTRACKED: readonly UntrackedMode[] = ['normal', 'all'];
 
 /**

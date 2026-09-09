@@ -94,7 +94,7 @@ export interface EnvironmentDto {
 
 export interface SettingsDto {
   readonly gitPath: string | null;
-  readonly theme: 'dark' | 'light';
+  readonly theme: 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
   readonly noRenames: boolean;
   readonly untrackedFiles: 'normal' | 'all';
   readonly diffContextLines: number;

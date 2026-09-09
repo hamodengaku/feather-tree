@@ -5,11 +5,22 @@
   import DiffPane from './panes/DiffPane.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
   import CommandLogPanel from './components/CommandLogPanel.svelte';
+  import { THEME_OPTIONS, isDarkTheme } from './lib/theme.js';
+  import type { SettingsDto } from '@feathertree/ipc';
 
   void app.initialize();
 
   const gitMissing = $derived(app.environment !== null && app.environment.gitPath === null);
   const counts = $derived(app.summary?.counts ?? null);
+
+  let themeMenuOpen = $state(false);
+  const theme = $derived(app.settings?.theme ?? 'phoenix-light');
+  const themeLabel = $derived(THEME_OPTIONS.find((o) => o.value === theme)?.label ?? '');
+
+  function chooseTheme(value: SettingsDto['theme']): void {
+    themeMenuOpen = false;
+    void app.setTheme(value);
+  }
 </script>
 
 <div class="shell">
@@ -42,12 +53,31 @@
       {/if}
       <button disabled={app.busy || app.activeId === null} onclick={() => void app.refresh('full')}>更新</button>
       <button onclick={() => (app.showCommandLog = !app.showCommandLog)}>ログ</button>
-      <button
-        onclick={() => void app.setTheme(app.settings?.theme === 'light' ? 'dark' : 'light')}
-        title="テーマ切替"
-      >
-        {app.settings?.theme === 'light' ? '☀' : '☾'}
-      </button>
+      <div class="theme">
+        <button
+          title={themeLabel}
+          aria-haspopup="menu"
+          aria-expanded={themeMenuOpen}
+          onclick={() => (themeMenuOpen = !themeMenuOpen)}
+        >
+          {isDarkTheme(theme) ? '☾' : '☀'} ▾
+        </button>
+        {#if themeMenuOpen}
+          <div class="menu-backdrop" role="presentation" onclick={() => (themeMenuOpen = false)}></div>
+          <div class="menu" role="menu">
+            {#each THEME_OPTIONS as option (option.value)}
+              <button
+                role="menuitem"
+                class="menu-item"
+                class:current={option.value === theme}
+                onclick={() => chooseTheme(option.value)}
+              >
+                <span class="check">{option.value === theme ? '✓' : ''}</span>{option.label}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
     </div>
   </header>
 
@@ -160,6 +190,49 @@
     align-items: center;
     gap: 6px;
     flex: 0 0 auto;
+  }
+
+  .theme {
+    position: relative;
+  }
+
+  /* メニュー外のクリックで閉じるための受け皿（ConfirmDialog と同じ作り）。 */
+  .menu-backdrop {
+    position: fixed;
+    inset: 0;
+  }
+
+  .menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px;
+    background: var(--app-bg-surface);
+    border: 1px solid var(--app-border-strong);
+    border-radius: var(--app-metric-radius);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    white-space: nowrap;
+  }
+
+  .menu-item.current {
+    background: var(--app-bg-selected);
+  }
+
+  .check {
+    width: 1em;
+    color: var(--app-accent);
   }
 
   .counts {

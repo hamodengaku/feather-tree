@@ -13,10 +13,15 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--app-bg-app);
+  background-color: var(--app-bg-app);
   color: var(--app-text-primary);
   font-family: var(--app-font-ui);
   font-size: var(--app-font-size-ui);
+}
+
+/* テーマがグラデーションを持つ場合だけ乗る。持たないテーマは none を入れる。 */
+body {
+  background-image: var(--app-bg-app-image, none);
 }
 
 button {

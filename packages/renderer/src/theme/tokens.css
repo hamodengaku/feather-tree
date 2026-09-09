@@ -1,30 +1,33 @@
 /*
  * FeatherTree のトークン既定値。実際の値は lib/theme.ts が style.setProperty で流し込む。
+ * ここには既定テーマ（フェザー・ライト）の値を置き、最初のペイントのちらつきを防ぐ。
  *
  * リセットと基本コントロール（button / input / スクロールバー）のスタイルは
  * 土台の @feathertree/base-ui/src/base.css にある。
  * コンポーネントの CSS に色・寸法のリテラルを書かず、必ず var(--app-*) を経由する。
  */
 :root {
-  --app-bg-app: #1b1d21;
-  --app-bg-surface: #23262b;
-  --app-bg-raised: #2b2f35;
-  --app-bg-hover: #2f343b;
-  --app-bg-selected: #33465c;
-  --app-border-subtle: #33373d;
-  --app-border-strong: #454b53;
-  --app-text-primary: #e6e8ea;
-  --app-text-secondary: #9ba1a8;
-  --app-text-muted: #6f767e;
-  --app-text-added: #7fce7f;
-  --app-text-removed: #e07a7a;
-  --app-text-modified: #d8c169;
-  --app-text-untracked: #8ab4d8;
-  --app-text-conflict: #e0a05c;
-  --app-text-danger: #e05c5c;
-  --app-accent: #5b9dd9;
-  --app-diff-added-bg: #1e2f22;
-  --app-diff-removed-bg: #33211f;
+  --app-bg-app: #fbf3ef;
+  --app-bg-surface: #fffcfa;
+  --app-bg-raised: #f4e6df;
+  --app-bg-hover: #eddbd2;
+  --app-bg-selected: #fbcdba;
+  --app-border-subtle: #e9d7ce;
+  --app-border-strong: #c8ada2;
+  --app-text-primary: #2a1c17;
+  --app-text-secondary: #6a5049;
+  --app-text-muted: #97817a;
+  --app-text-added: #23763a;
+  --app-text-removed: #b02a44;
+  --app-text-modified: #8f6109;
+  --app-text-untracked: #2f6aa8;
+  --app-text-conflict: #b4560f;
+  --app-text-danger: #b02a44;
+  --app-accent: #d8441c;
+  --app-diff-added-bg: #e9f4e6;
+  --app-diff-removed-bg: #fbe6e0;
+  /* マーブル模様は起動時に JS が乱数で決める（lib/theme.ts）。CSS では固定できないので none。 */
+  --app-bg-app-image: none;
 
   --app-font-ui: "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
   --app-font-mono: "Cascadia Mono", "Consolas", monospace;

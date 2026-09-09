@@ -24,6 +24,17 @@ function resolveWindowIcon(): string | undefined {
   return join(app.getAppPath(), 'build', 'icon-app.png');
 }
 
+/**
+ * 最初のペイントで白／黒がちらつかないよう、ウィンドウ背景をテーマに合わせる。
+ * 値は renderer の lib/theme.ts の --app-bg-app と対になっている。
+ */
+const WINDOW_BACKGROUND = {
+  'classic-dark': '#1b1d21',
+  'classic-light': '#f5f6f7',
+  'phoenix-dark': '#1f1615',
+  'phoenix-light': '#fbf3ef',
+} as const satisfies Record<string, string>;
+
 let mainWindow: BrowserWindow | null = null;
 let appReadyMs = 0;
 
@@ -37,7 +48,7 @@ function createWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 600,
     show: false,
-    backgroundColor: settings.theme === 'light' ? '#f5f6f7' : '#1b1d21',
+    backgroundColor: WINDOW_BACKGROUND[settings.theme],
     title: 'FeatherTree',
     ...(icon === undefined ? {} : { icon }),
     webPreferences: {

@@ -45,8 +45,8 @@ describe('設定の正規化', () => {
   });
 
   it('有効な値は保持する', () => {
-    const s = normalizeSettings({ theme: 'light', noRenames: true, untrackedFiles: 'all' });
-    expect(s.theme).toBe('light');
+    const s = normalizeSettings({ theme: 'phoenix-dark', noRenames: true, untrackedFiles: 'all' });
+    expect(s.theme).toBe('phoenix-dark');
     expect(s.noRenames).toBe(true);
     expect(s.untrackedFiles).toBe('all');
   });
@@ -72,11 +72,11 @@ describe('AppSettingsStore（土台の SettingsStore + FeatherTree のスキー�
     const file = join(dir, 'nested', 'settings.json');
     const store = new AppSettingsStore(file);
     await store.load();
-    await store.update({ theme: 'light', noRenames: true });
+    await store.update({ theme: 'classic-light', noRenames: true });
 
     const reloaded = new AppSettingsStore(file);
     const s = await reloaded.load();
-    expect(s.theme).toBe('light');
+    expect(s.theme).toBe('classic-light');
     expect(s.noRenames).toBe(true);
 
     // 一時ファイル経由で差し替えるので中間ファイルは残らない

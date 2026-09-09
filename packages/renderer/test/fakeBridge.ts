@@ -17,7 +17,7 @@ export interface Call {
 
 const SETTINGS: SettingsDto = {
   gitPath: 'C:/git/git.exe',
-  theme: 'dark',
+  theme: 'classic-dark',
   noRenames: false,
   untrackedFiles: 'normal',
   diffContextLines: 3,
