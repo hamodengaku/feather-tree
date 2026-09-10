@@ -1,4 +1,12 @@
-import { boolOr, clampInt, pickFrom, record, stringArray, stringOrNull } from '@feathertree/base-core';
+import {
+  boolOr,
+  clampFloatOrNull,
+  clampInt,
+  pickFrom,
+  record,
+  stringArray,
+  stringOrNull,
+} from '@feathertree/base-core';
 
 export type ThemeName = 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
 export type UntrackedMode = 'normal' | 'all';
@@ -7,7 +15,10 @@ export type RefocusUpdateMode = 'auto' | 'modal' | 'none';
 
 export interface PaneWidths {
   readonly left: number;
+  /** @deprecated centerRatio への移行用の種。移行後は更新されない。 */
   readonly center: number;
+  /** WorkingTreePane が center+diff の中で占める比率（0..1）。null は「まだ移行していない」。 */
+  readonly centerRatio: number | null;
 }
 
 export interface AppSettings {
@@ -21,6 +32,14 @@ export interface AppSettings {
   readonly diffMaxLines: number;
   readonly logPageSize: number;
   readonly paneWidths: PaneWidths;
+  /** ブランチペインの「ローカル」セクションの高さ（px）。残りは「リモート」に割り当てる。 */
+  readonly branchLocalHeight: number;
+  /** ブランチペインを左端の細い帯に折り畳んでいるか。 */
+  readonly branchPaneCollapsed: boolean;
+  /** 実行ログパネルの高さ（px）。 */
+  readonly commandLogHeight: number;
+  /** WorkingTreePane の「ステージ済み」セクションの高さ（px）。残りは「変更」に割り当てる。 */
+  readonly stagedHeight: number;
   readonly refocusUpdateMode: RefocusUpdateMode;
   /** 最近開いたリポジトリ（新しい順）。 */
   readonly recentRepositories: readonly string[];
@@ -36,7 +55,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   diffContextLines: 3,
   diffMaxLines: 20000,
   logPageSize: 200,
-  paneWidths: { left: 260, center: 420 },
+  paneWidths: { left: 260, center: 420, centerRatio: null },
+  branchLocalHeight: 180,
+  branchPaneCollapsed: false,
+  commandLogHeight: 220,
+  stagedHeight: 180,
   refocusUpdateMode: 'auto',
   recentRepositories: [],
   openRepositories: [],
@@ -65,7 +88,12 @@ export function normalizeSettings(raw: unknown): AppSettings {
     paneWidths: {
       left: clampInt(record(o['paneWidths'])['left'], 120, 1200, DEFAULT_SETTINGS.paneWidths.left),
       center: clampInt(record(o['paneWidths'])['center'], 200, 2000, DEFAULT_SETTINGS.paneWidths.center),
+      centerRatio: clampFloatOrNull(record(o['paneWidths'])['centerRatio'], 0.1, 0.9),
     },
+    branchLocalHeight: clampInt(o['branchLocalHeight'], 80, 4000, DEFAULT_SETTINGS.branchLocalHeight),
+    branchPaneCollapsed: boolOr(o['branchPaneCollapsed'], DEFAULT_SETTINGS.branchPaneCollapsed),
+    commandLogHeight: clampInt(o['commandLogHeight'], 120, 800, DEFAULT_SETTINGS.commandLogHeight),
+    stagedHeight: clampInt(o['stagedHeight'], 80, 4000, DEFAULT_SETTINGS.stagedHeight),
     refocusUpdateMode: pickFrom(o['refocusUpdateMode'], REFOCUS_MODES, DEFAULT_SETTINGS.refocusUpdateMode),
     recentRepositories: stringArray(o['recentRepositories'], 30),
     openRepositories: stringArray(o['openRepositories'], 20),

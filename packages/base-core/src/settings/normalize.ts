@@ -10,6 +10,12 @@ export function clampInt(value: unknown, min: number, max: number, fallback: num
   return Math.min(max, Math.max(min, Math.round(value)));
 }
 
+/** 0..1 の比率などの実数値。値が無い／不正なら null（「まだ移行していない」の意味に使う）。 */
+export function clampFloatOrNull(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.min(max, Math.max(min, value));
+}
+
 export function stringArray(value: unknown, limit: number): readonly string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((v): v is string => typeof v === 'string' && v.length > 0).slice(0, limit);

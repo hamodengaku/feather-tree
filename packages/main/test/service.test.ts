@@ -251,6 +251,28 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     expect(settings.openRepositories).toHaveLength(0);
   });
 
+  it('タブを並び替えると一覧と設定（再起動用の openRepositories）の両方に反映される', async () => {
+    const first = await openDemo();
+
+    const otherDir = join(TEST_ROOT, randomBytes(8).toString('hex'));
+    await mkdir(otherDir, { recursive: true });
+    await git(otherDir, ['init', '--initial-branch=main']);
+    await git(otherDir, ['config', 'user.name', 'T']);
+    await git(otherDir, ['config', 'user.email', 't@example.invalid']);
+    try {
+      const second = (await service.sessionOpen(otherDir)).id;
+
+      await service.sessionReorder([second, first]);
+
+      const reordered = service.sessionList().sessions;
+      expect(reordered.map((s) => s.id)).toEqual([second, first]);
+      // 再起動時の復元順（openRepositories）も並び替え後の順序に合わせて更新される
+      expect(settings.openRepositories).toEqual(reordered.map((s) => s.root));
+    } finally {
+      await rm(otherDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined);
+    }
+  });
+
   it('git 未検出なら環境情報で案内する', () => {
     const noGit = createService({
       appInfo: () => ({

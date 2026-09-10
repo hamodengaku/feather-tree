@@ -64,6 +64,24 @@ export class SessionManager {
     return session;
   }
 
+  /**
+   * タブの並び替え。
+   * order に無い既存タブは、渡された並びの後ろに元の順序で残す。
+   * order に含まれるが存在しない id は無視する（閉じた後の競合に強くするため）。
+   */
+  reorder(order: readonly string[]): void {
+    const next = new Map<string, RepositorySession>();
+    for (const id of order) {
+      const session = this.#sessions.get(id);
+      if (session !== undefined) next.set(id, session);
+    }
+    for (const [id, session] of this.#sessions) {
+      if (!next.has(id)) next.set(id, session);
+    }
+    this.#sessions.clear();
+    for (const [id, session] of next) this.#sessions.set(id, session);
+  }
+
   /** タブを閉じる。保留中のリフレッシュ要求も捨てる。 */
   close(id: string): void {
     this.#sessions.delete(id);

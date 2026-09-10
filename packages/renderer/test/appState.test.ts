@@ -57,23 +57,136 @@ describe('起動', () => {
 });
 
 describe('ペイン幅', () => {
-  it('center 幅の変更は left も含めて送る（浅いマージで消えないように）', async () => {
+  it('center/diff 比率の変更は paneWidths の他フィールドも含めて送る（浅いマージで消えないように）', async () => {
     const { app, bridge } = await boot();
 
-    await app.setCenterPaneWidth(777);
+    await app.setCenterRatio(0.6);
 
-    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ paneWidths: { left: 260, center: 777 } }]);
-    expect(app.settings?.paneWidths.center).toBe(777);
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([
+      { paneWidths: { left: 260, center: 420, centerRatio: 0.6 } },
+    ]);
+    expect(app.settings?.paneWidths.centerRatio).toBe(0.6);
   });
 
   it('範囲外の値はクランプする', async () => {
     const { app } = await boot();
 
-    await app.setCenterPaneWidth(10);
-    expect(app.settings?.paneWidths.center).toBe(200);
+    await app.setCenterRatio(0);
+    expect(app.settings?.paneWidths.centerRatio).toBe(0.1);
 
-    await app.setCenterPaneWidth(9999);
-    expect(app.settings?.paneWidths.center).toBe(2000);
+    await app.setCenterRatio(1);
+    expect(app.settings?.paneWidths.centerRatio).toBe(0.9);
+  });
+
+  it('ブランチペイン幅の変更は paneWidths の他フィールドも含めて送る（浅いマージで消えないように）', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setLeftWidth(300);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([
+      { paneWidths: { left: 300, center: 420, centerRatio: null } },
+    ]);
+    expect(app.settings?.paneWidths.left).toBe(300);
+  });
+
+  it('ブランチペイン幅は範囲外の値をクランプする', async () => {
+    const { app } = await boot();
+
+    await app.setLeftWidth(1);
+    expect(app.settings?.paneWidths.left).toBe(120);
+
+    await app.setLeftWidth(99999);
+    expect(app.settings?.paneWidths.left).toBe(1200);
+  });
+
+  it('ブランチペインのローカル高さを変更・永続化できる', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setBranchLocalHeight(250);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ branchLocalHeight: 250 }]);
+    expect(app.settings?.branchLocalHeight).toBe(250);
+  });
+
+  it('ブランチペインのローカル高さは範囲外の値をクランプする', async () => {
+    const { app } = await boot();
+
+    await app.setBranchLocalHeight(1);
+    expect(app.settings?.branchLocalHeight).toBe(80);
+
+    await app.setBranchLocalHeight(99999);
+    expect(app.settings?.branchLocalHeight).toBe(4000);
+  });
+
+  it('ブランチペインの折り畳み状態を変更・永続化できる', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setBranchPaneCollapsed(true);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ branchPaneCollapsed: true }]);
+    expect(app.settings?.branchPaneCollapsed).toBe(true);
+
+    await app.setBranchPaneCollapsed(false);
+    expect(app.settings?.branchPaneCollapsed).toBe(false);
+  });
+
+  it('実行ログパネルの高さを変更・永続化できる', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setCommandLogHeight(300);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ commandLogHeight: 300 }]);
+    expect(app.settings?.commandLogHeight).toBe(300);
+  });
+
+  it('実行ログパネルの高さは範囲外の値をクランプする', async () => {
+    const { app } = await boot();
+
+    await app.setCommandLogHeight(1);
+    expect(app.settings?.commandLogHeight).toBe(120);
+
+    await app.setCommandLogHeight(99999);
+    expect(app.settings?.commandLogHeight).toBe(800);
+  });
+
+  it('ステージ済み/変更の分割高さを変更・永続化できる', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setStagedHeight(250);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ stagedHeight: 250 }]);
+    expect(app.settings?.stagedHeight).toBe(250);
+  });
+
+  it('ステージ済み/変更の分割高さは範囲外の値をクランプする', async () => {
+    const { app } = await boot();
+
+    await app.setStagedHeight(1);
+    expect(app.settings?.stagedHeight).toBe(80);
+
+    await app.setStagedHeight(99999);
+    expect(app.settings?.stagedHeight).toBe(4000);
+  });
+});
+
+describe('タブの並び替え', () => {
+  it('ドラッグ中はローカルの表示順だけを更新し、IPC は呼ばない', async () => {
+    const { app, bridge } = await boot();
+    const before = bridge.calls.length;
+
+    app.reorderTabs(['s2', 's1']);
+
+    expect(app.sessions.map((s) => s.id)).toEqual(['s2', 's1']);
+    expect(bridge.calls.length).toBe(before);
+  });
+
+  it('確定時に新しい順序を IPC で送る', async () => {
+    const { app, bridge } = await boot();
+
+    app.reorderTabs(['s2', 's1']);
+    await app.commitTabOrder();
+
+    expect(bridge.lastArgsOf('sessionReorder')).toEqual([['s2', 's1']]);
   });
 });
 

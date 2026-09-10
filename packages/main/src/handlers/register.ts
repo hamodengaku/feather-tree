@@ -56,6 +56,7 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.sessionRefresh, (id: string, scope: Parameters<Service['sessionRefresh']>[1]) =>
     service.sessionRefresh(id, scope),
   );
+  bind(CHANNELS.sessionReorder, (order: readonly string[]) => service.sessionReorder(order));
 
   bind(CHANNELS.statusGetSummary, (id: string) => service.statusGetSummary(id));
   bind(CHANNELS.statusGetPage, (id: string, req: Parameters<Service['statusGetPage']>[1]) =>

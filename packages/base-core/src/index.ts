@@ -9,6 +9,7 @@ export { PathOutsideRootError, assertInsideRoot } from './fs/pathGuard.js';
 export { SettingsStore } from './settings/settingsStore.js';
 export {
   boolOr,
+  clampFloatOrNull,
   clampInt,
   pickFrom,
   record,

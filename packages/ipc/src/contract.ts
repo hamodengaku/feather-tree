@@ -29,6 +29,7 @@ export const CHANNELS = {
   sessionActivate: 'session:activate',
   sessionClose: 'session:close',
   sessionRefresh: 'session:refresh',
+  sessionReorder: 'session:reorder',
 
   statusGetSummary: 'status:getSummary',
   statusGetPage: 'status:getPage',
@@ -101,7 +102,11 @@ export interface SettingsDto {
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
-  readonly paneWidths: { readonly left: number; readonly center: number };
+  readonly paneWidths: { readonly left: number; readonly center: number; readonly centerRatio: number | null };
+  readonly branchLocalHeight: number;
+  readonly branchPaneCollapsed: boolean;
+  readonly commandLogHeight: number;
+  readonly stagedHeight: number;
   readonly refocusUpdateMode: 'auto' | 'modal' | 'none';
   readonly recentRepositories: readonly string[];
   readonly openRepositories: readonly string[];
@@ -310,6 +315,7 @@ export interface FeatherTreeBridge {
   sessionActivate(id: string): Promise<Result<null>>;
   sessionClose(id: string): Promise<Result<null>>;
   sessionRefresh(id: string, scope: RefreshScope): Promise<Result<SessionStateDto>>;
+  sessionReorder(order: readonly string[]): Promise<Result<null>>;
 
   statusGetSummary(id: string): Promise<Result<StatusSummaryDto>>;
   statusGetPage(id: string, req: StatusPageRequest): Promise<Result<StatusPageDto>>;

@@ -24,7 +24,11 @@ const SETTINGS: SettingsDto = {
   diffContextLines: 3,
   diffMaxLines: 20000,
   logPageSize: 200,
-  paneWidths: { left: 260, center: 420 },
+  paneWidths: { left: 260, center: 420, centerRatio: null },
+  branchLocalHeight: 180,
+  branchPaneCollapsed: false,
+  commandLogHeight: 220,
+  stagedHeight: 180,
   refocusUpdateMode: 'auto',
   recentRepositories: [],
   openRepositories: [],
@@ -188,6 +192,14 @@ export class FakeBridge {
         this.record('sessionRefresh', id, scope);
         this.seq += 1;
         return Promise.resolve(ok({ id, statusSeq: this.seq, head: HEAD, counts: this.counts() }));
+      },
+      sessionReorder: (order: readonly string[]) => {
+        this.record('sessionReorder', order);
+        const byId = new Map(this.sessions.map((s) => [s.id, s]));
+        const next = order.map((id) => byId.get(id)).filter((s): s is (typeof this.sessions)[number] => s !== undefined);
+        for (const s of this.sessions) if (!order.includes(s.id)) next.push(s);
+        this.sessions = next;
+        return Promise.resolve(ok(null));
       },
       statusGetSummary: (id: string) => {
         this.record('statusGetSummary', id);

@@ -1,12 +1,30 @@
 <script lang="ts">
   import { app } from '../lib/appState.svelte.js';
+  import PaneSplitter from './PaneSplitter.svelte';
+
+  let liveHeight = $state<number | null>(null);
+  const height = $derived(liveHeight ?? app.settings?.commandLogHeight ?? 220);
+
+  function commitHeight(next: number): void {
+    liveHeight = null;
+    void app.setCommandLogHeight(next);
+  }
 </script>
 
 <!--
   実行した git コマンドをすべて見せる。
   確認ダイアログを減らす代わりに透明性で信頼を担保する（決定 16）。
 -->
-<div class="panel">
+<PaneSplitter
+  axis="y"
+  invert
+  value={height}
+  min={120}
+  max={800}
+  onchange={(h) => (liveHeight = h)}
+  oncommit={commitHeight}
+/>
+<div class="panel" style:height={height + 'px'}>
   <header>
     <h2>実行ログ <span class="count">{app.commandLog.length}</span></h2>
     <button onclick={() => (app.showCommandLog = false)}>閉じる</button>
@@ -42,7 +60,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    height: 220px;
+    flex: 0 0 auto;
     border-top: 1px solid var(--app-border-strong);
     background: var(--app-bg-surface);
   }

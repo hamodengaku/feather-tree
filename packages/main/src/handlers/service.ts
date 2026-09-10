@@ -66,6 +66,7 @@ export interface Service {
   sessionActivate(id: string): Promise<null>;
   sessionClose(id: string): Promise<null>;
   sessionRefresh(id: string, scope: RefreshScope): Promise<SessionStateDto>;
+  sessionReorder(order: readonly string[]): Promise<null>;
   statusGetSummary(id: string): StatusSummaryDto;
   statusGetPage(id: string, req: StatusPageRequest): StatusPageDto;
   stage(id: string, target: OperationTargetDto): Promise<OperationResultDto>;
@@ -202,6 +203,13 @@ export function createService(deps: ServiceDeps): Service {
       if (scope === 'full') await sessions.requestFullRefresh(id);
       else await sessions.requestStatusRefresh(id);
       return stateOf(requireSession(id));
+    },
+
+    sessionReorder: async (order) => {
+      const sessions = requireSessions();
+      sessions.reorder(order);
+      await deps.updateSettings({ openRepositories: sessions.list().map((s) => s.root) });
+      return null;
     },
 
     statusGetSummary: (id) => {

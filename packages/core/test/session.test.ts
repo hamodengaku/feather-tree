@@ -155,6 +155,42 @@ describe('RepositorySession / SessionManager', () => {
     expect(manager.get(session.id)).toBeNull();
   });
 
+  it('タブを並び替えられる', async () => {
+    const first = await manager.open(dir);
+
+    const other = join(TEST_ROOT, randomBytes(8).toString('hex'));
+    await mkdir(other, { recursive: true });
+    await git(other, ['init', '--initial-branch=main']);
+    try {
+      const second = await manager.open(other);
+      manager.reorder([second.id, first.id]);
+      expect(manager.list().map((s) => s.id)).toEqual([second.id, first.id]);
+    } finally {
+      await rm(other, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
+    }
+  });
+
+  it('並び替えで不明な id は無視する', async () => {
+    const session = await manager.open(dir);
+    manager.reorder(['does-not-exist', session.id]);
+    expect(manager.list().map((s) => s.id)).toEqual([session.id]);
+  });
+
+  it('並び替えで渡されなかった既存タブは末尾に元の順序で残る', async () => {
+    const first = await manager.open(dir);
+
+    const other = join(TEST_ROOT, randomBytes(8).toString('hex'));
+    await mkdir(other, { recursive: true });
+    await git(other, ['init', '--initial-branch=main']);
+    try {
+      const second = await manager.open(other);
+      manager.reorder([]);
+      expect(manager.list().map((s) => s.id)).toEqual([first.id, second.id]);
+    } finally {
+      await rm(other, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
+    }
+  });
+
   it('設定の変更が次の status に反映される', async () => {
     await write('sub/a.txt', 'x');
     const session = await manager.open(dir);

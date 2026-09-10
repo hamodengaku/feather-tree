@@ -163,6 +163,20 @@ export class AppState {
     if (cached.selected !== null) await this.loadDiff(cached.selected);
   }
 
+  /** タブのドラッグ並び替え中のプレビュー。IPC は呼ばない。 */
+  reorderTabs(order: readonly string[]): void {
+    const sessions = this.sessions;
+    this.sessions = order
+      .map((id) => sessions.find((s) => s.id === id))
+      .filter((s): s is SessionDto => s !== undefined);
+  }
+
+  /** ドロップ確定時に一度だけ呼び、並び順を main 側（再起動用の openRepositories 含む）に反映する。 */
+  async commitTabOrder(): Promise<void> {
+    const result = await this.#ft.sessionReorder(this.sessions.map((s) => s.id));
+    this.#check(result);
+  }
+
   async closeTab(id: string): Promise<void> {
     const result = await this.#ft.sessionClose(id);
     if (!this.#check(result)) return;
@@ -261,16 +275,60 @@ export class AppState {
   }
 
   /**
-   * ファイル一覧（center）幅の永続化。
-   * SettingsStore.update() は浅いマージなので、paneWidths は left も含めて送る
-   * （left だけ省くと既定値に戻ってしまう）。
+   * ファイル一覧(center)と差分(diff)の比率の永続化。
+   * SettingsStore.update() は浅いマージなので、paneWidths は他フィールドも含めて送る
+   * （centerRatio だけ送ると left/center が既定値に戻ってしまう）。
    */
-  async setCenterPaneWidth(center: number): Promise<void> {
+  async setCenterRatio(ratio: number): Promise<void> {
     if (this.settings === null) return;
-    const clamped = Math.min(2000, Math.max(200, Math.round(center)));
+    const clamped = Math.min(0.9, Math.max(0.1, ratio));
     const result = await this.#ft.settingsUpdate({
-      paneWidths: { left: this.settings.paneWidths.left, center: clamped },
+      paneWidths: { ...this.settings.paneWidths, centerRatio: clamped },
     });
+    if (result.ok) this.settings = result.value;
+  }
+
+  /**
+   * ブランチペイン幅の永続化。
+   * SettingsStore.update() は浅いマージなので、paneWidths は他フィールドも含めて送る
+   * （left だけ送ると center/centerRatio が既定値に戻ってしまう）。
+   */
+  async setLeftWidth(px: number): Promise<void> {
+    if (this.settings === null) return;
+    const clamped = Math.min(1200, Math.max(120, Math.round(px)));
+    const result = await this.#ft.settingsUpdate({
+      paneWidths: { ...this.settings.paneWidths, left: clamped },
+    });
+    if (result.ok) this.settings = result.value;
+  }
+
+  /** ブランチペインの ローカル/リモート 分割高さの永続化。 */
+  async setBranchLocalHeight(px: number): Promise<void> {
+    if (this.settings === null) return;
+    const clamped = Math.min(4000, Math.max(80, Math.round(px)));
+    const result = await this.#ft.settingsUpdate({ branchLocalHeight: clamped });
+    if (result.ok) this.settings = result.value;
+  }
+
+  /** ブランチペインの折り畳み状態の永続化。 */
+  async setBranchPaneCollapsed(collapsed: boolean): Promise<void> {
+    const result = await this.#ft.settingsUpdate({ branchPaneCollapsed: collapsed });
+    if (result.ok) this.settings = result.value;
+  }
+
+  /** 実行ログパネルの高さの永続化。 */
+  async setCommandLogHeight(px: number): Promise<void> {
+    if (this.settings === null) return;
+    const clamped = Math.min(800, Math.max(120, Math.round(px)));
+    const result = await this.#ft.settingsUpdate({ commandLogHeight: clamped });
+    if (result.ok) this.settings = result.value;
+  }
+
+  /** WorkingTreePane の ステージ済み/変更 分割高さの永続化。 */
+  async setStagedHeight(px: number): Promise<void> {
+    if (this.settings === null) return;
+    const clamped = Math.min(4000, Math.max(80, Math.round(px)));
+    const result = await this.#ft.settingsUpdate({ stagedHeight: clamped });
     if (result.ok) this.settings = result.value;
   }
 

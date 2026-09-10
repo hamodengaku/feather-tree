@@ -39,6 +39,7 @@ const bridge: FeatherTreeBridge = {
   sessionClose: (id: string) => ipcRenderer.invoke(CHANNELS.sessionClose, id),
   sessionRefresh: (id: string, scope: RefreshScope) =>
     ipcRenderer.invoke(CHANNELS.sessionRefresh, id, scope),
+  sessionReorder: (order: readonly string[]) => ipcRenderer.invoke(CHANNELS.sessionReorder, order),
 
   statusGetSummary: (id: string) => ipcRenderer.invoke(CHANNELS.statusGetSummary, id),
   statusGetPage: (id: string, req: StatusPageRequest) =>

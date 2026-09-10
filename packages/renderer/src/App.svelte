@@ -15,12 +15,85 @@
   const gitMissing = $derived(app.environment !== null && app.environment.gitPath === null);
   const counts = $derived(app.summary?.counts ?? null);
 
-  let liveCenterWidth = $state<number | null>(null);
-  const centerWidth = $derived(liveCenterWidth ?? app.settings?.paneWidths.center ?? 420);
+  // ---------------------------------------------------------------- center/diff の比率レイアウト
 
-  function commitCenterWidth(next: number): void {
+  let panesWidth = $state(0);
+  let liveCenterWidth = $state<number | null>(null);
+  let liveLeftWidth = $state<number | null>(null);
+
+  /** ブランチペインを折り畳んだときに残す帯の幅。 */
+  const BRANCH_STRIP_WIDTH = 28;
+
+  const leftCollapsed = $derived(app.settings?.branchPaneCollapsed ?? false);
+  const leftWidth = $derived(
+    leftCollapsed ? BRANCH_STRIP_WIDTH : (liveLeftWidth ?? app.settings?.paneWidths.left ?? 260),
+  );
+  /** 折り畳み時はブランチ/中央の分割線ごと出さないので、その分の 6px も無い。 */
+  const leftSplitterWidth = $derived(leftCollapsed ? 0 : 6);
+
+  const ratio = $derived(app.settings?.paneWidths.centerRatio ?? 0.5);
+  /** center + diff の合計トラック幅（左ペイン・その分割線・center/diff の分割線を除く）。 */
+  const availableCD = $derived(Math.max(1, panesWidth - leftWidth - leftSplitterWidth - 6));
+  const centerWidthPx = $derived(liveCenterWidth ?? Math.round(ratio * availableCD));
+
+  /**
+   * 通常時は fr 単位で比率だけを指定し、ウィンドウ伸縮に応じたブラウザ側の再配分に任せる
+   * （center/diff がブランチペイン幅を保ったまま連動して伸縮し、diff は minmax で消えない）。
+   * ドラッグ中だけ px 値に切り替え、PaneSplitter の col-resize の感触を保つ。
+   */
+  const gridColumns = $derived.by(() => {
+    const left = leftCollapsed ? `${leftWidth}px` : `${leftWidth}px 6px`;
+    const centerDiff =
+      liveCenterWidth !== null
+        ? `${liveCenterWidth}px 6px minmax(200px, 1fr)`
+        : `minmax(160px, ${ratio}fr) 6px minmax(200px, ${1 - ratio}fr)`;
+    return `${left} ${centerDiff}`;
+  });
+
+  function commitCenterWidth(nextPx: number): void {
+    const nextRatio = nextPx / availableCD;
     liveCenterWidth = null;
-    void app.setCenterPaneWidth(next);
+    void app.setCenterRatio(nextRatio);
+  }
+
+  function commitLeftWidth(nextPx: number): void {
+    liveLeftWidth = null;
+    void app.setLeftWidth(nextPx);
+  }
+
+  // 既存ユーザーの移行: paneWidths.center（レガシー px）を、実測幅から比率へ一度だけ変換する。
+  // 変換の瞬間は同じ px 値から計算するため見た目のジャンプは起きない。
+  $effect(() => {
+    if (app.settings === null || app.settings.paneWidths.centerRatio !== null) return;
+    if (panesWidth === 0) return;
+    void app.setCenterRatio(app.settings.paneWidths.center / availableCD);
+  });
+
+  // ---------------------------------------------------------------- タブのドラッグ並び替え
+
+  let draggingId = $state<string | null>(null);
+
+  function handleTabDragStart(id: string, event: DragEvent): void {
+    draggingId = id;
+    event.dataTransfer?.setData('text/plain', id);
+    if (event.dataTransfer !== null) event.dataTransfer.effectAllowed = 'move';
+  }
+
+  function handleTabDragOver(overId: string, event: DragEvent): void {
+    event.preventDefault();
+    if (draggingId === null || draggingId === overId) return;
+    const ids = app.sessions.map((s) => s.id);
+    const from = ids.indexOf(draggingId);
+    const to = ids.indexOf(overId);
+    if (from === -1 || to === -1) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, draggingId);
+    app.reorderTabs(ids);
+  }
+
+  function handleTabDragEnd(): void {
+    draggingId = null;
+    void app.commitTabOrder();
   }
 
   let optionsOpen = $state(false);
@@ -30,7 +103,16 @@
   <header class="titlebar">
     <div class="tabs" role="tablist">
       {#each app.sessions as session (session.id)}
-        <div class="tab" class:active={session.id === app.activeId} role="presentation">
+        <div
+          class="tab"
+          class:active={session.id === app.activeId}
+          class:dragging={session.id === draggingId}
+          role="presentation"
+          draggable="true"
+          ondragstart={(e) => handleTabDragStart(session.id, e)}
+          ondragover={(e) => handleTabDragOver(session.id, e)}
+          ondragend={handleTabDragEnd}
+        >
           <button
             class="tab-label"
             role="tab"
@@ -89,10 +171,25 @@
       </div>
     </div>
   {:else}
-    <main class="panes" style:grid-template-columns="{app.settings?.paneWidths.left ?? 260}px {centerWidth}px 6px 1fr">
+    <main class="panes" style:grid-template-columns={gridColumns} bind:clientWidth={panesWidth}>
       <BranchPane />
+      {#if !leftCollapsed}
+        <PaneSplitter
+          value={leftWidth}
+          min={120}
+          max={1200}
+          onchange={(w) => (liveLeftWidth = w)}
+          oncommit={commitLeftWidth}
+        />
+      {/if}
       <WorkingTreePane />
-      <PaneSplitter value={centerWidth} min={200} max={2000} onchange={(w) => (liveCenterWidth = w)} oncommit={commitCenterWidth} />
+      <PaneSplitter
+        value={centerWidthPx}
+        min={160}
+        max={Math.max(160, availableCD - 200)}
+        onchange={(w) => (liveCenterWidth = w)}
+        oncommit={commitCenterWidth}
+      />
       <DiffPane />
     </main>
   {/if}
@@ -156,6 +253,10 @@
     border-color: var(--app-border-strong);
   }
 
+  .tab.dragging {
+    opacity: 0.5;
+  }
+
   .tab-label,
   .tab-close,
   .tab-add {
@@ -163,6 +264,10 @@
     border: none;
     padding: 3px 8px;
     white-space: nowrap;
+  }
+
+  .tab-label {
+    cursor: grab;
   }
 
   .tab-close {

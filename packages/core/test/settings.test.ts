@@ -57,6 +57,38 @@ describe('設定の正規化', () => {
     expect(normalizeSettings({ refocusUpdateMode: 'modal' }).refocusUpdateMode).toBe('modal');
     expect(normalizeSettings({ refocusUpdateMode: 'none' }).refocusUpdateMode).toBe('none');
   });
+
+  it('branchLocalHeight は範囲外を既定値に丸め、有効な値は保持する', () => {
+    expect(normalizeSettings({ branchLocalHeight: 5 }).branchLocalHeight).toBe(80);
+    expect(normalizeSettings({ branchLocalHeight: 99999 }).branchLocalHeight).toBe(4000);
+    expect(normalizeSettings({ branchLocalHeight: 300 }).branchLocalHeight).toBe(300);
+  });
+
+  it('branchPaneCollapsed は真偽値以外なら既定値（false）にする', () => {
+    expect(normalizeSettings({}).branchPaneCollapsed).toBe(false);
+    expect(normalizeSettings({ branchPaneCollapsed: 'yes' }).branchPaneCollapsed).toBe(false);
+    expect(normalizeSettings({ branchPaneCollapsed: true }).branchPaneCollapsed).toBe(true);
+  });
+
+  it('commandLogHeight は範囲外を既定値に丸め、有効な値は保持する', () => {
+    expect(normalizeSettings({ commandLogHeight: 1 }).commandLogHeight).toBe(120);
+    expect(normalizeSettings({ commandLogHeight: 99999 }).commandLogHeight).toBe(800);
+    expect(normalizeSettings({ commandLogHeight: 300 }).commandLogHeight).toBe(300);
+  });
+
+  it('stagedHeight は範囲外を既定値に丸め、有効な値は保持する', () => {
+    expect(normalizeSettings({ stagedHeight: 5 }).stagedHeight).toBe(80);
+    expect(normalizeSettings({ stagedHeight: 99999 }).stagedHeight).toBe(4000);
+    expect(normalizeSettings({ stagedHeight: 300 }).stagedHeight).toBe(300);
+  });
+
+  it('paneWidths.centerRatio は未指定/不正なら null、範囲外はクランプする', () => {
+    expect(normalizeSettings({}).paneWidths.centerRatio).toBeNull();
+    expect(normalizeSettings({ paneWidths: { centerRatio: 'nope' } }).paneWidths.centerRatio).toBeNull();
+    expect(normalizeSettings({ paneWidths: { centerRatio: 0.01 } }).paneWidths.centerRatio).toBe(0.1);
+    expect(normalizeSettings({ paneWidths: { centerRatio: 0.99 } }).paneWidths.centerRatio).toBe(0.9);
+    expect(normalizeSettings({ paneWidths: { centerRatio: 0.6 } }).paneWidths.centerRatio).toBe(0.6);
+  });
 });
 
 describe('AppSettingsStore（土台の SettingsStore + FeatherTree のスキーマ）', () => {
