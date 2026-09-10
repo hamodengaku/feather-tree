@@ -8,11 +8,24 @@
     entries: (FileEntryDto | undefined)[];
     total: number;
     selectedPath: string | null;
-    onselect: (entry: FileEntryDto) => void;
+    multiSelectedPaths: ReadonlySet<string>;
+    onselect: (entry: FileEntryDto, event: MouseEvent | KeyboardEvent, index: number) => void;
+    ondblclick: (entry: FileEntryDto) => void;
+    oncontextmenu: (entry: FileEntryDto, event: MouseEvent, index: number) => void;
     onneedpage: (offset: number) => void;
   }
 
-  const { group, entries, total, selectedPath, onselect, onneedpage }: Props = $props();
+  const {
+    group,
+    entries,
+    total,
+    selectedPath,
+    multiSelectedPaths,
+    onselect,
+    ondblclick,
+    oncontextmenu,
+    onneedpage,
+  }: Props = $props();
 
   const ROW_HEIGHT = 22;
 
@@ -56,8 +69,15 @@
           <FileRow
             entry={row.entry}
             selected={row.entry.path === selectedPath}
-            onselect={() => {
-              if (row.entry !== undefined) onselect(row.entry);
+            multiSelected={multiSelectedPaths.has(row.entry.path)}
+            onselect={(event) => {
+              if (row.entry !== undefined) onselect(row.entry, event, row.index);
+            }}
+            ondblclick={() => {
+              if (row.entry !== undefined) ondblclick(row.entry);
+            }}
+            oncontextmenu={(event) => {
+              if (row.entry !== undefined) oncontextmenu(row.entry, event, row.index);
             }}
           />
         {/if}

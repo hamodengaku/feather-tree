@@ -75,6 +75,7 @@ export class AppState {
   busy = $state(false);
   error = $state<FtErrorDto | null>(null);
   pendingConfirmation = $state<PendingConfirmation | null>(null);
+  focusRefreshPrompt = $state<{ sessionId: string } | null>(null);
 
   commandLog = $state<CommandLogEntryDto[]>([]);
   showCommandLog = $state(false);
@@ -117,6 +118,12 @@ export class AppState {
     this.#ft.onSessionChanged((event) => {
       if (event.sessionId !== this.activeId) return;
       void this.reloadActive();
+    });
+
+    // refocusUpdateMode === 'modal' のとき、main はここに「更新するか」を委ねてくる
+    this.#ft.onFocusRefreshPrompt((event) => {
+      if (event.sessionId !== this.activeId) return;
+      this.focusRefreshPrompt = event;
     });
   }
 
@@ -253,6 +260,34 @@ export class AppState {
     }
   }
 
+  /**
+   * ファイル一覧（center）幅の永続化。
+   * SettingsStore.update() は浅いマージなので、paneWidths は left も含めて送る
+   * （left だけ省くと既定値に戻ってしまう）。
+   */
+  async setCenterPaneWidth(center: number): Promise<void> {
+    if (this.settings === null) return;
+    const clamped = Math.min(2000, Math.max(200, Math.round(center)));
+    const result = await this.#ft.settingsUpdate({
+      paneWidths: { left: this.settings.paneWidths.left, center: clamped },
+    });
+    if (result.ok) this.settings = result.value;
+  }
+
+  async setRefocusUpdateMode(mode: SettingsDto['refocusUpdateMode']): Promise<void> {
+    const result = await this.#ft.settingsUpdate({ refocusUpdateMode: mode });
+    if (result.ok) this.settings = result.value;
+  }
+
+  dismissFocusRefreshPrompt(): void {
+    this.focusRefreshPrompt = null;
+  }
+
+  async acceptFocusRefreshPrompt(): Promise<void> {
+    this.focusRefreshPrompt = null;
+    await this.refresh('full');
+  }
+
   // ---------------------------------------------------------------- 書き込み操作
 
   stage(target: OperationTargetDto): Promise<void> {
@@ -261,6 +296,21 @@ export class AppState {
 
   unstage(target: OperationTargetDto): Promise<void> {
     return this.#operate(() => this.#ft.unstage(this.#id(), target));
+  }
+
+  /**
+   * ファイル一覧の行をダブルクリックしたときの、ステージ⇄アンステージの切替。
+   *
+   * ブラウザは同じ要素で click, click, dblclick の順に発火するため、dblclick が届く時点で
+   * 既に2回の click（=onselect）が処理済みで、this.selected はこのファイルの現在の staged
+   * 値を指している。reloadActive() の #stillPresent() が移動後の正しいセクションを見るように、
+   * 呼び出し前に selected を反転させておく。
+   */
+  async toggleStage(file: SelectedFile): Promise<void> {
+    this.selected = { path: file.path, staged: !file.staged };
+    const target: OperationTargetDto = { kind: 'paths', paths: [file.path] };
+    if (file.staged) await this.unstage(target);
+    else await this.stage(target);
   }
 
   discard(target: OperationTargetDto): Promise<void> {

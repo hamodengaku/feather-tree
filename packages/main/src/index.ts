@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { app, BrowserWindow, Menu } from 'electron';
-import { CHANNELS, type SessionChangedEvent } from '@feathertree/ipc';
+import { CHANNELS, type FocusRefreshPromptEvent, type SessionChangedEvent } from '@feathertree/ipc';
 import { AppContext } from './appContext.js';
 import { registerHandlers } from './handlers/register.js';
 import { hardenWindow, writeStartupMetrics } from '@feathertree/base-electron';
@@ -74,11 +74,23 @@ function createWindow(): BrowserWindow {
   /**
    * 決定 14: 自動更新はウィンドウ復帰時と手動のみ。
    * ポーリングもファイル監視もしない。ここが唯一の自動的な入口。
+   *
+   * refocusUpdateMode で分岐する: 'auto' は従来通り無条件で更新、'none' は何もしない
+   * （手動更新ボタンのみ）、'modal' は自動更新せず renderer に確認を委ねる
+   * （renderer が「更新する」を選んだときだけ既存の手動更新経路 sessionRefresh を呼ぶ）。
+   * いずれもウィンドウフォーカスが唯一の入口であることは変わらず、ポーリングは増えない。
    */
   window.on('focus', () => {
     const sessions = context.sessions();
     const activeId = sessions?.activeId;
     if (sessions === null || activeId === null || activeId === undefined) return;
+
+    const mode = context.currentSettings().refocusUpdateMode;
+    if (mode === 'none') return;
+    if (mode === 'modal') {
+      notifyFocusRefreshPrompt(activeId);
+      return;
+    }
     void sessions.requestStatusRefresh(activeId).then(
       () => notifySessionChanged(activeId),
       () => undefined,
@@ -103,6 +115,12 @@ function notifySessionChanged(sessionId: string): void {
     statusSeq: session.statusSeq,
   };
   mainWindow.webContents.send(CHANNELS.eventSessionChanged, event);
+}
+
+function notifyFocusRefreshPrompt(sessionId: string): void {
+  if (mainWindow === null || mainWindow.isDestroyed()) return;
+  const event: FocusRefreshPromptEvent = { sessionId };
+  mainWindow.webContents.send(CHANNELS.eventFocusRefreshPrompt, event);
 }
 
 app.on('window-all-closed', () => {

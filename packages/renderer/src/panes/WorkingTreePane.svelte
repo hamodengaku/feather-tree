@@ -2,12 +2,48 @@
   import type { FileEntryDto } from '@feathertree/ipc';
   import { app } from '../lib/appState.svelte.js';
   import VirtualFileList from '../components/VirtualFileList.svelte';
+  import FileContextMenu from '../components/FileContextMenu.svelte';
+  import { EMPTY_SELECTION, nextSelection, type SelectionState } from '../lib/selection.js';
 
   const stagedCount = $derived(app.summary?.counts.staged ?? 0);
   const changesTotal = $derived(app.changes.total);
 
-  function select(entry: FileEntryDto, staged: boolean): void {
-    void app.select({ path: entry.path, staged });
+  let stagedSelection = $state<SelectionState>(EMPTY_SELECTION);
+  let changesSelection = $state<SelectionState>(EMPTY_SELECTION);
+  let contextMenu = $state<{ x: number; y: number; staged: boolean } | null>(null);
+
+  // 一覧の内容が変わったら、消えたパスを指している複数選択を残さないようにリセットする。
+  $effect(() => {
+    void app.staged.total;
+    stagedSelection = EMPTY_SELECTION;
+  });
+  $effect(() => {
+    void app.changes.total;
+    changesSelection = EMPTY_SELECTION;
+  });
+
+  function handleSelect(entry: FileEntryDto, event: MouseEvent | KeyboardEvent, index: number, staged: boolean): void {
+    const click = {
+      index,
+      path: entry.path,
+      ctrlKey: event.ctrlKey || event.metaKey,
+      shiftKey: event.shiftKey,
+    };
+    const entries = staged ? app.staged.entries : app.changes.entries;
+    const next = nextSelection(staged ? stagedSelection : changesSelection, click, entries);
+    if (staged) stagedSelection = next;
+    else changesSelection = next;
+    if (!click.ctrlKey && !click.shiftKey) void app.select({ path: entry.path, staged });
+  }
+
+  function handleContextMenu(entry: FileEntryDto, event: MouseEvent, index: number, staged: boolean): void {
+    const current = staged ? stagedSelection : changesSelection;
+    if (!current.selected.has(entry.path)) {
+      const replaced: SelectionState = { selected: new Set([entry.path]), anchorIndex: index };
+      if (staged) stagedSelection = replaced;
+      else changesSelection = replaced;
+    }
+    contextMenu = { x: event.clientX, y: event.clientY, staged };
   }
 </script>
 
@@ -26,7 +62,10 @@
       entries={app.staged.entries}
       total={app.staged.total}
       selectedPath={app.selected?.staged === true ? app.selected.path : null}
-      onselect={(entry) => select(entry, true)}
+      multiSelectedPaths={stagedSelection.selected}
+      onselect={(entry, event, index) => handleSelect(entry, event, index, true)}
+      ondblclick={(entry) => void app.toggleStage({ path: entry.path, staged: true })}
+      oncontextmenu={(entry, event, index) => handleContextMenu(entry, event, index, true)}
       onneedpage={(offset) => void app.loadMore('staged', offset)}
     />
   </section>
@@ -62,7 +101,10 @@
       entries={app.changes.entries}
       total={app.changes.total}
       selectedPath={app.selected?.staged === false ? app.selected.path : null}
-      onselect={(entry) => select(entry, false)}
+      multiSelectedPaths={changesSelection.selected}
+      onselect={(entry, event, index) => handleSelect(entry, event, index, false)}
+      ondblclick={(entry) => void app.toggleStage({ path: entry.path, staged: false })}
+      oncontextmenu={(entry, event, index) => handleContextMenu(entry, event, index, false)}
       onneedpage={(offset) => void app.loadMore('changes', offset)}
     />
   </section>
@@ -83,6 +125,32 @@
     </div>
   </section>
 </div>
+
+{#if contextMenu !== null}
+  <FileContextMenu
+    x={contextMenu.x}
+    y={contextMenu.y}
+    onclose={() => (contextMenu = null)}
+    actions={contextMenu.staged
+      ? [
+          {
+            label: 'アンステージ',
+            onclick: () => void app.unstage({ kind: 'paths', paths: [...stagedSelection.selected] }),
+          },
+        ]
+      : [
+          {
+            label: 'ステージ',
+            onclick: () => void app.stage({ kind: 'paths', paths: [...changesSelection.selected] }),
+          },
+          {
+            label: '破棄',
+            danger: true,
+            onclick: () => void app.discard({ kind: 'paths', paths: [...changesSelection.selected] }),
+          },
+        ]}
+  />
+{/if}
 
 <style>
   .pane {

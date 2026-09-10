@@ -10,6 +10,7 @@ import {
   CHANNELS,
   type CommitRequest,
   type FeatherTreeBridge,
+  type FocusRefreshPromptEvent,
   type OperationTargetDto,
   type ProgressEvent,
   type RefreshScope,
@@ -63,6 +64,8 @@ const bridge: FeatherTreeBridge = {
     subscribe(CHANNELS.eventSessionChanged, listener),
   onProgress: (listener: (event: ProgressEvent) => void) =>
     subscribe(CHANNELS.eventProgress, listener),
+  onFocusRefreshPrompt: (listener: (event: FocusRefreshPromptEvent) => void) =>
+    subscribe(CHANNELS.eventFocusRefreshPrompt, listener),
 };
 
 contextBridge.exposeInMainWorld('ft', bridge);

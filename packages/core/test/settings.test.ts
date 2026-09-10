@@ -30,6 +30,7 @@ describe('設定の正規化', () => {
       diffContextLines: -5,
       logPageSize: 999999,
       recentRepositories: ['a', 42, null, 'b'],
+      refocusUpdateMode: 'sometimes',
       unknownKey: 'ignored',
     });
     expect(s.theme).toBe(DEFAULT_SETTINGS.theme);
@@ -37,6 +38,7 @@ describe('設定の正規化', () => {
     expect(s.diffContextLines).toBe(0);
     expect(s.logPageSize).toBe(2000);
     expect(s.recentRepositories).toEqual(['a', 'b']);
+    expect(s.refocusUpdateMode).toBe(DEFAULT_SETTINGS.refocusUpdateMode);
   });
 
   it('null / 非オブジェクトは既定値そのもの', () => {
@@ -49,6 +51,11 @@ describe('設定の正規化', () => {
     expect(s.theme).toBe('phoenix-dark');
     expect(s.noRenames).toBe(true);
     expect(s.untrackedFiles).toBe('all');
+  });
+
+  it('復帰時更新モードの有効な値は保持する', () => {
+    expect(normalizeSettings({ refocusUpdateMode: 'modal' }).refocusUpdateMode).toBe('modal');
+    expect(normalizeSettings({ refocusUpdateMode: 'none' }).refocusUpdateMode).toBe('none');
   });
 });
 

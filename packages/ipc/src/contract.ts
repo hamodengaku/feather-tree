@@ -48,6 +48,7 @@ export const CHANNELS = {
   // main -> renderer の通知
   eventSessionChanged: 'event:sessionChanged',
   eventProgress: 'event:progress',
+  eventFocusRefreshPrompt: 'event:focusRefreshPrompt',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -101,6 +102,7 @@ export interface SettingsDto {
   readonly diffMaxLines: number;
   readonly logPageSize: number;
   readonly paneWidths: { readonly left: number; readonly center: number };
+  readonly refocusUpdateMode: 'auto' | 'modal' | 'none';
   readonly recentRepositories: readonly string[];
   readonly openRepositories: readonly string[];
 }
@@ -287,6 +289,11 @@ export interface ProgressEvent {
   readonly line: string;
 }
 
+/** ウィンドウ復帰時、refocusUpdateMode が 'modal' のときに送る「更新しますか」通知。 */
+export interface FocusRefreshPromptEvent {
+  readonly sessionId: string;
+}
+
 // ---------------------------------------------------------------- 公開 API
 
 /** preload が contextBridge で renderer に公開する API の形。 */
@@ -326,4 +333,5 @@ export interface FeatherTreeBridge {
   /** 購読解除用の関数を返す。 */
   onSessionChanged(listener: (event: SessionChangedEvent) => void): () => void;
   onProgress(listener: (event: ProgressEvent) => void): () => void;
+  onFocusRefreshPrompt(listener: (event: FocusRefreshPromptEvent) => void): () => void;
 }

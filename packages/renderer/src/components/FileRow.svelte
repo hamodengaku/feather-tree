@@ -4,10 +4,13 @@
   interface Props {
     entry: FileEntryDto;
     selected: boolean;
-    onselect: () => void;
+    multiSelected: boolean;
+    onselect: (event: MouseEvent | KeyboardEvent) => void;
+    ondblclick: () => void;
+    oncontextmenu: (event: MouseEvent) => void;
   }
 
-  const { entry, selected, onselect }: Props = $props();
+  const { entry, selected, multiSelected, onselect, ondblclick, oncontextmenu }: Props = $props();
 
   /** 状態コードを 1 文字の記号と色に写す。 */
   function marker(e: FileEntryDto): { label: string; kind: string } {
@@ -43,12 +46,18 @@
 <div
   class="row"
   class:selected
+  class:multi-selected={multiSelected}
   role="option"
   aria-selected={selected}
   tabindex="-1"
   onclick={onselect}
+  ondblclick={ondblclick}
+  oncontextmenu={(e) => {
+    e.preventDefault();
+    oncontextmenu(e);
+  }}
   onkeydown={(e) => {
-    if (e.key === 'Enter' || e.key === ' ') onselect();
+    if (e.key === 'Enter' || e.key === ' ') onselect(e);
   }}
 >
   <span class="marker {m.kind}">{m.label}</span>
@@ -73,6 +82,12 @@
 
   .row.selected {
     background: var(--app-bg-selected);
+  }
+
+  .row.multi-selected {
+    background: var(--app-bg-hover);
+    outline: 1px solid var(--app-border-strong);
+    outline-offset: -1px;
   }
 
   .marker {

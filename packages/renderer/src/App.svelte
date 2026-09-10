@@ -5,22 +5,25 @@
   import DiffPane from './panes/DiffPane.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
   import CommandLogPanel from './components/CommandLogPanel.svelte';
-  import { THEME_OPTIONS, isDarkTheme } from './lib/theme.js';
-  import type { SettingsDto } from '@feathertree/ipc';
+  import PaneSplitter from './components/PaneSplitter.svelte';
+  import OptionsDialog from './components/OptionsDialog.svelte';
+  import FocusRefreshDialog from './components/FocusRefreshDialog.svelte';
+  import { isDarkTheme } from './lib/theme.js';
 
   void app.initialize();
 
   const gitMissing = $derived(app.environment !== null && app.environment.gitPath === null);
   const counts = $derived(app.summary?.counts ?? null);
 
-  let themeMenuOpen = $state(false);
-  const theme = $derived(app.settings?.theme ?? 'phoenix-light');
-  const themeLabel = $derived(THEME_OPTIONS.find((o) => o.value === theme)?.label ?? '');
+  let liveCenterWidth = $state<number | null>(null);
+  const centerWidth = $derived(liveCenterWidth ?? app.settings?.paneWidths.center ?? 420);
 
-  function chooseTheme(value: SettingsDto['theme']): void {
-    themeMenuOpen = false;
-    void app.setTheme(value);
+  function commitCenterWidth(next: number): void {
+    liveCenterWidth = null;
+    void app.setCenterPaneWidth(next);
   }
+
+  let optionsOpen = $state(false);
 </script>
 
 <div class="shell">
@@ -53,31 +56,14 @@
       {/if}
       <button disabled={app.busy || app.activeId === null} onclick={() => void app.refresh('full')}>更新</button>
       <button onclick={() => (app.showCommandLog = !app.showCommandLog)}>ログ</button>
-      <div class="theme">
-        <button
-          title={themeLabel}
-          aria-haspopup="menu"
-          aria-expanded={themeMenuOpen}
-          onclick={() => (themeMenuOpen = !themeMenuOpen)}
-        >
-          {isDarkTheme(theme) ? '☾' : '☀'} ▾
-        </button>
-        {#if themeMenuOpen}
-          <div class="menu-backdrop" role="presentation" onclick={() => (themeMenuOpen = false)}></div>
-          <div class="menu" role="menu">
-            {#each THEME_OPTIONS as option (option.value)}
-              <button
-                role="menuitem"
-                class="menu-item"
-                class:current={option.value === theme}
-                onclick={() => chooseTheme(option.value)}
-              >
-                <span class="check">{option.value === theme ? '✓' : ''}</span>{option.label}
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
+      <button
+        title="設定"
+        aria-haspopup="dialog"
+        aria-expanded={optionsOpen}
+        onclick={() => (optionsOpen = true)}
+      >
+        {isDarkTheme(app.settings?.theme ?? 'phoenix-light') ? '☾' : '☀'} ⚙
+      </button>
     </div>
   </header>
 
@@ -103,13 +89,10 @@
       </div>
     </div>
   {:else}
-    <main
-      class="panes"
-      style:grid-template-columns="{app.settings?.paneWidths.left ?? 260}px {app.settings?.paneWidths
-        .center ?? 420}px 1fr"
-    >
+    <main class="panes" style:grid-template-columns="{app.settings?.paneWidths.left ?? 260}px {centerWidth}px 6px 1fr">
       <BranchPane />
       <WorkingTreePane />
+      <PaneSplitter value={centerWidth} min={200} max={2000} onchange={(w) => (liveCenterWidth = w)} oncommit={commitCenterWidth} />
       <DiffPane />
     </main>
   {/if}
@@ -132,6 +115,8 @@
 </div>
 
 <ConfirmDialog />
+<OptionsDialog open={optionsOpen} onclose={() => (optionsOpen = false)} />
+<FocusRefreshDialog />
 
 <style>
   .shell {
@@ -190,49 +175,6 @@
     align-items: center;
     gap: 6px;
     flex: 0 0 auto;
-  }
-
-  .theme {
-    position: relative;
-  }
-
-  /* メニュー外のクリックで閉じるための受け皿（ConfirmDialog と同じ作り）。 */
-  .menu-backdrop {
-    position: fixed;
-    inset: 0;
-  }
-
-  .menu {
-    position: absolute;
-    top: calc(100% + 4px);
-    right: 0;
-    z-index: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 4px;
-    background: var(--app-bg-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: var(--app-metric-radius);
-    box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
-  }
-
-  .menu-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: none;
-    border: none;
-    white-space: nowrap;
-  }
-
-  .menu-item.current {
-    background: var(--app-bg-selected);
-  }
-
-  .check {
-    width: 1em;
-    color: var(--app-accent);
   }
 
   .counts {

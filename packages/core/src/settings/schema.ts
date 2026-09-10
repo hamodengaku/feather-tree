@@ -2,6 +2,8 @@ import { boolOr, clampInt, pickFrom, record, stringArray, stringOrNull } from '@
 
 export type ThemeName = 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
 export type UntrackedMode = 'normal' | 'all';
+/** ウィンドウ復帰時の更新方式（決定14の唯一の自動入口の挙動）。 */
+export type RefocusUpdateMode = 'auto' | 'modal' | 'none';
 
 export interface PaneWidths {
   readonly left: number;
@@ -19,6 +21,7 @@ export interface AppSettings {
   readonly diffMaxLines: number;
   readonly logPageSize: number;
   readonly paneWidths: PaneWidths;
+  readonly refocusUpdateMode: RefocusUpdateMode;
   /** 最近開いたリポジトリ（新しい順）。 */
   readonly recentRepositories: readonly string[];
   /** 起動時に復元するタブ。 */
@@ -34,12 +37,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   diffMaxLines: 20000,
   logPageSize: 200,
   paneWidths: { left: 260, center: 420 },
+  refocusUpdateMode: 'auto',
   recentRepositories: [],
   openRepositories: [],
 };
 
 const THEMES: readonly ThemeName[] = ['classic-dark', 'classic-light', 'phoenix-dark', 'phoenix-light'];
 const UNTRACKED: readonly UntrackedMode[] = ['normal', 'all'];
+const REFOCUS_MODES: readonly RefocusUpdateMode[] = ['auto', 'modal', 'none'];
 
 /**
  * 設定ファイルは人間が手で編集しうるし、古いバージョンの残骸も入る。
@@ -61,6 +66,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
       left: clampInt(record(o['paneWidths'])['left'], 120, 1200, DEFAULT_SETTINGS.paneWidths.left),
       center: clampInt(record(o['paneWidths'])['center'], 200, 2000, DEFAULT_SETTINGS.paneWidths.center),
     },
+    refocusUpdateMode: pickFrom(o['refocusUpdateMode'], REFOCUS_MODES, DEFAULT_SETTINGS.refocusUpdateMode),
     recentRepositories: stringArray(o['recentRepositories'], 30),
     openRepositories: stringArray(o['openRepositories'], 20),
   };

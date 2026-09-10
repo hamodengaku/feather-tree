@@ -56,6 +56,27 @@ describe('起動', () => {
   });
 });
 
+describe('ペイン幅', () => {
+  it('center 幅の変更は left も含めて送る（浅いマージで消えないように）', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setCenterPaneWidth(777);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ paneWidths: { left: 260, center: 777 } }]);
+    expect(app.settings?.paneWidths.center).toBe(777);
+  });
+
+  it('範囲外の値はクランプする', async () => {
+    const { app } = await boot();
+
+    await app.setCenterPaneWidth(10);
+    expect(app.settings?.paneWidths.center).toBe(200);
+
+    await app.setCenterPaneWidth(9999);
+    expect(app.settings?.paneWidths.center).toBe(2000);
+  });
+});
+
 describe('タブ切替', () => {
   it('一覧を取り直さない（キャッシュから復元する）', async () => {
     const { app, bridge } = await boot((b) => {
@@ -141,6 +162,51 @@ describe('ステージングとコミット', () => {
 
     expect(app.selected?.path).toBe('a.txt');
     expect(bridge.lastArgsOf('diffGet')).toEqual(['s1', 'a.txt', false]);
+  });
+});
+
+describe('ダブルクリックでのステージ切替', () => {
+  it('未ステージのファイルをステージへ移し、選択がそのまま追従する', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+    });
+
+    await app.toggleStage({ path: 'a.txt', staged: false });
+
+    expect(bridge.countOf('stage')).toBe(1);
+    expect(bridge.lastArgsOf('stage')?.[1]).toEqual({ kind: 'paths', paths: ['a.txt'] });
+    expect(app.selected).toEqual({ path: 'a.txt', staged: true });
+    expect(app.staged.entries.some((e) => e?.path === 'a.txt')).toBe(true);
+  });
+
+  it('ステージ済みのファイルを変更へ戻す', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+
+    await app.toggleStage({ path: 'a.txt', staged: true });
+
+    expect(bridge.countOf('unstage')).toBe(1);
+    expect(app.selected).toEqual({ path: 'a.txt', staged: false });
+    expect(app.changes.entries.some((e) => e?.path === 'a.txt')).toBe(true);
+  });
+
+  it('失敗した場合は selected が反転したまま残る（既知のトレードオフ）', async () => {
+    const bridge = new FakeBridge();
+    bridge.changes = [entry('a.txt')];
+    const app = await load({
+      ...bridge.build(),
+      stage: () =>
+        Promise.resolve({
+          ok: false as const,
+          error: { kind: 'git-failed' as const, message: '失敗しました' },
+        }),
+    });
+
+    await app.toggleStage({ path: 'a.txt', staged: false });
+
+    expect(app.selected).toEqual({ path: 'a.txt', staged: true });
+    expect(app.error?.message).toBe('失敗しました');
   });
 });
 
@@ -237,5 +303,46 @@ describe('main からの通知', () => {
 
     expect(bridge.countOf('statusGetSummary')).toBe(before);
     expect(app.activeId).toBe('s1');
+  });
+});
+
+describe('ウィンドウ復帰時の更新モード', () => {
+  it('モードの変更を送信して設定に反映する', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setRefocusUpdateMode('modal');
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ refocusUpdateMode: 'modal' }]);
+    expect(app.settings?.refocusUpdateMode).toBe('modal');
+  });
+
+  it('modal モードの通知を受けて確認待ちになり、承諾すると手動更新経路を呼ぶ', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.emitFocusPrompt(app.activeId ?? '');
+    expect(app.focusRefreshPrompt).toEqual({ sessionId: 's1' });
+
+    await app.acceptFocusRefreshPrompt();
+
+    expect(app.focusRefreshPrompt).toBeNull();
+    expect(bridge.countOf('sessionRefresh')).toBe(1);
+  });
+
+  it('しないを選ぶと手動更新を呼ばない', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.emitFocusPrompt(app.activeId ?? '');
+    app.dismissFocusRefreshPrompt();
+
+    expect(app.focusRefreshPrompt).toBeNull();
+    expect(bridge.countOf('sessionRefresh')).toBe(0);
+  });
+
+  it('別タブ宛の通知は無視する', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.emitFocusPrompt('s2');
+
+    expect(app.focusRefreshPrompt).toBeNull();
   });
 });

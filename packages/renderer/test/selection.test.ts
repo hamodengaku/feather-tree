@@ -1,0 +1,60 @@
+import { describe, expect, it } from 'vitest';
+import type { FileEntryDto } from '@feathertree/ipc';
+import { EMPTY_SELECTION, nextSelection, type SelectionState } from '../src/lib/selection.js';
+import { entry } from './fakeBridge.js';
+
+const ENTRIES: (FileEntryDto | undefined)[] = [
+  entry('a.txt'),
+  entry('b.txt'),
+  entry('c.txt'),
+  entry('d.txt'),
+  entry('e.txt'),
+];
+
+describe('nextSelection', () => {
+  it('修飾キー無しは単独選択に置き換える', () => {
+    const state: SelectionState = { selected: new Set(['a.txt', 'b.txt']), anchorIndex: 0 };
+    const next = nextSelection(state, { index: 2, path: 'c.txt', ctrlKey: false, shiftKey: false }, ENTRIES);
+    expect(next.selected).toEqual(new Set(['c.txt']));
+    expect(next.anchorIndex).toBe(2);
+  });
+
+  it('Ctrl クリックはトグルする（追加）', () => {
+    const next = nextSelection(EMPTY_SELECTION, { index: 1, path: 'b.txt', ctrlKey: true, shiftKey: false }, ENTRIES);
+    expect(next.selected).toEqual(new Set(['b.txt']));
+
+    const next2 = nextSelection(next, { index: 3, path: 'd.txt', ctrlKey: true, shiftKey: false }, ENTRIES);
+    expect(next2.selected).toEqual(new Set(['b.txt', 'd.txt']));
+  });
+
+  it('Ctrl クリックはトグルする（既に選択済みなら外す）', () => {
+    const state: SelectionState = { selected: new Set(['a.txt', 'b.txt']), anchorIndex: 1 };
+    const next = nextSelection(state, { index: 0, path: 'a.txt', ctrlKey: true, shiftKey: false }, ENTRIES);
+    expect(next.selected).toEqual(new Set(['b.txt']));
+  });
+
+  it('Shift クリックはアンカーからの範囲を選択する（アンカーは変えない）', () => {
+    const anchored = nextSelection(EMPTY_SELECTION, { index: 1, path: 'b.txt', ctrlKey: false, shiftKey: false }, ENTRIES);
+    const ranged = nextSelection(anchored, { index: 3, path: 'd.txt', ctrlKey: false, shiftKey: true }, ENTRIES);
+    expect(ranged.selected).toEqual(new Set(['b.txt', 'c.txt', 'd.txt']));
+    expect(ranged.anchorIndex).toBe(1);
+
+    // 続けて Shift+クリックしてもアンカー(1)は変わらず、範囲だけ縮む
+    const shrunk = nextSelection(ranged, { index: 2, path: 'c.txt', ctrlKey: false, shiftKey: true }, ENTRIES);
+    expect(shrunk.selected).toEqual(new Set(['b.txt', 'c.txt']));
+    expect(shrunk.anchorIndex).toBe(1);
+  });
+
+  it('Shift クリックで未ロードの行（undefined）は範囲から除外する', () => {
+    const partial: (FileEntryDto | undefined)[] = [entry('a.txt'), undefined, entry('c.txt')];
+    const anchored = nextSelection(EMPTY_SELECTION, { index: 0, path: 'a.txt', ctrlKey: false, shiftKey: false }, partial);
+    const ranged = nextSelection(anchored, { index: 2, path: 'c.txt', ctrlKey: false, shiftKey: true }, partial);
+    expect(ranged.selected).toEqual(new Set(['a.txt', 'c.txt']));
+  });
+
+  it('アンカーが無い状態での Shift クリックは単独選択になる', () => {
+    const next = nextSelection(EMPTY_SELECTION, { index: 2, path: 'c.txt', ctrlKey: false, shiftKey: true }, ENTRIES);
+    expect(next.selected).toEqual(new Set(['c.txt']));
+    expect(next.anchorIndex).toBe(2);
+  });
+});

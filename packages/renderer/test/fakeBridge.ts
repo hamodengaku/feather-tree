@@ -2,6 +2,7 @@ import type {
   CommitRequest,
   FeatherTreeBridge,
   FileEntryDto,
+  FocusRefreshPromptEvent,
   OperationTargetDto,
   RefreshScope,
   Result,
@@ -24,6 +25,7 @@ const SETTINGS: SettingsDto = {
   diffMaxLines: 20000,
   logPageSize: 200,
   paneWidths: { left: 260, center: 420 },
+  refocusUpdateMode: 'auto',
   recentRepositories: [],
   openRepositories: [],
 };
@@ -55,6 +57,7 @@ export class FakeBridge {
   requireConfirmation: string | null = null;
   confirmedCalls: string[] = [];
   changedListeners: ((e: SessionChangedEvent) => void)[] = [];
+  focusPromptListeners: ((e: FocusRefreshPromptEvent) => void)[] = [];
 
   countOf(name: string): number {
     return this.calls.filter((c) => c.name === name).length;
@@ -68,6 +71,23 @@ export class FakeBridge {
   emitChanged(sessionId: string): void {
     for (const listener of this.changedListeners) {
       listener({ sessionId, change: 'status', statusSeq: this.seq });
+    }
+  }
+
+  emitFocusPrompt(sessionId: string): void {
+    for (const listener of this.focusPromptListeners) {
+      listener({ sessionId });
+    }
+  }
+
+  /** kind:'paths' の対象を staged⇄changes 間で実際に移動させる（テストで移動先を検証するため）。 */
+  #moveByPaths(target: OperationTargetDto, from: FileEntryDto[], to: FileEntryDto[]): void {
+    if (target.kind !== 'paths') return;
+    for (const path of target.paths) {
+      const index = from.findIndex((e) => e.path === path);
+      if (index === -1) continue;
+      const [moved] = from.splice(index, 1);
+      if (moved !== undefined) to.push(moved);
     }
   }
 
@@ -187,10 +207,12 @@ export class FakeBridge {
       },
       stage: (id: string, target: OperationTargetDto) => {
         this.record('stage', id, target);
+        this.#moveByPaths(target, this.changes, this.staged);
         return Promise.resolve(ok({ affected: 1, statusSeq: this.seq }));
       },
       unstage: (id: string, target: OperationTargetDto) => {
         this.record('unstage', id, target);
+        this.#moveByPaths(target, this.staged, this.changes);
         return Promise.resolve(ok({ affected: 1, statusSeq: this.seq }));
       },
       discard: (id: string, target: OperationTargetDto, confirmed?: boolean) => {
@@ -237,6 +259,12 @@ export class FakeBridge {
         };
       },
       onProgress: () => () => undefined,
+      onFocusRefreshPrompt: (listener) => {
+        this.focusPromptListeners.push(listener);
+        return () => {
+          this.focusPromptListeners = this.focusPromptListeners.filter((l) => l !== listener);
+        };
+      },
     };
   }
 }
