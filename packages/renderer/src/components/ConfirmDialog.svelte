@@ -29,11 +29,13 @@
   .backdrop {
     position: fixed;
     inset: 0;
+    z-index: var(--app-layer-modal-backdrop);
     background: rgb(0 0 0 / 45%);
   }
 
   .dialog {
     position: fixed;
+    z-index: var(--app-layer-modal);
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);

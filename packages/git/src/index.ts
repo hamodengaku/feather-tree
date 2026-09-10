@@ -30,7 +30,7 @@ export type { GitContext } from './commands/context.js';
 export { getGitVersion, listRemotes, resolveRepository } from './commands/repository.js';
 export { getStatus } from './commands/status.js';
 export type { StatusOptions } from './commands/status.js';
-export { listBranches } from './commands/branches.js';
+export { createBranch, listBranches, switchBranch } from './commands/branches.js';
 export { getCommitFiles, getLog } from './commands/history.js';
 export type { LogOptions } from './commands/history.js';
 export { getFileDiff, getUntrackedFileDiff } from './commands/diff.js';

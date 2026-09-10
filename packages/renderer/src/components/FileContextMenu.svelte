@@ -34,12 +34,12 @@
   .menu-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 1;
+    z-index: var(--app-layer-menu-backdrop);
   }
 
   .menu {
     position: fixed;
-    z-index: 2;
+    z-index: var(--app-layer-menu);
     display: flex;
     flex-direction: column;
     gap: 2px;

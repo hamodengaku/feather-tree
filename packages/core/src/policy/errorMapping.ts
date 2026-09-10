@@ -57,6 +57,14 @@ const RULES: readonly Rule[] = [
     test: /pathspec .* did not match/i,
     message: '指定されたパスが見つかりません。一覧を更新してください。',
   },
+  {
+    test: /a branch named .* already exists/i,
+    message: '同名のブランチが既に存在します。',
+  },
+  {
+    test: /not a valid (branch|ref|object) name|invalid reference|is not a commit/i,
+    message: 'ブランチ元またはブランチ名が正しくありません。',
+  },
 ];
 
 export function mapGitStderr(stderr: string, exitCode: number): MappedError {

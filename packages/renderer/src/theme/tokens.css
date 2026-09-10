@@ -37,6 +37,15 @@
   --app-metric-row-height: 22px;
   --app-metric-radius: 4px;
   --app-metric-gap: 8px;
+
+  /*
+   * 重なり順。position: fixed の要素は必ずこのどれかを指定する。
+   * DOM の記述順に頼ると「ペインの中に置いたダイアログが後続のペインに隠れる」事故が起きる。
+   */
+  --app-layer-menu-backdrop: 100;
+  --app-layer-menu: 101;
+  --app-layer-modal-backdrop: 200;
+  --app-layer-modal: 201;
 }
 
 #app {

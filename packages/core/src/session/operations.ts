@@ -1,9 +1,11 @@
 import {
   commit as gitCommit,
+  createBranch as gitCreateBranch,
   discardStagedAndWorktree,
   discardWorktree,
   removeUntracked,
   stagePaths,
+  switchBranch as gitSwitchBranch,
   unstagePaths,
 } from '@feathertree/git';
 import type { DestructiveAction } from '../policy/destructiveActions.js';
@@ -119,6 +121,33 @@ export class SessionOperations {
     );
     await this.#session.refreshStatus(signal);
     return { oid, statusSeq: this.#session.statusSeq };
+  }
+
+  /**
+   * 対応表 #12。確認不要（決定: ブランチ移動は無確認で即実行する）。
+   * 未コミットの変更で上書きが発生する場合は git 自身が失敗させる（エラーメッセージで案内）。
+   * 切替後は status のみ再取得する（docs/02-git-command-map.md「切替後の反映」）。
+   */
+  async switchBranch(branchName: string, signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
+    await this.#session.track(['switch'], () => gitSwitchBranch(this.#session.context(signal), branchName));
+    await this.#session.refreshStatus(signal);
+    return { statusSeq: this.#session.statusSeq };
+  }
+
+  /**
+   * 対応表 #14。確認不要。作成して切替までを 1 git プロセスで行う（`switch -c`）。
+   * push は行わない。切替後は status のみ再取得する。
+   */
+  async createBranch(
+    name: string,
+    startPoint: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly statusSeq: number }> {
+    await this.#session.track(['switch', '-c'], () =>
+      gitCreateBranch(this.#session.context(signal), name, startPoint),
+    );
+    await this.#session.refreshStatus(signal);
+    return { statusSeq: this.#session.statusSeq };
   }
 
   /** この操作に必要な確認の種類。null なら確認不要。 */

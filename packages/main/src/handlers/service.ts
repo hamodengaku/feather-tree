@@ -12,7 +12,10 @@ import {
 } from '@feathertree/core';
 import type {
   AppInfoDto,
+  BranchCreateRequest,
+  BranchCreateResultDto,
   BranchDto,
+  BranchSwitchResultDto,
   CommandLogEntryDto,
   CommitRequest,
   CommitResultDto,
@@ -81,6 +84,8 @@ export interface Service {
   diffGet(id: string, path: string, staged: boolean): Promise<FileDiffDto | null>;
   logGetPage(id: string, skip: number): Promise<readonly CommitSummaryDto[]>;
   branchList(id: string): readonly BranchDto[];
+  branchSwitch(id: string, branchName: string): Promise<BranchSwitchResultDto>;
+  branchCreate(id: string, req: BranchCreateRequest): Promise<BranchCreateResultDto>;
   commandLogRecent(limit: number): readonly CommandLogEntryDto[];
 }
 
@@ -269,6 +274,20 @@ export function createService(deps: ServiceDeps): Service {
     logGetPage: async (id, skip) => requireSession(id).getLogPage(Math.max(0, skip)),
 
     branchList: (id) => requireSession(id).branches,
+
+    branchSwitch: async (id, branchName) => opsFor(id).switchBranch(branchName),
+
+    branchCreate: async (id, req) => {
+      const name = req.name.trim();
+      const startPoint = req.startPoint.trim();
+      if (name.length === 0) {
+        throw new HandlerError({ kind: 'internal', message: '新しいブランチ名を入力してください。' });
+      }
+      if (startPoint.length === 0) {
+        throw new HandlerError({ kind: 'internal', message: 'ブランチ元を入力してください。' });
+      }
+      return opsFor(id).createBranch(name, startPoint);
+    },
 
     commandLogRecent: (limit) => deps.commandLog().recent(Math.min(Math.max(1, limit), 500)),
   };

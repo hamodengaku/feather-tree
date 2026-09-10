@@ -212,6 +212,74 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     });
   });
 
+  it('ブランチを切り替えると HEAD と status が更新される（対応表 #12 → #2）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+    await git(dir, ['branch', 'feature']);
+
+    const result = await service.branchSwitch(id, 'feature');
+
+    expect(service.statusGetSummary(id).head?.branch).toBe('feature');
+    expect(service.statusGetSummary(id).seq).toBe(result.statusSeq);
+  });
+
+  it('未コミットの変更が上書きされる切替は失敗する', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+    await git(dir, ['branch', 'feature']);
+    await git(dir, ['switch', 'feature']);
+    await write('README.md', 'feature v1');
+    await git(dir, ['commit', '-am', 'feature change']);
+    await git(dir, ['switch', 'main']);
+    await write('README.md', 'uncommitted');
+
+    await expect(service.branchSwitch(id, 'feature')).rejects.toMatchObject({ name: 'GitCommandError' });
+  });
+
+  it('ブランチを作成すると起点から分岐して切り替わる（対応表 #14 → #2、push はしない）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+
+    const result = await service.branchCreate(id, { name: 'obana/topic', startPoint: 'main' });
+
+    expect(service.statusGetSummary(id).head?.branch).toBe('obana/topic');
+    expect(service.statusGetSummary(id).seq).toBe(result.statusSeq);
+    // 作成後は status のみ再取得する設計なので、branch 一覧はここではまだ古いまま
+    // （更新ボタン相当の full refresh で初めて反映される）
+    expect(service.branchList(id).find((b) => b.shortName === 'obana/topic')).toBeUndefined();
+    await service.sessionRefresh(id, 'full');
+    const feature = service.branchList(id).find((b) => b.shortName === 'obana/topic');
+    expect(feature?.isHead).toBe(true);
+    expect(feature?.oid).toBe(service.branchList(id).find((b) => b.shortName === 'main')?.oid);
+
+    // push していない: commandLog に push が一切記録されていない
+    expect(service.commandLogRecent(500).some((e) => e.args[0] === 'push')).toBe(false);
+  });
+
+  it('新しいブランチ名が空なら拒否する', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+
+    await expect(service.branchCreate(id, { name: '   ', startPoint: 'main' })).rejects.toMatchObject({
+      dto: { kind: 'internal' },
+    });
+  });
+
+  it('同名のブランチを作成しようとすると失敗する', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+    await git(dir, ['branch', 'feature']);
+
+    await expect(service.branchCreate(id, { name: 'feature', startPoint: 'main' })).rejects.toMatchObject({
+      name: 'GitCommandError',
+    });
+  });
+
   it('リポジトリ外のパスを拒否する', async () => {
     const id = await openDemo();
     await expect(service.stage(id, { kind: 'paths', paths: ['../outside.txt'] })).rejects.toThrow();

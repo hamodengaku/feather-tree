@@ -1,5 +1,6 @@
 import type { FeatherTreeBridge } from '@feathertree/ipc';
 import type {
+  BranchDto,
   CommandLogEntryDto,
   ConfirmationDto,
   EnvironmentDto,
@@ -65,6 +66,12 @@ export class AppState {
   staged = $state<Section>(emptySection());
   changes = $state<Section>(emptySection());
 
+  /**
+   * ブランチ一覧（ローカル・リモートの両方）。
+   * main のスナップショットを読むだけで git は動かない（#3 を実行するのは main 側）。
+   */
+  branches = $state<readonly BranchDto[]>([]);
+
   selected = $state<SelectedFile | null>(null);
   diff = $state<FileDiffDto | null>(null);
   diffLoading = $state(false);
@@ -80,10 +87,23 @@ export class AppState {
   commandLog = $state<CommandLogEntryDto[]>([]);
   showCommandLog = $state(false);
 
+  /**
+   * 「新しいブランチを作成」ダイアログの開閉。
+   * 開くボタンはブランチペインにあるが、ダイアログ自体は App.svelte の最上位に置く
+   * （ペインの中に position: fixed を置くと後続のペインに隠れる）。
+   */
+  createBranchOpen = $state(false);
+
   /** セッションごとの状態。タブ切替で一覧を取り直さないためのキャッシュ。 */
   readonly #cache = new SvelteMap<
     string,
-    { summary: StatusSummaryDto | null; staged: Section; changes: Section; selected: SelectedFile | null }
+    {
+      summary: StatusSummaryDto | null;
+      staged: Section;
+      changes: Section;
+      selected: SelectedFile | null;
+      branches: readonly BranchDto[];
+    }
   >();
 
   get activeSession(): SessionDto | null {
@@ -94,6 +114,13 @@ export class AppState {
     if (this.busy || this.activeId === null) return false;
     if (this.commitMessage.trim().length === 0) return false;
     return this.amend || (this.summary?.counts.staged ?? 0) > 0;
+  }
+
+  /** 今いるブランチ名。detached HEAD やリポジトリ未取得では null（作成の起点に使えない）。 */
+  get currentBranch(): string | null {
+    const head = this.summary?.head ?? null;
+    if (head === null || head.detached) return null;
+    return head.branch;
   }
 
   async initialize(): Promise<void> {
@@ -111,7 +138,7 @@ export class AppState {
     if (list.ok) {
       this.sessions = [...list.value.sessions];
       this.activeId = list.value.activeId;
-      if (this.activeId !== null) await this.reloadActive();
+      if (this.activeId !== null) await this.reloadAll();
     }
 
     // main 側の自動更新（ウィンドウ復帰時）を受けて表示を合わせる
@@ -137,7 +164,7 @@ export class AppState {
         this.activeId = result.value.id;
       }
       this.#clearActive();
-      await this.reloadActive();
+      await this.reloadAll();
     });
   }
 
@@ -152,13 +179,14 @@ export class AppState {
     const cached = this.#cache.get(id);
     if (cached === undefined) {
       this.#clearActive();
-      await this.reloadActive();
+      await this.reloadAll();
       return;
     }
     this.summary = cached.summary;
     this.staged = cached.staged;
     this.changes = cached.changes;
     this.selected = cached.selected;
+    this.branches = cached.branches;
     this.diff = null;
     if (cached.selected !== null) await this.loadDiff(cached.selected);
   }
@@ -187,18 +215,41 @@ export class AppState {
     this.sessions = [...list.value.sessions];
     this.activeId = list.value.activeId;
     this.#clearActive();
-    if (this.activeId !== null) await this.reloadActive();
+    if (this.activeId !== null) await this.reloadAll();
   }
 
-  /** 手動更新。決定 14 のもう一方の入口。 */
+  /**
+   * 手動更新。決定 14 のもう一方の入口。
+   *
+   * 非アクティブの間に外部（ターミナル・他のツール）でブランチが操作されている可能性があるため、
+   * 表示しているものはすべて取り直す。git の実行回数は main 側の scope が決めるので、
+   * ここでブランチを読み直しても git は増えない（#3 は 'full' のときに main が既に実行済み）。
+   */
   async refresh(scope: 'status' | 'full' = 'full'): Promise<void> {
     const id = this.activeId;
     if (id === null) return;
     await this.#run(async () => {
       const result = await this.#ft.sessionRefresh(id, scope);
       if (!this.#check(result)) return;
-      await this.reloadActive();
+      await this.reloadAll();
     });
+  }
+
+  /**
+   * 表示物をすべて取り直す（更新ボタン・タブの切り替わり）。
+   * 書き込み操作の後は main がブランチを取り直さないので、こちらではなく reloadActive を使う。
+   */
+  async reloadAll(): Promise<void> {
+    await this.reloadActive();
+    await this.reloadBranches();
+  }
+
+  /** ブランチ一覧の取り直し。main のスナップショットを読むだけで git は動かない。 */
+  async reloadBranches(): Promise<void> {
+    const id = this.activeId;
+    if (id === null) return;
+    const result = await this.#ft.branchList(id);
+    if (result.ok) this.branches = [...result.value];
   }
 
   async reloadActive(): Promise<void> {
@@ -399,6 +450,32 @@ export class AppState {
     );
   }
 
+  /** ブランチのダブルクリックによる切替。確認不要（決定: ブランチ移動は無確認）。 */
+  switchBranch(branchName: string): Promise<void> {
+    return this.#operate(() => this.#ft.branchSwitch(this.#id(), branchName));
+  }
+
+  openCreateBranch(): void {
+    if (this.currentBranch === null) return;
+    this.createBranchOpen = true;
+  }
+
+  closeCreateBranch(): void {
+    this.createBranchOpen = false;
+  }
+
+  /**
+   * ブランチの新規作成(起点から分岐して切替まで)。確認不要・push はしない。
+   * 成功時だけ onSuccess を呼ぶ(呼び出し元はこれでダイアログを閉じるかどうかを判断する)。
+   */
+  createBranch(name: string, startPoint: string, onSuccess?: () => void): Promise<void> {
+    return this.#operate(
+      () => this.#ft.branchCreate(this.#id(), { name, startPoint }),
+      undefined,
+      onSuccess,
+    );
+  }
+
   dismissError(): void {
     this.error = null;
   }
@@ -479,6 +556,7 @@ export class AppState {
       staged: this.staged,
       changes: this.changes,
       selected: this.selected,
+      branches: this.branches,
     });
   }
 
@@ -486,6 +564,7 @@ export class AppState {
     this.summary = null;
     this.staged = emptySection();
     this.changes = emptySection();
+    this.branches = [];
     this.selected = null;
     this.diff = null;
     this.commitMessage = '';

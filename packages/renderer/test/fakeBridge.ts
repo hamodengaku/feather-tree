@@ -1,8 +1,11 @@
 import type {
+  BranchCreateRequest,
+  BranchDto,
   CommitRequest,
   FeatherTreeBridge,
   FileEntryDto,
   FocusRefreshPromptEvent,
+  HeadInfoDto,
   OperationTargetDto,
   RefreshScope,
   Result,
@@ -36,10 +39,34 @@ const SETTINGS: SettingsDto = {
 
 const ok = <T>(value: T): Result<T> => ({ ok: true, value });
 
-const HEAD = { oid: 'abc', branch: 'main', detached: false, upstream: null, ahead: 0, behind: 0 };
+const HEAD: HeadInfoDto = {
+  oid: 'abc',
+  branch: 'main',
+  detached: false,
+  upstream: null,
+  ahead: 0,
+  behind: 0,
+};
 
 export function entry(path: string, over: Partial<FileEntryDto> = {}): FileEntryDto {
   return { kind: 'ordinary', path, staged: '.', worktree: 'M', ...over };
+}
+
+export function branch(shortName: string, over: Partial<BranchDto> = {}): BranchDto {
+  return {
+    refName: `refs/heads/${shortName}`,
+    shortName,
+    isRemote: false,
+    isHead: false,
+    oid: 'abc',
+    upstream: null,
+    ahead: 0,
+    behind: 0,
+    gone: false,
+    committedAt: '2026-09-10T12:00:00+09:00',
+    subject: 'ダミー',
+    ...over,
+  };
 }
 
 /**
@@ -56,6 +83,10 @@ export class FakeBridge {
     { id: 's2', root: 'D:/repo-two', displayName: 'repo-two' },
   ];
   activeId: string | null = 's1';
+  /** detached HEAD などを再現できるようにテストから差し替える。 */
+  head: HeadInfoDto = HEAD;
+  /** main が保持しているブランチ一覧。外部での変更を再現するときに差し替える。 */
+  branches: BranchDto[] = [];
   seq = 1;
   /** この名前の書き込み操作で 'needs-confirmation' を返す。 */
   requireConfirmation: string | null = null;
@@ -191,7 +222,7 @@ export class FakeBridge {
       sessionRefresh: (id: string, scope: RefreshScope) => {
         this.record('sessionRefresh', id, scope);
         this.seq += 1;
-        return Promise.resolve(ok({ id, statusSeq: this.seq, head: HEAD, counts: this.counts() }));
+        return Promise.resolve(ok({ id, statusSeq: this.seq, head: this.head, counts: this.counts() }));
       },
       sessionReorder: (order: readonly string[]) => {
         this.record('sessionReorder', order);
@@ -203,7 +234,9 @@ export class FakeBridge {
       },
       statusGetSummary: (id: string) => {
         this.record('statusGetSummary', id);
-        return Promise.resolve(ok({ seq: this.seq, counts: this.counts(), head: HEAD, hasSnapshot: true }));
+        return Promise.resolve(
+          ok({ seq: this.seq, counts: this.counts(), head: this.head, hasSnapshot: true }),
+        );
       },
       statusGetPage: (id: string, req: StatusPageRequest) => {
         this.record('statusGetPage', id, req);
@@ -258,7 +291,17 @@ export class FakeBridge {
       },
       branchList: (id: string) => {
         this.record('branchList', id);
-        return Promise.resolve(ok([]));
+        return Promise.resolve(ok(this.branches));
+      },
+      branchSwitch: (id: string, branchName: string) => {
+        this.record('branchSwitch', id, branchName);
+        this.seq += 1;
+        return Promise.resolve(ok({ statusSeq: this.seq }));
+      },
+      branchCreate: (id: string, req: BranchCreateRequest) => {
+        this.record('branchCreate', id, req);
+        this.seq += 1;
+        return Promise.resolve(ok({ statusSeq: this.seq }));
       },
       commandLogRecent: (limit: number) => {
         this.record('commandLogRecent', limit);

@@ -39,6 +39,8 @@ describe('エラーメッセージのマッピング', () => {
     ['fatal: Unable to create .git/index.lock: File exists.', '他の git プロセスが実行中です'],
     ['CONFLICT (content): Merge conflict in a.txt', 'コンフリクトが発生しました'],
     ['error: external filter git-lfs smudge filter lfs failed', 'Git LFS の処理に失敗しました'],
+    ["fatal: a branch named 'feature' already exists", '同名のブランチが既に存在します'],
+    ["fatal: 'origin/does-not-exist' is not a valid branch name", 'ブランチ元またはブランチ名が正しくありません'],
   ];
 
   it.each(cases)('%s を日本語へ写す', (stderr, expected) => {

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listBranches, listRemotes, resolveRepository } from '../src/index.js';
+import {
+  createBranch,
+  GitCommandError,
+  listBranches,
+  listRemotes,
+  resolveRepository,
+  switchBranch,
+} from '../src/index.js';
 import { commitAll, createFixture, type Fixture } from './fixture.js';
 
 describe('リポジトリとブランチ (対応表 #1 / #3 / #4)', () => {
@@ -69,5 +76,67 @@ describe('リポジトリとブランチ (対応表 #1 / #3 / #4)', () => {
     } finally {
       await upstream.cleanup();
     }
+  });
+});
+
+describe('ブランチ切替 (対応表 #12)', () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await createFixture();
+    await fx.write('a.txt', 'x');
+    await commitAll(fx, 'init');
+  });
+
+  afterEach(async () => {
+    await fx.cleanup();
+  });
+
+  it('別のブランチへ切り替えると HEAD が移る', async () => {
+    await fx.run('branch', 'feature');
+    await switchBranch(fx.ctx, 'feature');
+
+    const branches = await listBranches(fx.ctx);
+    const feature = branches.find((b) => b.shortName === 'feature');
+    expect(feature?.isHead).toBe(true);
+  });
+
+  it('作業ツリーの変更が上書きされる場合は失敗する', async () => {
+    await fx.run('branch', 'feature');
+    await fx.run('switch', 'feature');
+    await fx.write('a.txt', 'feature content');
+    await fx.run('commit', '-am', 'feature change');
+    await fx.run('switch', 'main');
+    await fx.write('a.txt', 'uncommitted change');
+
+    await expect(switchBranch(fx.ctx, 'feature')).rejects.toBeInstanceOf(GitCommandError);
+  });
+});
+
+describe('ブランチ作成 (対応表 #14)', () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await createFixture();
+    await fx.write('a.txt', 'x');
+    await commitAll(fx, 'init');
+  });
+
+  afterEach(async () => {
+    await fx.cleanup();
+  });
+
+  it('起点を指定して作成すると、そこから分岐して切り替わる', async () => {
+    await createBranch(fx.ctx, 'feature', 'main');
+
+    const branches = await listBranches(fx.ctx);
+    const feature = branches.find((b) => b.shortName === 'feature');
+    expect(feature?.isHead).toBe(true);
+    expect(feature?.oid).toBe(branches.find((b) => b.shortName === 'main')?.oid);
+  });
+
+  it('同名のブランチが既に存在すると失敗する', async () => {
+    await fx.run('branch', 'feature');
+    await expect(createBranch(fx.ctx, 'feature', 'main')).rejects.toBeInstanceOf(GitCommandError);
   });
 });

@@ -86,5 +86,9 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   );
   bind(CHANNELS.logGetPage, (id: string, skip: number) => service.logGetPage(id, skip));
   bind(CHANNELS.branchList, (id: string) => service.branchList(id));
+  bind(CHANNELS.branchSwitch, (id: string, branchName: string) => service.branchSwitch(id, branchName));
+  bind(CHANNELS.branchCreate, (id: string, req: Parameters<Service['branchCreate']>[1]) =>
+    service.branchCreate(id, req),
+  );
   bind(CHANNELS.commandLogRecent, (limit: number) => service.commandLogRecent(limit));
 }

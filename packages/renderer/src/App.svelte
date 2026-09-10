@@ -7,6 +7,7 @@
   import CommandLogPanel from './components/CommandLogPanel.svelte';
   import PaneSplitter from './components/PaneSplitter.svelte';
   import OptionsDialog from './components/OptionsDialog.svelte';
+  import CreateBranchDialog from './components/CreateBranchDialog.svelte';
   import FocusRefreshDialog from './components/FocusRefreshDialog.svelte';
   import { isDarkTheme } from './lib/theme.js';
 
@@ -211,7 +212,14 @@
   {/if}
 </div>
 
+<!--
+  オーバーレイ（position: fixed のもの）は必ずここ、shell の外に置く。
+  ペインの内側に置くと、DOM 上で後ろに来るペインが上に描画され、
+  背後のペインがクリックやマウスオーバーを拾ってしまう。
+  前後関係は tokens.css の --app-layer-* だけで決まる（この並び順には依存しない）。
+-->
 <ConfirmDialog />
+<CreateBranchDialog />
 <OptionsDialog open={optionsOpen} onclose={() => (optionsOpen = false)} />
 <FocusRefreshDialog />
 

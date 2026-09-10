@@ -8,6 +8,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   CHANNELS,
+  type BranchCreateRequest,
   type CommitRequest,
   type FeatherTreeBridge,
   type FocusRefreshPromptEvent,
@@ -58,6 +59,9 @@ const bridge: FeatherTreeBridge = {
     ipcRenderer.invoke(CHANNELS.diffGet, id, path, staged),
   logGetPage: (id: string, skip: number) => ipcRenderer.invoke(CHANNELS.logGetPage, id, skip),
   branchList: (id: string) => ipcRenderer.invoke(CHANNELS.branchList, id),
+  branchSwitch: (id: string, branchName: string) =>
+    ipcRenderer.invoke(CHANNELS.branchSwitch, id, branchName),
+  branchCreate: (id: string, req: BranchCreateRequest) => ipcRenderer.invoke(CHANNELS.branchCreate, id, req),
 
   commandLogRecent: (limit: number) => ipcRenderer.invoke(CHANNELS.commandLogRecent, limit),
 

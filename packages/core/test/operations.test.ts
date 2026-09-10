@@ -145,6 +145,39 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
     expect(session.getStatusSummary().counts.total).toBe(0);
   });
 
+  it('ブランチ切替後は status のみ再取得する（対応表 #12 → #2）', async () => {
+    await write('a.txt', 'x');
+    const session = await manager.open(dir);
+    const ops = new SessionOperations(session);
+    await ops.stage({ kind: 'all' });
+    await ops.commit('init');
+    await git(dir, ['branch', 'feature']);
+    const before = commandLog.size;
+
+    const result = await ops.switchBranch('feature');
+
+    expect(session.snapshot?.head.branch).toBe('feature');
+    expect(result.statusSeq).toBe(session.statusSeq);
+    const added = commandLog.recent(10).slice(0, commandLog.size - before);
+    expect(added.map((e) => e.args[0]).sort()).toEqual(['status', 'switch']);
+  });
+
+  it('ブランチ作成は起点から分岐して切替まで行う（対応表 #14 → #2）', async () => {
+    await write('a.txt', 'x');
+    const session = await manager.open(dir);
+    const ops = new SessionOperations(session);
+    await ops.stage({ kind: 'all' });
+    await ops.commit('init');
+    const before = commandLog.size;
+
+    const result = await ops.createBranch('feature', 'main');
+
+    expect(session.snapshot?.head.branch).toBe('feature');
+    expect(result.statusSeq).toBe(session.statusSeq);
+    const added = commandLog.recent(10).slice(0, commandLog.size - before);
+    expect(added.map((e) => e.args[0]).sort()).toEqual(['status', 'switch']);
+  });
+
   it('明示パスの上限を超えたら拒否する', async () => {
     await write('a.txt', 'x');
     const session = await manager.open(dir);

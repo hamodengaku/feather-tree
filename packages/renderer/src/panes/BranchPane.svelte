@@ -1,10 +1,7 @@
 <script lang="ts">
   import type { BranchDto } from '@feathertree/ipc';
-  import { ft } from '../bridge.js';
   import { app } from '../lib/appState.svelte.js';
   import PaneSplitter from '../components/PaneSplitter.svelte';
-
-  let branches = $state<BranchDto[]>([]);
 
   let liveLocalHeight = $state<number | null>(null);
   const localHeight = $derived(liveLocalHeight ?? app.settings?.branchLocalHeight ?? 180);
@@ -20,21 +17,39 @@
 
   const collapsed = $derived(app.settings?.branchPaneCollapsed ?? false);
 
-  // ブランチ一覧は status とは別に保持する。切替・作成・削除の実装は Phase 6。
-  $effect(() => {
-    const id = app.activeId;
-    if (id === null) {
-      branches = [];
-      return;
-    }
-    void ft.branchList(id).then((result) => {
-      if (result.ok) branches = [...result.value];
-    });
-  });
-
-  const locals = $derived(branches.filter((b) => !b.isRemote));
-  const remotes = $derived(branches.filter((b) => b.isRemote));
+  // ブランチ一覧は status とは別に保持する（更新ボタンとタブの切り替わりで取り直す）。
+  // 削除・名前変更は Phase 6 の残り。
+  const locals = $derived(app.branches.filter((b) => !b.isRemote));
+  const remotes = $derived(app.branches.filter((b) => b.isRemote));
   const head = $derived(app.summary?.head ?? null);
+
+  /**
+   * 現在のブランチの印は、一覧の isHead ではなく status 由来の HEAD で判定する。
+   * 切替・作成の直後は一覧を取り直さない（status のみ再取得）ので、
+   * 一覧側の isHead は古いままになるため。
+   */
+  function isCurrent(branch: BranchDto): boolean {
+    return !branch.isRemote && branch.shortName === app.currentBranch;
+  }
+
+  /**
+   * ダブルクリックでのブランチ切替（対応表 #12）。無確認で即実行する。
+   * リモートブランチはリモート名を除いたブランチ名を渡し、git の DWIM に
+   * ローカル追跡ブランチの作成を任せる。
+   */
+  function switchArg(branch: BranchDto): string {
+    if (!branch.isRemote) return branch.shortName;
+    const slash = branch.shortName.indexOf('/');
+    return slash === -1 ? branch.shortName : branch.shortName.slice(slash + 1);
+  }
+
+  async function handleSwitch(branch: BranchDto): Promise<void> {
+    if (isCurrent(branch) || app.busy) return;
+    await app.switchBranch(switchArg(branch));
+  }
+
+  /** 作成の起点が定まらない状態（detached HEAD など）では「＋」を押させない。 */
+  const canCreateBranch = $derived(app.currentBranch !== null);
 </script>
 
 {#if collapsed}
@@ -50,16 +65,7 @@
 {:else}
 <div class="pane">
   <section>
-    <div class="head-header">
-      <h2>現在の位置</h2>
-      <button
-        class="collapse-btn"
-        title="ブランチペインを閉じる"
-        onclick={() => void app.setBranchPaneCollapsed(true)}
-      >
-        ‹
-      </button>
-    </div>
+    <h2>現在の位置</h2>
     {#if head === null}
       <p class="empty">リポジトリを開いてください。</p>
     {:else}
@@ -81,17 +87,23 @@
     {/if}
   </section>
 
-  <div class="lists" style:grid-template-rows="{localHeight}px 6px 1fr" bind:clientHeight={listsHeight}>
+  <div class="lists" style:grid-template-rows="1fr 6px {localHeight}px" bind:clientHeight={listsHeight}>
     <section class="list">
-      <h2>ローカル <span class="count">{locals.length}</span></h2>
+      <div class="list-header">
+        <h2>リモート <span class="count">{remotes.length}</span></h2>
+        <button
+          class="collapse-btn"
+          title="ブランチペインを閉じる"
+          onclick={() => void app.setBranchPaneCollapsed(true)}
+        >
+          ‹
+        </button>
+      </div>
       <ul>
-        {#each locals as branch (branch.refName)}
-          <li class:current={branch.isHead}>
-            <span class="dot">{branch.isHead ? '●' : ''}</span>
+        {#each remotes as branch (branch.refName)}
+          <li title="ダブルクリックでこのブランチに切り替え" ondblclick={() => void handleSwitch(branch)}>
+            <span class="dot"></span>
             <span class="name" title={branch.subject}>{branch.shortName}</span>
-            {#if branch.ahead > 0}<span class="ahead">↑{branch.ahead}</span>{/if}
-            {#if branch.behind > 0}<span class="behind">↓{branch.behind}</span>{/if}
-            {#if branch.gone}<span class="gone">gone</span>{/if}
           </li>
         {/each}
       </ul>
@@ -102,17 +114,35 @@
       value={localHeight}
       min={80}
       max={maxLocalHeight}
+      invert
       onchange={(h) => (liveLocalHeight = h)}
       oncommit={commitLocalHeight}
     />
 
     <section class="list">
-      <h2>リモート <span class="count">{remotes.length}</span></h2>
+      <div class="list-header">
+        <h2>ローカル <span class="count">{locals.length}</span></h2>
+        <button
+          class="new-branch-btn"
+          title="新しいブランチを作成"
+          disabled={!canCreateBranch}
+          onclick={() => app.openCreateBranch()}
+        >
+          ＋
+        </button>
+      </div>
       <ul>
-        {#each remotes as branch (branch.refName)}
-          <li>
-            <span class="dot"></span>
+        {#each locals as branch (branch.refName)}
+          <li
+            class:current={isCurrent(branch)}
+            title="ダブルクリックでこのブランチに切り替え"
+            ondblclick={() => void handleSwitch(branch)}
+          >
+            <span class="dot">{isCurrent(branch) ? '●' : ''}</span>
             <span class="name" title={branch.subject}>{branch.shortName}</span>
+            {#if branch.ahead > 0}<span class="ahead">↑{branch.ahead}</span>{/if}
+            {#if branch.behind > 0}<span class="behind">↓{branch.behind}</span>{/if}
+            {#if branch.gone}<span class="gone">gone</span>{/if}
           </li>
         {/each}
       </ul>
@@ -159,7 +189,7 @@
     border-bottom: 1px solid var(--app-border-subtle);
   }
 
-  .head-header {
+  .list-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -167,10 +197,32 @@
     border-bottom: 1px solid var(--app-border-subtle);
   }
 
-  .head-header h2 {
+  .list-header h2 {
     padding: 6px 0 6px 8px;
     background: none;
     border-bottom: none;
+  }
+
+  .new-branch-btn {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    color: var(--app-text-secondary);
+    cursor: pointer;
+    font-size: var(--app-font-size-ui);
+    line-height: 1;
+    padding: 4px 8px;
+    margin-right: 4px;
+  }
+
+  .new-branch-btn:hover:not(:disabled) {
+    color: var(--app-text-primary);
+    background: var(--app-bg-hover);
+  }
+
+  .new-branch-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
 
   .collapse-btn,
@@ -247,6 +299,7 @@
     gap: 5px;
     height: var(--app-metric-row-height);
     padding: 0 8px;
+    cursor: pointer;
     white-space: nowrap;
   }
 

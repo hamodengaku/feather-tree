@@ -43,6 +43,8 @@ export const CHANNELS = {
   diffGet: 'diff:get',
   logGetPage: 'log:getPage',
   branchList: 'branch:list',
+  branchSwitch: 'branch:switch',
+  branchCreate: 'branch:create',
 
   commandLogRecent: 'diag:commandLog',
 
@@ -270,6 +272,19 @@ export interface BranchDto {
   readonly subject: string;
 }
 
+export interface BranchSwitchResultDto {
+  readonly statusSeq: number;
+}
+
+export interface BranchCreateRequest {
+  readonly name: string;
+  readonly startPoint: string;
+}
+
+export interface BranchCreateResultDto {
+  readonly statusSeq: number;
+}
+
 // ---------------------------------------------------------------- 診断と通知
 
 export interface CommandLogEntryDto {
@@ -333,6 +348,8 @@ export interface FeatherTreeBridge {
   diffGet(id: string, path: string, staged: boolean): Promise<Result<FileDiffDto | null>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
   branchList(id: string): Promise<Result<readonly BranchDto[]>>;
+  branchSwitch(id: string, branchName: string): Promise<Result<BranchSwitchResultDto>>;
+  branchCreate(id: string, req: BranchCreateRequest): Promise<Result<BranchCreateResultDto>>;
 
   commandLogRecent(limit: number): Promise<Result<readonly CommandLogEntryDto[]>>;
 

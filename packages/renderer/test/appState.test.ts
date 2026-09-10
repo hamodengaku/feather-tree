@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FeatherTreeBridge } from '@feathertree/ipc';
 import { AppState } from '../src/lib/appState.svelte.js';
-import { FakeBridge, entry, installDocumentStub } from './fakeBridge.js';
+import { FakeBridge, branch, entry, installDocumentStub } from './fakeBridge.js';
 
 installDocumentStub();
 
@@ -275,6 +275,121 @@ describe('ステージングとコミット', () => {
 
     expect(app.selected?.path).toBe('a.txt');
     expect(bridge.lastArgsOf('diffGet')).toEqual(['s1', 'a.txt', false]);
+  });
+});
+
+describe('更新（リロード）の対象', () => {
+  it('更新ボタンは表示物をすべて取り直す（非アクティブ中の外部操作を拾うため）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.branches = [branch('main', { isHead: true })];
+    });
+    expect(app.branches.map((b) => b.shortName)).toEqual(['main']);
+
+    // 非アクティブの間に、ターミナル等でブランチが増えた状況
+    bridge.branches = [branch('main', { isHead: true }), branch('obana/topic')];
+    const summariesBefore = bridge.countOf('statusGetSummary');
+    const branchesBefore = bridge.countOf('branchList');
+
+    await app.refresh('full');
+
+    expect(bridge.lastArgsOf('sessionRefresh')).toEqual(['s1', 'full']);
+    expect(bridge.countOf('statusGetSummary')).toBeGreaterThan(summariesBefore);
+    expect(bridge.countOf('branchList')).toBeGreaterThan(branchesBefore);
+    expect(app.branches.map((b) => b.shortName)).toEqual(['main', 'obana/topic']);
+  });
+
+  it('更新してもユーザーの入力は消さない', async () => {
+    const { app } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+    app.commitMessage = '書きかけのメッセージ';
+    app.amend = true;
+    app.createBranchOpen = true;
+
+    await app.refresh('full');
+
+    expect(app.commitMessage).toBe('書きかけのメッセージ');
+    expect(app.amend).toBe(true);
+    expect(app.createBranchOpen).toBe(true);
+  });
+
+  it('書き込み操作の後はブランチ一覧を取り直さない（main が取り直していないため）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+    });
+    const before = bridge.countOf('branchList');
+
+    await app.stage({ kind: 'paths', paths: ['a.txt'] });
+
+    expect(bridge.countOf('branchList')).toBe(before);
+  });
+
+  it('タブを戻したときはキャッシュから復元し、取りに行かない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.branches = [branch('main', { isHead: true })];
+    });
+
+    await app.activate('s2');
+    const afterFirstSwitch = bridge.countOf('branchList');
+    await app.activate('s1');
+
+    expect(bridge.countOf('branchList')).toBe(afterFirstSwitch);
+    expect(app.branches.map((b) => b.shortName)).toEqual(['main']);
+  });
+});
+
+describe('ブランチ操作', () => {
+  it('ブランチ切替は確認なしで即実行し、一覧を更新する', async () => {
+    const { app, bridge } = await boot();
+    const pagesBefore = bridge.countOf('statusGetSummary');
+
+    await app.switchBranch('feature');
+
+    expect(bridge.lastArgsOf('branchSwitch')).toEqual(['s1', 'feature']);
+    expect(bridge.countOf('statusGetSummary')).toBeGreaterThan(pagesBefore);
+    expect(app.error).toBeNull();
+  });
+
+  it('ブランチ作成に成功するとダイアログを閉じる', async () => {
+    const { app, bridge } = await boot();
+    app.openCreateBranch();
+
+    await app.createBranch('obana/topic', 'main', () => app.closeCreateBranch());
+
+    expect(bridge.lastArgsOf('branchCreate')).toEqual(['s1', { name: 'obana/topic', startPoint: 'main' }]);
+    expect(app.createBranchOpen).toBe(false);
+  });
+
+  it('ブランチ作成が失敗したらダイアログを閉じずエラーを保持する', async () => {
+    const bridge = new FakeBridge();
+    const failing: FeatherTreeBridge = {
+      ...bridge.build(),
+      branchCreate: () =>
+        Promise.resolve({ ok: false, error: { kind: 'git-failed', message: '同名のブランチが既に存在します' } }),
+    };
+    const app = await load(failing);
+    app.openCreateBranch();
+
+    await app.createBranch('main', 'main', () => app.closeCreateBranch());
+
+    expect(app.createBranchOpen).toBe(true);
+    expect(app.error?.message).toBe('同名のブランチが既に存在します');
+  });
+
+  it('今いるブランチを作成ダイアログの既定値の元にする', async () => {
+    const { app } = await boot();
+    expect(app.currentBranch).toBe('main');
+  });
+
+  it('detached HEAD では起点が定まらないので作成ダイアログを開かない', async () => {
+    const { app } = await boot((b) => {
+      b.head = { oid: 'abc', branch: null, detached: true, upstream: null, ahead: 0, behind: 0 };
+    });
+
+    app.openCreateBranch();
+
+    expect(app.currentBranch).toBeNull();
+    expect(app.createBranchOpen).toBe(false);
   });
 });
 
