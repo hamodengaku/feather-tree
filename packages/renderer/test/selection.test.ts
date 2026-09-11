@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { FileEntryDto } from '@feathertree/ipc';
-import { EMPTY_SELECTION, nextSelection, type SelectionState } from '../src/lib/selection.js';
+import {
+  EMPTY_SELECTION,
+  nextSelection,
+  nextSelectionAfterRemoval,
+  type SelectionState,
+} from '../src/lib/selection.js';
 import { entry } from './fakeBridge.js';
 
 const ENTRIES: (FileEntryDto | undefined)[] = [
@@ -56,5 +61,42 @@ describe('nextSelection', () => {
     const next = nextSelection(EMPTY_SELECTION, { index: 2, path: 'c.txt', ctrlKey: false, shiftKey: true }, ENTRIES);
     expect(next.selected).toEqual(new Set(['c.txt']));
     expect(next.anchorIndex).toBe(2);
+  });
+});
+
+describe('ステージ後に選ぶファイル', () => {
+  it('1 行下を返す', () => {
+    expect(nextSelectionAfterRemoval(ENTRIES, ['b.txt'])).toBe('c.txt');
+  });
+
+  it('一番下なら 1 行上を返す', () => {
+    expect(nextSelectionAfterRemoval(ENTRIES, ['e.txt'])).toBe('d.txt');
+  });
+
+  it('複数消えるときは一番下の次を返す', () => {
+    expect(nextSelectionAfterRemoval(ENTRIES, ['b.txt', 'c.txt', 'd.txt'])).toBe('e.txt');
+  });
+
+  it('複数消えて下が無ければ一番上の前を返す', () => {
+    expect(nextSelectionAfterRemoval(ENTRIES, ['c.txt', 'd.txt', 'e.txt'])).toBe('b.txt');
+  });
+
+  it('全部消えるなら null', () => {
+    const all = ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt'];
+    expect(nextSelectionAfterRemoval(ENTRIES, all)).toBeNull();
+  });
+
+  it('一覧に無いパスなら null（何も動かさない）', () => {
+    expect(nextSelectionAfterRemoval(ENTRIES, ['zzz.txt'])).toBeNull();
+  });
+
+  it('未ロードの穴は飛ばして次を探す', () => {
+    const partial: (FileEntryDto | undefined)[] = [entry('a.txt'), undefined, entry('c.txt')];
+    expect(nextSelectionAfterRemoval(partial, ['a.txt'])).toBe('c.txt');
+  });
+
+  it('前後がすべて未ロードなら null（パスが分からないので選べない）', () => {
+    const partial: (FileEntryDto | undefined)[] = [undefined, entry('b.txt'), undefined];
+    expect(nextSelectionAfterRemoval(partial, ['b.txt'])).toBeNull();
   });
 });

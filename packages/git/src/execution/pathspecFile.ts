@@ -49,3 +49,28 @@ export async function withMessageFile<T>(
     await rm(file, { force: true }).catch(() => undefined);
   }
 }
+
+/**
+ * `git apply` に渡すパッチを一時ファイル経由で渡す（対応表 #33 / #34）。
+ *
+ * 実行基盤が stdin を持たない（stdio の 0 は ignore）ため、パッチは必ずファイルにする。
+ * withMessageFile と違い **改行変換を一切しない**。CR は diff 本文の一部（CRLF ファイル）で、
+ * LF へ正規化するとパッチが壊れて `corrupt patch` になる。
+ */
+export async function withPatchFile<T>(
+  tempDir: string,
+  patch: string,
+  fn: (patchFile: string) => Promise<T>,
+): Promise<T> {
+  await mkdir(tempDir, { recursive: true });
+  const file = join(tempDir, `patch-${randomBytes(8).toString('hex')}.patch`);
+
+  // UTF-8・BOM なし・内容そのまま
+  await writeFile(file, patch, { encoding: 'utf8' });
+
+  try {
+    return await fn(file);
+  } finally {
+    await rm(file, { force: true }).catch(() => undefined);
+  }
+}

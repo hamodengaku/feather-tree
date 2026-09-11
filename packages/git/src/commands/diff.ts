@@ -55,7 +55,7 @@ export async function getUntrackedFileDiff(
   const buf = await readFile(absolute);
 
   if (looksBinary(buf)) {
-    return { path, oldPath: null, binary: true, hunks: [], truncated: false };
+    return { path, oldPath: null, binary: true, hunks: [], truncated: false, preamble: [] };
   }
 
   return buildAddedFileDiff(

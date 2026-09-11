@@ -20,6 +20,9 @@ import { mapGitStderr, type MappedError } from '../policy/errorMapping.js';
 import type { AppSettings } from '../settings/schema.js';
 import { pageEntries, type StatusFilter, type StatusPage, type StatusSummary } from './statusView.js';
 
+/** パッチ適用のために diff を取り直すときの行数上限（設定の上限値と同じ）。 */
+const PATCH_MAX_LINES = 200000;
+
 export interface SessionDeps {
   readonly gitPath: string;
   readonly tempDir: string;
@@ -165,6 +168,34 @@ export class RepositorySession {
     const settings = this.#deps.settings();
     const options = { contextLines: settings.diffContextLines, maxLines: settings.diffMaxLines };
 
+    const entry = this.#status?.entries.find((e) => e.path === path);
+    if (entry?.kind === 'untracked' && !staged) {
+      return this.track(['read-untracked', path], () =>
+        getUntrackedFileDiff(this.context(signal), path, options),
+      );
+    }
+
+    return this.track(['diff', path], () => getFileDiff(this.context(signal), path, staged, options));
+  }
+
+  /** パッチ生成に使う文脈行数。diff の取得と apply のフラグを揃えるために公開する。 */
+  get diffContextLines(): number {
+    return this.#deps.settings().diffContextLines;
+  }
+
+  /**
+   * パッチ適用の直前に取り直す diff（対応表 #33 / #34）。
+   *
+   * 表示用の diffMaxLines では足りない場合がある。パッチは欠けの無いデータからしか
+   * 作れないので、ここだけ上限を大きく取る。文脈行数は表示と揃える
+   * （揃えないと renderer が送ってきた hunk の添字と対応が取れない）。
+   */
+  async getDiffForPatch(path: string, staged: boolean, signal?: AbortSignal): Promise<FileDiff | null> {
+    const settings = this.#deps.settings();
+    const options = { contextLines: settings.diffContextLines, maxLines: PATCH_MAX_LINES };
+
+    // 未追跡は表示と同じ合成 diff を返す。preamble が空なので
+    // 呼び出し側の canBuildPatch が「パッチ生成不可」と正しく答えられる
     const entry = this.#status?.entries.find((e) => e.path === path);
     if (entry?.kind === 'untracked' && !staged) {
       return this.track(['read-untracked', path], () =>

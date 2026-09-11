@@ -2,6 +2,7 @@
   import type { BranchDto } from '@feathertree/ipc';
   import { app } from '../lib/appState.svelte.js';
   import PaneSplitter from '../components/PaneSplitter.svelte';
+  import FileContextMenu from '../components/FileContextMenu.svelte';
 
   let liveLocalHeight = $state<number | null>(null);
   const localHeight = $derived(liveLocalHeight ?? app.settings?.branchLocalHeight ?? 180);
@@ -46,6 +47,19 @@
   async function handleSwitch(branch: BranchDto): Promise<void> {
     if (isCurrent(branch) || app.busy) return;
     await app.switchBranch(switchArg(branch));
+  }
+
+  /**
+   * ローカルブランチの右クリックメニュー（マージ）。
+   * リモートは fetch/pull が未実装のため対象にしない。
+   */
+  let contextMenu = $state<{ x: number; y: number; branch: BranchDto } | null>(null);
+
+  function handleContextMenu(branch: BranchDto, event: MouseEvent): void {
+    event.preventDefault();
+    // 現在のブランチ自身は取り込めないのでメニューを出さない
+    if (isCurrent(branch)) return;
+    contextMenu = { x: event.clientX, y: event.clientY, branch };
   }
 
   /** 作成の起点が定まらない状態（detached HEAD など）では「＋」を押させない。 */
@@ -135,8 +149,9 @@
         {#each locals as branch (branch.refName)}
           <li
             class:current={isCurrent(branch)}
-            title="ダブルクリックでこのブランチに切り替え"
+            title="ダブルクリックでこのブランチに切り替え／右クリックでマージ"
             ondblclick={() => void handleSwitch(branch)}
+            oncontextmenu={(event) => handleContextMenu(branch, event)}
           >
             <span class="dot">{isCurrent(branch) ? '●' : ''}</span>
             <span class="name" title={branch.subject}>{branch.shortName}</span>
@@ -149,6 +164,21 @@
     </section>
   </div>
 </div>
+{/if}
+
+{#if contextMenu !== null}
+  {@const menu = contextMenu}
+  <FileContextMenu
+    x={menu.x}
+    y={menu.y}
+    onclose={() => (contextMenu = null)}
+    actions={[
+      {
+        label: menu.branch.shortName + " をマージ",
+        onclick: () => void app.mergeBranch(menu.branch.shortName),
+      },
+    ]}
+  />
 {/if}
 
 <style>

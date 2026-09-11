@@ -6,6 +6,7 @@ import type {
   EnvironmentDto,
   FileDiffDto,
   FileEntryDto,
+  HunkSelectionDto,
   FtErrorDto,
   OperationTargetDto,
   Result,
@@ -17,6 +18,7 @@ import type {
 import { SvelteMap } from 'svelte/reactivity';
 import { ft } from '../bridge.js';
 import { applyTheme } from './theme.js';
+import { nextSelectionAfterRemoval } from './selection.js';
 
 /** 1 セクションが一度に取得する件数。仮想化しているので画面分 + 余裕で足りる。 */
 const PAGE_LIMIT = 200;
@@ -75,6 +77,14 @@ export class AppState {
   selected = $state<SelectedFile | null>(null);
   diff = $state<FileDiffDto | null>(null);
   diffLoading = $state(false);
+
+  /**
+   * diff 要求の世代番号。$state にしない（描画に使わないため）。
+   *
+   * diffGet は ipcRenderer.invoke なので途中で止められない。古い応答が後から
+   * 届いて新しい選択の diff を上書きしないよう、最後に投げた要求だけを採る。
+   */
+  #diffSeq = 0;
 
   commitMessage = $state('');
   amend = $state(false);
@@ -187,7 +197,7 @@ export class AppState {
     this.changes = cached.changes;
     this.selected = cached.selected;
     this.branches = cached.branches;
-    this.diff = null;
+    this.#invalidateDiff();
     if (cached.selected !== null) await this.loadDiff(cached.selected);
   }
 
@@ -268,7 +278,7 @@ export class AppState {
 
     if (this.selected !== null && !this.#stillPresent(this.selected)) {
       this.selected = null;
-      this.diff = null;
+      this.#invalidateDiff();
     } else if (this.selected !== null) {
       await this.loadDiff(this.selected);
     }
@@ -302,14 +312,23 @@ export class AppState {
   async loadDiff(file: SelectedFile): Promise<void> {
     const id = this.activeId;
     if (id === null) return;
+    const seq = (this.#diffSeq += 1);
     this.diffLoading = true;
     try {
       const result = await this.#ft.diffGet(id, file.path, file.staged);
-      if (result.ok) this.diff = result.value;
-      else this.diff = null;
+      // 追い越された要求の応答は捨てる
+      if (seq !== this.#diffSeq) return;
+      this.diff = result.ok ? result.value : null;
     } finally {
-      this.diffLoading = false;
+      // 新しい要求が走っているなら、その読み込み表示を消さない
+      if (seq === this.#diffSeq) this.diffLoading = false;
     }
+  }
+
+  /** 飛んでいる diff 要求を無効にしてから差分を消す。 */
+  #invalidateDiff(): void {
+    this.#diffSeq += 1;
+    this.diff = null;
   }
 
   async reloadCommandLog(): Promise<void> {
@@ -400,11 +419,38 @@ export class AppState {
   // ---------------------------------------------------------------- 書き込み操作
 
   stage(target: OperationTargetDto): Promise<void> {
+    this.#moveSelectionPastTarget(target, false);
     return this.#operate(() => this.#ft.stage(this.#id(), target));
   }
 
   unstage(target: OperationTargetDto): Promise<void> {
+    this.#moveSelectionPastTarget(target, true);
     return this.#operate(() => this.#ft.unstage(this.#id(), target));
+  }
+
+  /**
+   * ステージ／アンステージしたファイルは一覧から消えるので、その 1 行下
+   * （無ければ 1 行上）へ選択を移す。連続して処理するときに手が止まらないようにする。
+   *
+   * 一覧が変わる**前**に次の行を決めておく必要があるので、操作を投げる直前に呼ぶ。
+   * 全件操作（すべてステージ／すべて戻す）は移動先が無いので選択を解除する。
+   *
+   * @param staged 操作元がステージ済み側か。
+   */
+  #moveSelectionPastTarget(target: OperationTargetDto, staged: boolean): void {
+    if (this.selected === null || this.selected.staged !== staged) return;
+
+    if (target.kind !== 'paths') {
+      // 範囲指定はセクションごと空になりうる。素直に選択を解除する
+      this.selected = null;
+      this.#invalidateDiff();
+      return;
+    }
+
+    const section = staged ? this.staged : this.changes;
+    const next = nextSelectionAfterRemoval(section.entries, target.paths);
+    this.selected = next === null ? null : { path: next, staged };
+    if (next === null) this.#invalidateDiff();
   }
 
   /**
@@ -412,14 +458,29 @@ export class AppState {
    *
    * ブラウザは同じ要素で click, click, dblclick の順に発火するため、dblclick が届く時点で
    * 既に2回の click（=onselect）が処理済みで、this.selected はこのファイルの現在の staged
-   * 値を指している。reloadActive() の #stillPresent() が移動後の正しいセクションを見るように、
-   * 呼び出し前に selected を反転させておく。
+   * 値を指している。移動先の決定は stage() / unstage() 側が行う。
    */
   async toggleStage(file: SelectedFile): Promise<void> {
-    this.selected = { path: file.path, staged: !file.staged };
     const target: OperationTargetDto = { kind: 'paths', paths: [file.path] };
     if (file.staged) await this.unstage(target);
     else await this.stage(target);
+  }
+
+  /**
+   * hunk / 行単位のステージ（対応表 #33）。確認不要。
+   * 同じファイルを見ながら残りを処理できるよう、選択は動かさない。
+   */
+  stageHunks(hunks: readonly HunkSelectionDto[]): Promise<void> {
+    const path = this.selected?.path;
+    if (path === undefined || hunks.length === 0) return Promise.resolve();
+    return this.#operate(() => this.#ft.stageHunks(this.#id(), { path, hunks }));
+  }
+
+  /** hunk / 行単位のアンステージ（対応表 #34）。 */
+  unstageHunks(hunks: readonly HunkSelectionDto[]): Promise<void> {
+    const path = this.selected?.path;
+    if (path === undefined || hunks.length === 0) return Promise.resolve();
+    return this.#operate(() => this.#ft.unstageHunks(this.#id(), { path, hunks }));
   }
 
   discard(target: OperationTargetDto): Promise<void> {
@@ -474,6 +535,36 @@ export class AppState {
       undefined,
       onSuccess,
     );
+  }
+
+  /**
+   * 現在のブランチへ branchName を取り込む。確認が必要（決定 16）。
+   * 確認の判定は main が行うので、ここは needs-confirmation を受けて再送するだけ。
+   */
+  mergeBranch(branchName: string): Promise<void> {
+    return this.#operate(
+      (confirmed) => this.#ft.branchMerge(this.#id(), branchName, confirmed),
+      () => this.#operate(() => this.#ft.branchMerge(this.#id(), branchName, true)),
+    );
+  }
+
+  /**
+   * OS 既定のアプリでファイルを開く。どのアプリで開くかは Windows の関連付けに任せる。
+   *
+   * リポジトリの状態は変わらないので、#operate ではなく軽い経路を使う
+   * （成功のたびに一覧と差分を取り直すのは無駄。決定: アイドル時に git を起動しない）。
+   */
+  openFile(path: string): Promise<void> {
+    return this.#run(async () => {
+      this.#check(await this.#ft.shellOpenPath(this.#id(), path));
+    });
+  }
+
+  /** エクスプローラでそのファイルを選択した状態で開く。状態は変わらない。 */
+  showInFolder(path: string): Promise<void> {
+    return this.#run(async () => {
+      this.#check(await this.#ft.shellShowInFolder(this.#id(), path));
+    });
   }
 
   dismissError(): void {
@@ -566,7 +657,7 @@ export class AppState {
     this.changes = emptySection();
     this.branches = [];
     this.selected = null;
-    this.diff = null;
+    this.#invalidateDiff();
     this.commitMessage = '';
     this.amend = false;
   }

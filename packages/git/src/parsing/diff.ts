@@ -46,6 +46,7 @@ export function parseUnifiedDiff(stdout: string, options: DiffParseOptions = {})
         binary: current.binary,
         hunks: current.hunks,
         truncated: current.truncated,
+        preamble: current.preamble,
       });
     }
     current = null;
@@ -60,12 +61,18 @@ export function parseUnifiedDiff(stdout: string, options: DiffParseOptions = {})
         binary: false,
         hunks: [],
         truncated: false,
+        preamble: [raw],
       };
       emitted = 0;
       continue;
     }
 
     if (current === null) continue;
+
+    // 最初の @@ より前の行は、パッチ再構成のために生のまま保存しておく
+    // （--- / +++ / new file mode / index / similarity index / rename from|to / Binary files）。
+    // 下の分岐は path などの抽出用で、ここでの保存とは独立している。
+    if (hunk === null && !HUNK_HEADER.test(raw)) current.preamble.push(raw);
 
     if (raw.startsWith('--- ')) {
       const p = stripPrefix(raw.slice(4));
@@ -169,6 +176,8 @@ export function buildAddedFileDiff(path: string, content: string, options: DiffP
     binary: false,
     hunks: kept.length > 0 ? [hunk] : [],
     truncated: all.length > kept.length,
+    // git 由来ではないのでファイルヘッダを持たない。これが hunk 操作不可の印になる
+    preamble: [],
   };
 }
 
@@ -184,6 +193,7 @@ interface MutableFileDiff {
   binary: boolean;
   hunks: DiffHunk[];
   truncated: boolean;
+  preamble: string[];
 }
 
 interface MutableHunk {

@@ -47,3 +47,18 @@ export async function createBranch(ctx: GitContext, name: string, startPoint: st
   );
   if (exit.code !== 0) throw new GitCommandError(['switch', '-c'], exit.code, exit.stderr);
 }
+
+/**
+ * 対応表 #35: 現在のブランチへ <branchName> をマージする。
+ *
+ * fast-forward を禁止しない（`--no-ff` を付けない）。git の既定に従う。
+ * コンフリクトは exit != 0 で返るので、呼び出し側でエラーとして扱う
+ * （自動 abort はしない。競合ファイルは作業ツリーに残す）。
+ */
+export async function mergeBranch(ctx: GitContext, branchName: string): Promise<void> {
+  const { exit } = await runGitText(
+    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'merge', branchName] },
+    ctx.signal,
+  );
+  if (exit.code !== 0) throw new GitCommandError(['merge'], exit.code, exit.stderr);
+}

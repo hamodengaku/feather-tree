@@ -4,6 +4,7 @@ import {
   GitCommandError,
   listBranches,
   listRemotes,
+  mergeBranch,
   resolveRepository,
   switchBranch,
 } from '../src/index.js';
@@ -138,5 +139,68 @@ describe('ブランチ作成 (対応表 #14)', () => {
   it('同名のブランチが既に存在すると失敗する', async () => {
     await fx.run('branch', 'feature');
     await expect(createBranch(fx.ctx, 'feature', 'main')).rejects.toBeInstanceOf(GitCommandError);
+  });
+});
+
+describe('マージ (対応表 #35)', () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await createFixture();
+    await fx.write('a.txt', 'base');
+    await commitAll(fx, 'init');
+  });
+
+  afterEach(async () => {
+    await fx.cleanup();
+  });
+
+  it('fast-forward できるときは新しいコミットが取り込まれる', async () => {
+    await createBranch(fx.ctx, 'feature', 'main');
+    await fx.write('b.txt', 'from feature');
+    await commitAll(fx, 'feature work');
+    await switchBranch(fx.ctx, 'main');
+
+    await mergeBranch(fx.ctx, 'feature');
+
+    const branches = await listBranches(fx.ctx);
+    const main = branches.find((b) => b.shortName === 'main');
+    const feature = branches.find((b) => b.shortName === 'feature');
+    // fast-forward なので main は feature と同じコミットを指す
+    expect(main?.oid).toBe(feature?.oid);
+  });
+
+  it('両方が進んでいるときはマージコミットができる', async () => {
+    await createBranch(fx.ctx, 'feature', 'main');
+    await fx.write('b.txt', 'from feature');
+    await commitAll(fx, 'feature work');
+    await switchBranch(fx.ctx, 'main');
+    await fx.write('c.txt', 'from main');
+    await commitAll(fx, 'main work');
+
+    await mergeBranch(fx.ctx, 'feature');
+
+    const parents = (await fx.run('log', '-1', '--format=%P')).trim();
+    // マージコミットは親が 2 つ
+    expect(parents.split(' ')).toHaveLength(2);
+  });
+
+  it('コンフリクトすると失敗する（自動 abort はしない）', async () => {
+    await createBranch(fx.ctx, 'feature', 'main');
+    await fx.write('a.txt', 'feature side');
+    await commitAll(fx, 'feature edit');
+    await switchBranch(fx.ctx, 'main');
+    await fx.write('a.txt', 'main side');
+    await commitAll(fx, 'main edit');
+
+    await expect(mergeBranch(fx.ctx, 'feature')).rejects.toBeInstanceOf(GitCommandError);
+
+    // 競合したままの状態が残る（利用者が解決するか自分で abort する）
+    const status = await fx.run('status', '--porcelain=v2', '-z');
+    expect(status.startsWith('u ')).toBe(true);
+  });
+
+  it('存在しないブランチのマージは失敗する', async () => {
+    await expect(mergeBranch(fx.ctx, 'nope')).rejects.toBeInstanceOf(GitCommandError);
   });
 });

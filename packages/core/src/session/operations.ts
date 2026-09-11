@@ -1,12 +1,17 @@
 import {
+  applyHunks,
+  canBuildPatch,
   commit as gitCommit,
   createBranch as gitCreateBranch,
   discardStagedAndWorktree,
   discardWorktree,
+  mergeBranch as gitMergeBranch,
   removeUntracked,
   stagePaths,
   switchBranch as gitSwitchBranch,
   unstagePaths,
+  PatchBuildError,
+  type PatchDirection,
 } from '@feathertree/git';
 import type { DestructiveAction } from '../policy/destructiveActions.js';
 import type { RepositorySession } from './repositorySession.js';
@@ -29,6 +34,29 @@ export class NoSnapshotError extends Error {
     super('変更一覧が未取得です。更新してからやり直してください。');
     this.name = 'NoSnapshotError';
   }
+}
+
+/**
+ * View が表示していた diff が、ディスク上の実際の状態と食い違っている。
+ *
+ * 決定 14 によりファイル監視もポーリングもしないので、表示中の diff は古くなりうる。
+ * 古い行番号のまま apply すると、git が文脈を頼りに**別の場所へ**当ててしまうため、
+ * 適用の直前に取り直して照合する。
+ */
+export class StaleDiffError extends Error {
+  constructor() {
+    super('表示中の差分が古くなっています。一覧を更新してからやり直してください。');
+    this.name = 'StaleDiffError';
+  }
+}
+
+/** renderer から届く hunk / 行の指定。header と lineCount はズレ検出用の指紋。 */
+export interface HunkSelection {
+  readonly index: number;
+  readonly header: string;
+  readonly lineCount: number;
+  /** hunk.lines のインデックス。null なら hunk 全体。 */
+  readonly lines: readonly number[] | null;
 }
 
 /**
@@ -62,6 +90,75 @@ export class SessionOperations {
     );
     await this.#session.refreshStatus(signal);
     return { affected: paths.length, statusSeq: this.#session.statusSeq };
+  }
+
+  /**
+   * 対応表 #33: 選択された hunk / 行だけを index に入れる。確認不要
+   * （`apply --cached` は作業ツリーに触れないので不可逆ではない）。
+   */
+  stageHunks(
+    path: string,
+    hunks: readonly HunkSelection[],
+    signal?: AbortSignal,
+  ): Promise<OperationOutcome> {
+    return this.#applyHunks(path, hunks, 'stage', signal);
+  }
+
+  /** 対応表 #34: 選択された hunk / 行だけを index から戻す。確認不要。 */
+  unstageHunks(
+    path: string,
+    hunks: readonly HunkSelection[],
+    signal?: AbortSignal,
+  ): Promise<OperationOutcome> {
+    return this.#applyHunks(path, hunks, 'unstage', signal);
+  }
+
+  /**
+   * 適用の直前に diff を取り直し、View が見ていたものと同じ形か確かめてから当てる
+   * （docs/02-git-command-map.md「複数プロセスを許可する例外」）。
+   *
+   * パッチは**取り直した側**から作る。View が送ってくるのは座標と指紋だけで、
+   * パッチ本体は送らせない（送らせると対象ファイルを renderer が決められてしまい、
+   * パスの検証を迂回できる。docs/00-decisions.md「やらないこと」）。
+   */
+  async #applyHunks(
+    path: string,
+    hunks: readonly HunkSelection[],
+    direction: PatchDirection,
+    signal?: AbortSignal,
+  ): Promise<OperationOutcome> {
+    if (hunks.length === 0) throw new PatchBuildError('empty-selection');
+
+    const staged = direction === 'unstage';
+    const fresh = await this.#session.getDiffForPatch(path, staged, signal);
+    if (fresh === null) throw new StaleDiffError();
+
+    // git を起動する前に、そもそも hunk 単位で扱える diff かを見る。
+    // 判定は DTO の hunkStageable と同じ関数なので、UI の出し分けとずれない
+    const refusal = canBuildPatch(fresh);
+    if (refusal !== null) throw new PatchBuildError(refusal);
+
+    for (const request of hunks) {
+      const target = fresh.hunks[request.index];
+      // ヘッダには開始行・両側の行数・関数名が入っているので、編集されればまず変わる
+      if (
+        target === undefined ||
+        target.header !== request.header ||
+        target.lines.length !== request.lineCount
+      ) {
+        throw new StaleDiffError();
+      }
+    }
+
+    const contextLines = this.#session.diffContextLines;
+    const picks = hunks.map((h) => ({ index: h.index, lines: h.lines }));
+
+    const affected = await this.#session.track(['apply', '--cached'], () =>
+      applyHunks(this.#session.context(signal), fresh, picks, direction, { contextLines }),
+    );
+
+    await this.#session.refreshStatus(signal);
+    return { affected, statusSeq: this.#session.statusSeq };
   }
 
   /**
@@ -150,9 +247,24 @@ export class SessionOperations {
     return { statusSeq: this.#session.statusSeq };
   }
 
+  /**
+   * 対応表 #35。現在のブランチへ <branchName> を取り込む。確認が必要（決定 16）。
+   *
+   * 切替・作成と違い、ブランチ一覧も取り直す。マージで HEAD が進むと
+   * 一覧側の ahead/behind が実際とずれるため（docs/02-git-command-map.md「マージ後の反映」）。
+   * コンフリクトは git が exit != 0 で返し、競合ファイルは作業ツリーに残る。
+   * 自動 abort はしない（利用者が外部ツールで解決するか、自分で abort する）。
+   */
+  async mergeBranch(branchName: string, signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
+    await this.#session.track(['merge'], () => gitMergeBranch(this.#session.context(signal), branchName));
+    await this.#session.refreshStatus(signal);
+    await this.#session.refreshBranches(signal);
+    return { statusSeq: this.#session.statusSeq };
+  }
+
   /** この操作に必要な確認の種類。null なら確認不要。 */
   static confirmationFor(
-    operation: 'stage' | 'unstage' | 'discard' | 'deleteUntracked' | 'commit',
+    operation: 'stage' | 'unstage' | 'discard' | 'deleteUntracked' | 'commit' | 'merge',
     context: { readonly amend?: boolean; readonly hasStaged?: boolean } = {},
   ): DestructiveAction | null {
     switch (operation) {
@@ -162,6 +274,8 @@ export class SessionOperations {
         return 'delete-untracked';
       case 'commit':
         return context.amend === true ? 'amend-pushed-commit' : null;
+      case 'merge':
+        return 'merge-branch';
       case 'stage':
       case 'unstage':
         return null;

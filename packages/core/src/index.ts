@@ -41,5 +41,16 @@ export type {
   StatusSummary,
 } from './session/statusView.js';
 
-export { NoSnapshotError, SessionOperations, TooManyPathsError } from './session/operations.js';
+export {
+  NoSnapshotError,
+  SessionOperations,
+  StaleDiffError,
+  TooManyPathsError,
+} from './session/operations.js';
+export type { HunkSelection } from './session/operations.js';
 export type { OperationOutcome } from './session/operations.js';
+
+// hunk / 行単位の可否判定（対応表 #33 / #34）。
+// main はボタンの出し分けのためにこれを DTO へ写す。git 層の関数をそのまま通す。
+export { canBuildPatch } from '@feathertree/git';
+export type { PatchRefusal } from '@feathertree/git';

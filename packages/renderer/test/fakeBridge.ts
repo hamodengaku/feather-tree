@@ -1,5 +1,7 @@
 import type {
   BranchCreateRequest,
+  FileDiffDto,
+  HunkStageRequest,
   BranchDto,
   CommitRequest,
   FeatherTreeBridge,
@@ -93,6 +95,21 @@ export class FakeBridge {
   confirmedCalls: string[] = [];
   changedListeners: ((e: SessionChangedEvent) => void)[] = [];
   focusPromptListeners: ((e: FocusRefreshPromptEvent) => void)[] = [];
+
+  /** diffGet の応答を遅らせる（世代番号による競合排除の検証用）。 */
+  diffDelayMs = 0;
+
+  /** diffGet が返す中身。パスが分かるようにしておく。 */
+  diffFor(path: string): FileDiffDto {
+    return {
+      path,
+      oldPath: null,
+      binary: false,
+      hunks: [],
+      truncated: false,
+      hunkStageable: true,
+    };
+  }
 
   countOf(name: string): number {
     return this.calls.filter((c) => c.name === name).length;
@@ -283,7 +300,22 @@ export class FakeBridge {
       },
       diffGet: (id: string, path: string, staged: boolean) => {
         this.record('diffGet', id, path, staged);
-        return Promise.resolve(ok({ path, oldPath: null, binary: false, hunks: [], truncated: false }));
+        const diff: FileDiffDto = this.diffFor(path);
+        return this.diffDelayMs === 0
+          ? Promise.resolve(ok(diff))
+          : new Promise((resolve) => {
+              setTimeout(() => resolve(ok(diff)), this.diffDelayMs);
+            });
+      },
+      stageHunks: (id: string, req: HunkStageRequest) => {
+        this.record('stageHunks', id, req);
+        this.seq += 1;
+        return Promise.resolve(ok({ affected: req.hunks.length, statusSeq: this.seq }));
+      },
+      unstageHunks: (id: string, req: HunkStageRequest) => {
+        this.record('unstageHunks', id, req);
+        this.seq += 1;
+        return Promise.resolve(ok({ affected: req.hunks.length, statusSeq: this.seq }));
       },
       logGetPage: (id: string, skip: number) => {
         this.record('logGetPage', id, skip);
@@ -302,6 +334,20 @@ export class FakeBridge {
         this.record('branchCreate', id, req);
         this.seq += 1;
         return Promise.resolve(ok({ statusSeq: this.seq }));
+      },
+      branchMerge: (id: string, branchName: string, confirmed?: boolean) => {
+        this.record('branchMerge', id, branchName, confirmed);
+        const result = this.guard('branchMerge', 'merge-branch', confirmed, { statusSeq: this.seq + 1 });
+        if (result.ok) this.seq += 1;
+        return Promise.resolve(result);
+      },
+      shellOpenPath: (id: string, path: string) => {
+        this.record('shellOpenPath', id, path);
+        return Promise.resolve(ok(undefined));
+      },
+      shellShowInFolder: (id: string, path: string) => {
+        this.record('shellShowInFolder', id, path);
+        return Promise.resolve(ok(undefined));
       },
       commandLogRecent: (limit: number) => {
         this.record('commandLogRecent', limit);

@@ -9,6 +9,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   CHANNELS,
   type BranchCreateRequest,
+  type HunkStageRequest,
   type CommitRequest,
   type FeatherTreeBridge,
   type FocusRefreshPromptEvent,
@@ -48,6 +49,9 @@ const bridge: FeatherTreeBridge = {
 
   stage: (id: string, target: OperationTargetDto) => ipcRenderer.invoke(CHANNELS.stage, id, target),
   unstage: (id: string, target: OperationTargetDto) => ipcRenderer.invoke(CHANNELS.unstage, id, target),
+  stageHunks: (id: string, req: HunkStageRequest) => ipcRenderer.invoke(CHANNELS.stageHunks, id, req),
+  unstageHunks: (id: string, req: HunkStageRequest) =>
+    ipcRenderer.invoke(CHANNELS.unstageHunks, id, req),
   discard: (id: string, target: OperationTargetDto, confirmed?: boolean) =>
     ipcRenderer.invoke(CHANNELS.discard, id, target, confirmed),
   deleteUntracked: (id: string, target: OperationTargetDto, confirmed?: boolean) =>
@@ -62,6 +66,11 @@ const bridge: FeatherTreeBridge = {
   branchSwitch: (id: string, branchName: string) =>
     ipcRenderer.invoke(CHANNELS.branchSwitch, id, branchName),
   branchCreate: (id: string, req: BranchCreateRequest) => ipcRenderer.invoke(CHANNELS.branchCreate, id, req),
+  branchMerge: (id: string, branchName: string, confirmed?: boolean) =>
+    ipcRenderer.invoke(CHANNELS.branchMerge, id, branchName, confirmed),
+  shellOpenPath: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.shellOpenPath, id, path),
+  shellShowInFolder: (id: string, path: string) =>
+    ipcRenderer.invoke(CHANNELS.shellShowInFolder, id, path),
 
   commandLogRecent: (limit: number) => ipcRenderer.invoke(CHANNELS.commandLogRecent, limit),
 

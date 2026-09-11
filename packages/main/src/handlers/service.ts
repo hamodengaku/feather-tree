@@ -1,5 +1,6 @@
 import {
   SessionOperations,
+  canBuildPatch,
   describeAction,
   displayNameOf,
   type AppSettings,
@@ -7,12 +8,15 @@ import {
   type DestructiveAction,
   type GitLocation,
   type GitVersionCheck,
+  type HunkSelection,
   type RepositorySession,
   type SessionManager,
 } from '@feathertree/core';
 import type {
   AppInfoDto,
   BranchCreateRequest,
+  BranchMergeResultDto,
+  HunkStageRequest,
   BranchCreateResultDto,
   BranchDto,
   BranchSwitchResultDto,
@@ -33,6 +37,7 @@ import type {
   StatusPageRequest,
   StatusSummaryDto,
 } from '@feathertree/ipc';
+import { join } from 'node:path';
 import { assertInsideRoot } from '@feathertree/base-core';
 import { HandlerError } from '../errors.js';
 
@@ -56,6 +61,10 @@ export interface ServiceDeps {
   readonly commandLog: () => CommandLog;
   /** フォルダ選択。キャンセルなら null。 */
   readonly pickDirectory: () => Promise<string | null>;
+  /** OS 既定のアプリでファイル／フォルダを開く。失敗時はエラー文字列を返す（throw しない）。 */
+  readonly openPath: (absolutePath: string) => Promise<string>;
+  /** エクスプローラでそのファイルを選択した状態で開く。 */
+  readonly showItemInFolder: (absolutePath: string) => void;
 }
 
 export interface Service {
@@ -74,6 +83,8 @@ export interface Service {
   statusGetPage(id: string, req: StatusPageRequest): StatusPageDto;
   stage(id: string, target: OperationTargetDto): Promise<OperationResultDto>;
   unstage(id: string, target: OperationTargetDto): Promise<OperationResultDto>;
+  stageHunks(id: string, req: HunkStageRequest): Promise<OperationResultDto>;
+  unstageHunks(id: string, req: HunkStageRequest): Promise<OperationResultDto>;
   discard(id: string, target: OperationTargetDto, confirmed?: boolean): Promise<OperationResultDto>;
   deleteUntracked(
     id: string,
@@ -86,6 +97,9 @@ export interface Service {
   branchList(id: string): readonly BranchDto[];
   branchSwitch(id: string, branchName: string): Promise<BranchSwitchResultDto>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<BranchCreateResultDto>;
+  branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<BranchMergeResultDto>;
+  shellOpenPath(id: string, path: string): Promise<void>;
+  shellShowInFolder(id: string, path: string): Promise<void>;
   commandLogRecent(limit: number): readonly CommandLogEntryDto[];
 }
 
@@ -134,6 +148,31 @@ export function createService(deps: ServiceDeps): Service {
     const root = requireSession(id).root;
     for (const path of target.paths) assertInsideRoot(root, path);
     return target;
+  };
+
+  /**
+   * hunk 操作の入力検証。パスがリポジトリ配下かを確かめ、指定が空でないことを見る。
+   * パッチ本体は renderer から受け取らないので、ここで見るのはパスと座標だけ。
+   */
+  const guardHunks = (id: string, req: HunkStageRequest): [string, readonly HunkSelection[]] => {
+    const session = requireSession(id);
+    assertInsideRoot(session.root, req.path);
+    if (req.hunks.length === 0) {
+      throw new HandlerError({ kind: 'internal', message: '対象の差分が選ばれていません。' });
+    }
+    for (const hunk of req.hunks) {
+      if (!Number.isInteger(hunk.index) || hunk.index < 0) {
+        throw new HandlerError({ kind: 'internal', message: '差分の指定が不正です。' });
+      }
+    }
+    return [req.path, req.hunks];
+  };
+
+  /** renderer 由来の相対パスを検証してから絶対パスへ直す（規約: git に渡す前に必ず検証）。 */
+  const resolveInsideRoot = (id: string, path: string): string => {
+    const session = requireSession(id);
+    assertInsideRoot(session.root, path);
+    return join(session.root, path);
   };
 
   const stateOf = (session: RepositorySession): SessionStateDto => ({
@@ -265,10 +304,25 @@ export function createService(deps: ServiceDeps): Service {
       return opsFor(id).commit(req.message, { amend: req.amend });
     },
 
+    stageHunks: async (id, req) => opsFor(id).stageHunks(...guardHunks(id, req)),
+
+    unstageHunks: async (id, req) => opsFor(id).unstageHunks(...guardHunks(id, req)),
+
     diffGet: async (id, path, staged) => {
       const session = requireSession(id);
       assertInsideRoot(session.root, path);
-      return session.getDiff(path, staged);
+      const diff = await session.getDiff(path, staged);
+      if (diff === null) return null;
+      // preamble は DTO に載せない（git の内部形式を renderer へ漏らさない）。
+      // 代わりに「hunk 単位で操作できるか」だけを導出して渡す
+      return {
+        path: diff.path,
+        oldPath: diff.oldPath,
+        binary: diff.binary,
+        hunks: diff.hunks,
+        truncated: diff.truncated,
+        hunkStageable: canBuildPatch(diff) === null,
+      };
     },
 
     logGetPage: async (id, skip) => requireSession(id).getLogPage(Math.max(0, skip)),
@@ -287,6 +341,29 @@ export function createService(deps: ServiceDeps): Service {
         throw new HandlerError({ kind: 'internal', message: 'ブランチ元を入力してください。' });
       }
       return opsFor(id).createBranch(name, startPoint);
+    },
+
+    branchMerge: async (id, branchName, confirmed) => {
+      const name = branchName.trim();
+      if (name.length === 0) {
+        throw new HandlerError({ kind: 'internal', message: 'マージするブランチを指定してください。' });
+      }
+      const ops = opsFor(id);
+      requireConfirmed(SessionOperations.confirmationFor('merge'), confirmed);
+      return ops.mergeBranch(name);
+    },
+
+    shellOpenPath: async (id, path) => {
+      const absolute = resolveInsideRoot(id, path);
+      const failure = await deps.openPath(absolute);
+      // openPath は throw せずエラー文字列を返す（ファイルが無いときなど）
+      if (failure.length > 0) {
+        throw new HandlerError({ kind: 'not-found', message: 'ファイルを開けませんでした。', detail: failure });
+      }
+    },
+
+    shellShowInFolder: async (id, path) => {
+      deps.showItemInFolder(resolveInsideRoot(id, path));
     },
 
     commandLogRecent: (limit) => deps.commandLog().recent(Math.min(Math.max(1, limit), 500)),

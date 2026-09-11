@@ -109,3 +109,67 @@ describe('diff (対応表 #18 / #19)', () => {
     expect(lines.find((l) => l.kind === 'removed')?.text).toBe('b');
   });
 });
+
+describe('パッチ再構成のためのファイルヘッダ保存 (対応表 #33 / #34)', () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await createFixture();
+  });
+
+  afterEach(async () => {
+    await fx.cleanup();
+  });
+
+  it('通常の変更では diff --git と --- / +++ を生のまま持つ', async () => {
+    await fx.write('a.txt', ['one', 'two'].join(LF) + LF);
+    await commitAll(fx, 'init');
+    await fx.write('a.txt', ['one', 'TWO'].join(LF) + LF);
+
+    const diff = await getFileDiff(fx.ctx, 'a.txt', false);
+    const pre = diff?.preamble ?? [];
+    expect(pre[0]).toBe('diff --git a/a.txt b/a.txt');
+    expect(pre.some((l) => l.startsWith('index '))).toBe(true);
+    expect(pre).toContain('--- a/a.txt');
+    expect(pre).toContain('+++ b/a.txt');
+    // @@ 以降は含めない
+    expect(pre.some((l) => l.startsWith('@@'))).toBe(false);
+  });
+
+  it('新規ファイルでは new file mode を持つ', async () => {
+    await fx.write('a.txt', 'base' + LF);
+    await commitAll(fx, 'init');
+    await fx.write('新規 ファイル.txt', 'hello' + LF);
+    await fx.run('add', '新規 ファイル.txt');
+
+    const diff = await getFileDiff(fx.ctx, '新規 ファイル.txt', true);
+    const pre = diff?.preamble ?? [];
+    expect(pre.some((l) => l.startsWith('new file mode'))).toBe(true);
+    // 空白入りの日本語パスもそのまま保存される（自前で組み立てない理由）
+    expect(pre.some((l) => l.includes('新規 ファイル.txt'))).toBe(true);
+  });
+
+  it('リネームは単一パス指定では検出されず、全体追加として出る', async () => {
+    await fx.write('old.txt', ['1', '2', '3', '4', '5'].join(LF) + LF);
+    await commitAll(fx, 'init');
+    await fx.run('mv', 'old.txt', 'new.txt');
+
+    const diff = await getFileDiff(fx.ctx, 'new.txt', true);
+    const pre = diff?.preamble ?? [];
+    // `diff -- <新パス>` は元パスを見られないので rename を検出できない。
+    // 結果として new file 扱いになり、hunk 単位の操作は「ファイル全体の追加」として拒否される
+    expect(pre.some((l) => l.startsWith('new file mode'))).toBe(true);
+    expect(pre).toContain('--- /dev/null');
+    expect(pre.some((l) => l.startsWith('rename '))).toBe(false);
+  });
+
+  it('未追跡ファイルの合成 diff は preamble が空（git 由来でない印）', async () => {
+    await fx.write('a.txt', 'base' + LF);
+    await commitAll(fx, 'init');
+    await fx.write('untracked.txt', ['x', 'y'].join(LF) + LF);
+
+    const diff = await getUntrackedFileDiff(fx.ctx, 'untracked.txt');
+    expect(diff?.preamble).toEqual([]);
+    expect(diff?.hunks).toHaveLength(1);
+  });
+});

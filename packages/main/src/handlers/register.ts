@@ -1,4 +1,4 @@
-import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
+import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import { CHANNELS } from '@feathertree/ipc';
 import type { AppContext } from '../appContext.js';
 import { wrap } from '../errors.js';
@@ -35,6 +35,10 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
       const picked = result.filePaths[0];
       return result.canceled || picked === undefined ? null : picked;
     },
+    openPath: (absolutePath) => shell.openPath(absolutePath),
+    showItemInFolder: (absolutePath) => {
+      shell.showItemInFolder(absolutePath);
+    },
   });
 
   const bind = <A extends unknown[]>(channel: string, fn: (...args: A) => unknown): void => {
@@ -67,6 +71,12 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.unstage, (id: string, target: Parameters<Service['unstage']>[1]) =>
     service.unstage(id, target),
   );
+  bind(CHANNELS.stageHunks, (id: string, req: Parameters<Service['stageHunks']>[1]) =>
+    service.stageHunks(id, req),
+  );
+  bind(CHANNELS.unstageHunks, (id: string, req: Parameters<Service['unstageHunks']>[1]) =>
+    service.unstageHunks(id, req),
+  );
   bind(
     CHANNELS.discard,
     (id: string, target: Parameters<Service['discard']>[1], confirmed?: boolean) =>
@@ -89,6 +99,13 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.branchSwitch, (id: string, branchName: string) => service.branchSwitch(id, branchName));
   bind(CHANNELS.branchCreate, (id: string, req: Parameters<Service['branchCreate']>[1]) =>
     service.branchCreate(id, req),
+  );
+  bind(CHANNELS.branchMerge, (id: string, branchName: string, confirmed?: boolean) =>
+    service.branchMerge(id, branchName, confirmed),
+  );
+  bind(CHANNELS.shellOpenPath, (id: string, path: string) => service.shellOpenPath(id, path));
+  bind(CHANNELS.shellShowInFolder, (id: string, path: string) =>
+    service.shellShowInFolder(id, path),
   );
   bind(CHANNELS.commandLogRecent, (limit: number) => service.commandLogRecent(limit));
 }

@@ -2,7 +2,7 @@
  * 確認ダイアログを要する操作を列挙する唯一の場所（docs/00-decisions.md 決定 16）。
  * View 側に判定を散らさない。
  *
- * 方針: **不可逆なものだけ確認する。**
+ * 方針: **不可逆なもの、および履歴が動くものだけ確認する。**
  * ステージング・ブランチ移動・コミットは無確認で即実行する（軽量な操作感のため）。
  */
 export type DestructiveAction =
@@ -12,7 +12,8 @@ export type DestructiveAction =
   | 'force-push'
   | 'delete-unmerged-branch'
   | 'stash-drop'
-  | 'amend-pushed-commit';
+  | 'amend-pushed-commit'
+  | 'merge-branch';
 
 export interface ConfirmationSpec {
   readonly title: string;
@@ -58,6 +59,12 @@ const SPECS: Record<DestructiveAction, ConfirmationSpec> = {
     message: '退避した変更が失われます。',
     confirmLabel: '破棄する',
     recoverable: false,
+  },
+  'merge-branch': {
+    title: 'このブランチをマージしますか？',
+    message: '現在のブランチに取り込みます。コンフリクトが起きた場合は解決が必要です。',
+    confirmLabel: 'マージする',
+    recoverable: true,
   },
   'amend-pushed-commit': {
     title: 'プッシュ済みのコミットを修正しますか？',

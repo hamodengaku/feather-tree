@@ -393,8 +393,8 @@ describe('ブランチ操作', () => {
   });
 });
 
-describe('ダブルクリックでのステージ切替', () => {
-  it('未ステージのファイルをステージへ移し、選択がそのまま追従する', async () => {
+describe('ステージ切替と、そのあとの選択位置', () => {
+  it('ダブルクリックでステージへ移す', async () => {
     const { app, bridge } = await boot((b) => {
       b.changes = [entry('a.txt')];
     });
@@ -403,11 +403,10 @@ describe('ダブルクリックでのステージ切替', () => {
 
     expect(bridge.countOf('stage')).toBe(1);
     expect(bridge.lastArgsOf('stage')?.[1]).toEqual({ kind: 'paths', paths: ['a.txt'] });
-    expect(app.selected).toEqual({ path: 'a.txt', staged: true });
     expect(app.staged.entries.some((e) => e?.path === 'a.txt')).toBe(true);
   });
 
-  it('ステージ済みのファイルを変更へ戻す', async () => {
+  it('ダブルクリックでステージ済みから戻す', async () => {
     const { app, bridge } = await boot((b) => {
       b.staged = [entry('a.txt', { staged: 'M' })];
     });
@@ -415,13 +414,80 @@ describe('ダブルクリックでのステージ切替', () => {
     await app.toggleStage({ path: 'a.txt', staged: true });
 
     expect(bridge.countOf('unstage')).toBe(1);
-    expect(app.selected).toEqual({ path: 'a.txt', staged: false });
     expect(app.changes.entries.some((e) => e?.path === 'a.txt')).toBe(true);
   });
 
-  it('失敗した場合は selected が反転したまま残る（既知のトレードオフ）', async () => {
+  it('ステージすると選択が 1 行下へ移る', async () => {
+    const { app } = await boot((b) => {
+      b.changes = [entry('a.txt'), entry('b.txt'), entry('c.txt')];
+    });
+    await app.select({ path: 'b.txt', staged: false });
+
+    await app.toggleStage({ path: 'b.txt', staged: false });
+
+    expect(app.selected).toEqual({ path: 'c.txt', staged: false });
+  });
+
+  it('一番下をステージすると 1 行上へ移る', async () => {
+    const { app } = await boot((b) => {
+      b.changes = [entry('a.txt'), entry('b.txt'), entry('c.txt')];
+    });
+    await app.select({ path: 'c.txt', staged: false });
+
+    await app.toggleStage({ path: 'c.txt', staged: false });
+
+    expect(app.selected).toEqual({ path: 'b.txt', staged: false });
+  });
+
+  it('最後の 1 件をステージすると選択が外れる', async () => {
+    const { app } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+
+    await app.toggleStage({ path: 'a.txt', staged: false });
+
+    expect(app.selected).toBeNull();
+    expect(app.diff).toBeNull();
+  });
+
+  it('複数選択でステージすると、一番下の次へ移る', async () => {
+    const { app } = await boot((b) => {
+      b.changes = [entry('a.txt'), entry('b.txt'), entry('c.txt'), entry('d.txt')];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+
+    await app.stage({ kind: 'paths', paths: ['a.txt', 'b.txt', 'c.txt'] });
+
+    expect(app.selected).toEqual({ path: 'd.txt', staged: false });
+  });
+
+  it('すべてステージでは選択を解除する', async () => {
+    const { app } = await boot((b) => {
+      b.changes = [entry('a.txt'), entry('b.txt')];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+
+    await app.stage({ kind: 'filtered', filter: { group: 'changes' } });
+
+    expect(app.selected).toBeNull();
+  });
+
+  it('反対側のリストを選んでいるときは動かさない', async () => {
+    const { app } = await boot((b) => {
+      b.changes = [entry('a.txt'), entry('b.txt')];
+      b.staged = [entry('z.txt', { staged: 'M' })];
+    });
+    await app.select({ path: 'z.txt', staged: true });
+
+    await app.stage({ kind: 'paths', paths: ['a.txt'] });
+
+    expect(app.selected).toEqual({ path: 'z.txt', staged: true });
+  });
+
+  it('失敗しても移動先の選択は元に戻さない（一覧は変わっていないので選び直せる）', async () => {
     const bridge = new FakeBridge();
-    bridge.changes = [entry('a.txt')];
+    bridge.changes = [entry('a.txt'), entry('b.txt')];
     const app = await load({
       ...bridge.build(),
       stage: () =>
@@ -430,10 +496,11 @@ describe('ダブルクリックでのステージ切替', () => {
           error: { kind: 'git-failed' as const, message: '失敗しました' },
         }),
     });
+    await app.select({ path: 'a.txt', staged: false });
 
     await app.toggleStage({ path: 'a.txt', staged: false });
 
-    expect(app.selected).toEqual({ path: 'a.txt', staged: true });
+    expect(app.selected).toEqual({ path: 'b.txt', staged: false });
     expect(app.error?.message).toBe('失敗しました');
   });
 });
@@ -572,5 +639,124 @@ describe('ウィンドウ復帰時の更新モード', () => {
     bridge.emitFocusPrompt('s2');
 
     expect(app.focusRefreshPrompt).toBeNull();
+  });
+});
+
+describe('diff の取得競合', () => {
+  it('遅れて届いた古い応答は、新しい選択の差分を上書きしない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt'), entry('b.txt')];
+      b.diffDelayMs = 20;
+    });
+
+    // a → b と続けて選ぶ。a の応答のほうが後に届く状況を作る
+    const first = app.select({ path: 'a.txt', staged: false });
+    bridge.diffDelayMs = 1;
+    const second = app.select({ path: 'b.txt', staged: false });
+    await Promise.all([first, second]);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(app.selected).toEqual({ path: 'b.txt', staged: false });
+    expect(app.diff?.path).toBe('b.txt');
+    expect(app.diffLoading).toBe(false);
+  });
+
+  it('選択が外れたあとに届いた応答も取り込まない', async () => {
+    const { app } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+      b.diffDelayMs = 20;
+    });
+
+    const pending = app.select({ path: 'a.txt', staged: false });
+    await app.stage({ kind: 'filtered', filter: { group: 'changes' } });
+    await pending;
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(app.selected).toBeNull();
+    expect(app.diff).toBeNull();
+  });
+});
+
+describe('hunk / 行単位のステージ (対応表 #33 / #34)', () => {
+  const hunk = { index: 0, header: "@@ -1,3 +1,3 @@", lineCount: 4, lines: null };
+
+  it('選択中のファイルのパスを添えて送る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+
+    await app.stageHunks([hunk]);
+
+    expect(bridge.countOf('stageHunks')).toBe(1);
+    expect(bridge.lastArgsOf('stageHunks')?.[1]).toEqual({ path: 'a.txt', hunks: [hunk] });
+  });
+
+  it('アンステージも同じ形で送る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+    await app.select({ path: 'a.txt', staged: true });
+
+    await app.unstageHunks([hunk]);
+
+    expect(bridge.countOf('unstageHunks')).toBe(1);
+    expect(bridge.lastArgsOf('unstageHunks')?.[1]).toEqual({ path: 'a.txt', hunks: [hunk] });
+  });
+
+  it('選択が無いときや空のときは IPC を呼ばない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+    });
+
+    await app.stageHunks([hunk]);
+    await app.select({ path: 'a.txt', staged: false });
+    await app.stageHunks([]);
+
+    expect(bridge.countOf('stageHunks')).toBe(0);
+  });
+
+  it('成功したら一覧と差分を取り直す（選択は動かさない）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt'), entry('b.txt')];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+    const before = bridge.countOf('diffGet');
+
+    await app.stageHunks([hunk]);
+
+    expect(app.selected).toEqual({ path: 'a.txt', staged: false });
+    expect(bridge.countOf('statusGetSummary')).toBeGreaterThan(0);
+    expect(bridge.countOf('diffGet')).toBeGreaterThan(before);
+  });
+});
+
+describe('ブランチのマージ (対応表 #35)', () => {
+  it('確認を求められたら内容を保持し、承認で confirmed つきに再送する', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.requireConfirmation = 'branchMerge';
+    });
+
+    await app.mergeBranch('topic');
+
+    expect(app.pendingConfirmation?.confirmation.action).toBe('merge-branch');
+
+    await app.acceptConfirmation();
+
+    expect(bridge.confirmedCalls).toEqual(['branchMerge']);
+    expect(app.pendingConfirmation).toBeNull();
+  });
+
+  it('キャンセルすると再送しない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.requireConfirmation = 'branchMerge';
+    });
+
+    await app.mergeBranch('topic');
+    app.cancelConfirmation();
+
+    expect(app.pendingConfirmation).toBeNull();
+    expect(bridge.confirmedCalls).toEqual([]);
+    expect(bridge.countOf('branchMerge')).toBe(1);
   });
 });

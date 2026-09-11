@@ -36,6 +36,8 @@ export const CHANNELS = {
 
   stage: 'op:stage',
   unstage: 'op:unstage',
+  stageHunks: 'op:stageHunks',
+  unstageHunks: 'op:unstageHunks',
   discard: 'op:discard',
   deleteUntracked: 'op:deleteUntracked',
   commit: 'op:commit',
@@ -45,6 +47,10 @@ export const CHANNELS = {
   branchList: 'branch:list',
   branchSwitch: 'branch:switch',
   branchCreate: 'branch:create',
+  branchMerge: 'branch:merge',
+
+  shellOpenPath: 'shell:openPath',
+  shellShowInFolder: 'shell:showInFolder',
 
   commandLogRecent: 'diag:commandLog',
 
@@ -69,6 +75,7 @@ export type FtErrorKind =
   | 'git-failed'
   | 'not-a-repository'
   | 'no-session'
+  | 'diff-stale'
   | 'too-many-paths';
 
 export type FtErrorDto = BaseErrorDto<FtErrorKind>;
@@ -246,6 +253,29 @@ export interface FileDiffDto {
   readonly binary: boolean;
   readonly hunks: readonly DiffHunkDto[];
   readonly truncated: boolean;
+  /**
+   * hunk / 行単位の操作ができるか（対応表 #33 / #34）。
+   *
+   * false になるのは、バイナリ / 行数打ち切り / 未追跡 / ファイル全体の追加・削除 /
+   * リネーム / 未マージ / hunk なし。判定は main 側の 1 箇所で行い、
+   * ボタンの出し分けと apply 前のガードで同じ結果を使う。
+   */
+  readonly hunkStageable: boolean;
+}
+
+/** hunk / 行の指定。header と lineCount は「表示していたものと同じか」の指紋。 */
+export interface HunkSelectionDto {
+  /** FileDiffDto.hunks のインデックス。 */
+  readonly index: number;
+  readonly header: string;
+  readonly lineCount: number;
+  /** hunk.lines のインデックス。null なら hunk 全体。 */
+  readonly lines: readonly number[] | null;
+}
+
+export interface HunkStageRequest {
+  readonly path: string;
+  readonly hunks: readonly HunkSelectionDto[];
 }
 
 export interface CommitSummaryDto {
@@ -282,6 +312,10 @@ export interface BranchCreateRequest {
 }
 
 export interface BranchCreateResultDto {
+  readonly statusSeq: number;
+}
+
+export interface BranchMergeResultDto {
   readonly statusSeq: number;
 }
 
@@ -337,6 +371,8 @@ export interface FeatherTreeBridge {
 
   stage(id: string, target: OperationTargetDto): Promise<Result<OperationResultDto>>;
   unstage(id: string, target: OperationTargetDto): Promise<Result<OperationResultDto>>;
+  stageHunks(id: string, req: HunkStageRequest): Promise<Result<OperationResultDto>>;
+  unstageHunks(id: string, req: HunkStageRequest): Promise<Result<OperationResultDto>>;
   discard(id: string, target: OperationTargetDto, confirmed?: boolean): Promise<Result<OperationResultDto>>;
   deleteUntracked(
     id: string,
@@ -350,6 +386,9 @@ export interface FeatherTreeBridge {
   branchList(id: string): Promise<Result<readonly BranchDto[]>>;
   branchSwitch(id: string, branchName: string): Promise<Result<BranchSwitchResultDto>>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<Result<BranchCreateResultDto>>;
+  branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<Result<BranchMergeResultDto>>;
+  shellOpenPath(id: string, path: string): Promise<Result<void>>;
+  shellShowInFolder(id: string, path: string): Promise<Result<void>>;
 
   commandLogRecent(limit: number): Promise<Result<readonly CommandLogEntryDto[]>>;
 

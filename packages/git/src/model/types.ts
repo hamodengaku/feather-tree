@@ -111,6 +111,14 @@ export interface FileDiff {
   readonly hunks: readonly DiffHunk[];
   /** 行数上限で打ち切った。 */
   readonly truncated: boolean;
+  /**
+   * `diff --git` 行から最初の `@@` 直前までの生の行（対応表 #33 / #34）。
+   *
+   * パッチ再構成に必須。`new file mode` / `index abc..def` / `similarity index` /
+   * C クォートされたパスは自前で復元できないため、1 行も加工せずそのまま持つ。
+   * 未追跡ファイルの合成 diff は空配列になり、これが「パッチ生成不可」の判定を兼ねる。
+   */
+  readonly preamble: readonly string[];
 }
 
 /** git show --name-status の 1 行。 */

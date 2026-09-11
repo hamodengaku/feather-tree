@@ -7,15 +7,17 @@ import {
 } from '../src/index.js';
 
 describe('破壊的操作のポリシー (決定 16)', () => {
-  it('不可逆な操作だけが確認対象', () => {
+  it('不可逆な操作と、履歴が動く操作が確認対象', () => {
     expect(requiresConfirmation('discard-changes')).toBe(true);
     expect(requiresConfirmation('delete-untracked')).toBe(true);
     expect(requiresConfirmation('force-push')).toBe(true);
     expect(requiresConfirmation('stash-drop')).toBe(true);
+    // マージは reset で戻せるが履歴が動くので確認する（決定 16 改定）
+    expect(requiresConfirmation('merge-branch')).toBe(true);
   });
 
   it('日常操作は確認しない（軽量な操作感のため）', () => {
-    for (const action of ['stage', 'unstage', 'commit', 'switch-branch', 'fetch', 'pull', 'push']) {
+    for (const action of ['stage', 'unstage', 'commit', 'switch-branch', 'fetch', 'pull', 'push', 'merge']) {
       expect(requiresConfirmation(action)).toBe(false);
     }
   });

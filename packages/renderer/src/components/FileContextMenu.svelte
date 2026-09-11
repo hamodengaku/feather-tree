@@ -2,6 +2,8 @@
   interface Action {
     readonly label: string;
     readonly danger?: boolean;
+    /** 押せない理由がある項目。消さずに灰色で残し、なぜ出ないのか分かるようにする。 */
+    readonly disabled?: boolean;
     readonly onclick: () => void;
   }
 
@@ -24,7 +26,13 @@
 <div class="menu-backdrop" role="presentation" onclick={onclose} oncontextmenu={(e) => e.preventDefault()}></div>
 <div class="menu" role="menu" style:top="{y}px" style:left="{x}px">
   {#each actions as action (action.label)}
-    <button role="menuitem" class="menu-item" class:danger={action.danger === true} onclick={() => run(action)}>
+    <button
+      role="menuitem"
+      class="menu-item"
+      class:danger={action.danger === true}
+      disabled={action.disabled === true}
+      onclick={() => run(action)}
+    >
       {action.label}
     </button>
   {/each}
@@ -58,6 +66,11 @@
     border: none;
     text-align: left;
     padding: 4px 10px;
+  }
+
+  .menu-item:disabled {
+    color: var(--app-text-muted);
+    cursor: default;
   }
 
   .menu-item.danger {

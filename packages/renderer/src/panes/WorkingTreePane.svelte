@@ -23,7 +23,7 @@
 
   let stagedSelection = $state<SelectionState>(EMPTY_SELECTION);
   let changesSelection = $state<SelectionState>(EMPTY_SELECTION);
-  let contextMenu = $state<{ x: number; y: number; staged: boolean } | null>(null);
+  let contextMenu = $state<{ x: number; y: number; staged: boolean; entry: FileEntryDto } | null>(null);
 
   // 一覧の内容が変わったら、消えたパスを指している複数選択を残さないようにリセットする。
   $effect(() => {
@@ -49,6 +49,14 @@
     if (!click.ctrlKey && !click.shiftKey) void app.select({ path: entry.path, staged });
   }
 
+  /**
+   * ディスクにファイルの実体があるか。削除済みでは「ファイルを開く」を押させない。
+   * 削除は staged 側なら 'D.'、未ステージなら '.D' として出る。
+   */
+  function existsOnDisk(entry: FileEntryDto): boolean {
+    return entry.worktree !== 'D' && entry.staged !== 'D';
+  }
+
   function handleContextMenu(entry: FileEntryDto, event: MouseEvent, index: number, staged: boolean): void {
     const current = staged ? stagedSelection : changesSelection;
     if (!current.selected.has(entry.path)) {
@@ -56,7 +64,7 @@
       if (staged) stagedSelection = replaced;
       else changesSelection = replaced;
     }
-    contextMenu = { x: event.clientX, y: event.clientY, staged };
+    contextMenu = { x: event.clientX, y: event.clientY, staged, entry };
   }
 </script>
 
@@ -151,28 +159,41 @@
 </div>
 
 {#if contextMenu !== null}
+  {@const menu = contextMenu}
   <FileContextMenu
-    x={contextMenu.x}
-    y={contextMenu.y}
+    x={menu.x}
+    y={menu.y}
     onclose={() => (contextMenu = null)}
-    actions={contextMenu.staged
-      ? [
-          {
-            label: 'アンステージ',
-            onclick: () => void app.unstage({ kind: 'paths', paths: [...stagedSelection.selected] }),
-          },
-        ]
-      : [
-          {
-            label: 'ステージ',
-            onclick: () => void app.stage({ kind: 'paths', paths: [...changesSelection.selected] }),
-          },
-          {
-            label: '破棄',
-            danger: true,
-            onclick: () => void app.discard({ kind: 'paths', paths: [...changesSelection.selected] }),
-          },
-        ]}
+    actions={[
+      ...(menu.staged
+        ? [
+            {
+              label: 'アンステージ',
+              onclick: () => void app.unstage({ kind: 'paths', paths: [...stagedSelection.selected] }),
+            },
+          ]
+        : [
+            {
+              label: 'ステージ',
+              onclick: () => void app.stage({ kind: 'paths', paths: [...changesSelection.selected] }),
+            },
+            {
+              label: '破棄',
+              danger: true,
+              onclick: () => void app.discard({ kind: 'paths', paths: [...changesSelection.selected] }),
+            },
+          ]),
+      // 開く系は選択ではなく、右クリックした 1 件が対象
+      {
+        label: 'ファイルを開く',
+        disabled: !existsOnDisk(menu.entry),
+        onclick: () => void app.openFile(menu.entry.path),
+      },
+      {
+        label: 'フォルダを開く',
+        onclick: () => void app.showInFolder(menu.entry.path),
+      },
+    ]}
   />
 {/if}
 

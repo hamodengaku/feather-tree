@@ -25,16 +25,20 @@ export { parseRefList } from './parsing/refList.js';
 export { parseLog, parseNameStatus } from './parsing/log.js';
 export { buildAddedFileDiff, looksBinary, parseUnifiedDiff } from './parsing/diff.js';
 export type { DiffParseOptions } from './parsing/diff.js';
+export { buildHunkPatch, canBuildPatch, hunkAllowsLineSelection, PatchBuildError } from './parsing/patch.js';
+export type { BuiltPatch, HunkPick, PatchDirection, PatchRefusal } from './parsing/patch.js';
 
 export type { GitContext } from './commands/context.js';
 export { getGitVersion, listRemotes, resolveRepository } from './commands/repository.js';
 export { getStatus } from './commands/status.js';
 export type { StatusOptions } from './commands/status.js';
-export { createBranch, listBranches, switchBranch } from './commands/branches.js';
+export { createBranch, listBranches, mergeBranch, switchBranch } from './commands/branches.js';
 export { getCommitFiles, getLog } from './commands/history.js';
 export type { LogOptions } from './commands/history.js';
 export { getFileDiff, getUntrackedFileDiff } from './commands/diff.js';
 export type { DiffOptions } from './commands/diff.js';
+export { applyHunks } from './commands/apply.js';
+export type { ApplyHunksOptions } from './commands/apply.js';
 
 export {
   commit,

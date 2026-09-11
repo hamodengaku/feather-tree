@@ -13,6 +13,12 @@ function toDto(err: unknown): FtErrorDto {
   if (err instanceof Error && err.name === 'TooManyPathsError') {
     return { kind: 'too-many-paths', message: err.message };
   }
+  if (err instanceof Error && err.name === 'StaleDiffError') {
+    return { kind: 'diff-stale', message: err.message };
+  }
+  if (err instanceof Error && err.name === 'PatchBuildError') {
+    return { kind: 'internal', message: err.message };
+  }
   if (err instanceof Error && err.name === 'NoSnapshotError') {
     return { kind: 'internal', message: err.message };
   }

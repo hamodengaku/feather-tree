@@ -27,6 +27,9 @@ describe('Service (UI が通る経路の統合テスト)', () => {
   let commandLog: CommandLog;
   let settings: AppSettings;
   let pickResult: string | null;
+  let opened: string[] = [];
+  let shownInFolder: string[] = [];
+  let openPathFailure = '';
 
   beforeEach(async () => {
     dir = join(TEST_ROOT, randomBytes(8).toString('hex'));
@@ -38,6 +41,9 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     commandLog = new CommandLog();
     settings = DEFAULT_SETTINGS;
     pickResult = dir;
+    opened = [];
+    shownInFolder = [];
+    openPathFailure = '';
 
     const sessions = new SessionManager({
       gitPath: GIT_PATH,
@@ -66,6 +72,13 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       sessions: () => sessions,
       commandLog: () => commandLog,
       pickDirectory: () => Promise.resolve(pickResult),
+      openPath: (absolutePath: string) => {
+        opened.push(absolutePath);
+        return Promise.resolve(openPathFailure);
+      },
+      showItemInFolder: (absolutePath: string) => {
+        shownInFolder.push(absolutePath);
+      },
     });
   });
 
@@ -259,6 +272,78 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     expect(service.commandLogRecent(500).some((e) => e.args[0] === 'push')).toBe(false);
   });
 
+  it('マージは確認が必須で、確認後に取り込まれる（対応表 #35 → #2 → #3）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+    await service.branchCreate(id, { name: 'topic', startPoint: 'main' });
+    await write('topic.txt', 'from topic');
+    await service.sessionRefresh(id, 'status');
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'topic work', amend: false });
+    await service.branchSwitch(id, 'main');
+
+    await expect(service.branchMerge(id, 'topic')).rejects.toMatchObject({
+      dto: { kind: 'needs-confirmation' },
+    });
+
+    const result = await service.branchMerge(id, 'topic', true);
+
+    expect(service.statusGetSummary(id).seq).toBe(result.statusSeq);
+    // fast-forward で main が topic に追いつく。
+    // 切替・作成と違い、マージはブランチ一覧も取り直すので full refresh 抜きで新しい oid が見える
+    const branches = service.branchList(id);
+    expect(branches.find((b) => b.shortName === 'main')?.oid).toBe(
+      branches.find((b) => b.shortName === 'topic')?.oid,
+    );
+  });
+
+  it('ファイルを OS 既定のアプリで開く（絶対パスに直して渡す）', async () => {
+    const id = await openDemo();
+
+    await service.shellOpenPath(id, 'README.md');
+
+    expect(opened).toEqual([join(dir, 'README.md')]);
+  });
+
+  it('エクスプローラでファイルを選択した状態で開く', async () => {
+    const id = await openDemo();
+
+    await service.shellShowInFolder(id, 'README.md');
+
+    expect(shownInFolder).toEqual([join(dir, 'README.md')]);
+  });
+
+  it('開けなかったら理由つきで失敗する（openPath は throw しない）', async () => {
+    const id = await openDemo();
+    openPathFailure = '関連付けられたアプリがありません';
+
+    await expect(service.shellOpenPath(id, 'README.md')).rejects.toMatchObject({
+      dto: { kind: 'not-found', detail: '関連付けられたアプリがありません' },
+    });
+  });
+
+  it('リポジトリ外のパスは開かない', async () => {
+    const id = await openDemo();
+
+    // assertInsideRoot が PathOutsideRootError を投げ、register の wrap が invalid-path に写す
+    await expect(service.shellOpenPath(id, '../outside.txt')).rejects.toMatchObject({
+      name: 'PathOutsideRootError',
+    });
+    await expect(service.shellShowInFolder(id, 'C:/Windows/system32/cmd.exe')).rejects.toThrow();
+    expect(opened).toEqual([]);
+  });
+
+  it('マージ対象が空なら拒否する', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+
+    await expect(service.branchMerge(id, '  ', true)).rejects.toMatchObject({
+      dto: { kind: 'internal' },
+    });
+  });
+
   it('新しいブランチ名が空なら拒否する', async () => {
     const id = await openDemo();
     await service.stage(id, { kind: 'all' });
@@ -359,6 +444,8 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       sessions: () => null,
       commandLog: () => commandLog,
       pickDirectory: () => Promise.resolve(null),
+      openPath: () => Promise.resolve(''),
+      showItemInFolder: () => undefined,
     });
 
     const env = noGit.appGetEnvironment();

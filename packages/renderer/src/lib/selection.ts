@@ -53,3 +53,40 @@ export function nextSelection(
 
   return { selected: new Set([click.path]), anchorIndex: click.index };
 }
+
+/**
+ * ステージ／アンステージの直後に選ぶべきファイル。
+ *
+ * 操作したファイルが一覧から消えるので、その 1 行下（無ければ 1 行上）へ移す。
+ * これで連続してステージするときにマウスを動かし直さずに済む。
+ *
+ * @param entries 操作**前**の一覧。仮想化リストの未取得ぶんは undefined が入る（疎配列）。
+ * @param removed 操作したパス。
+ * @returns 次に選ぶパス。候補が無ければ null（選択解除）。
+ */
+export function nextSelectionAfterRemoval(
+  entries: readonly (FileEntryDto | undefined)[],
+  removedPaths: readonly string[],
+): string | null {
+  const removed = new Set(removedPaths);
+  const indices: number[] = [];
+  entries.forEach((entry, i) => {
+    if (entry !== undefined && removed.has(entry.path)) indices.push(i);
+  });
+  if (indices.length === 0) return null;
+
+  const last = Math.max(...indices);
+  for (let i = last + 1; i < entries.length; i += 1) {
+    const path = entries[i]?.path;
+    // 未取得の穴は飛ばす（パスが分からないので選べない）
+    if (path !== undefined && !removed.has(path)) return path;
+  }
+
+  const first = Math.min(...indices);
+  for (let i = first - 1; i >= 0; i -= 1) {
+    const path = entries[i]?.path;
+    if (path !== undefined && !removed.has(path)) return path;
+  }
+
+  return null;
+}
