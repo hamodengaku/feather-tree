@@ -183,7 +183,11 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* main.panes のグリッドアイテムそのもの。min-width の既定は auto（= min-content 幅）なので、
+       トラックを狭めると中身が隣のペインへはみ出して描画される。0 にして必ずトラック内へ収める。 */
+    min-width: 0;
     height: 100%;
+    overflow: hidden;
   }
 
   header {

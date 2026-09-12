@@ -14,5 +14,6 @@ export {
   pickFrom,
   record,
   stringArray,
+  stringArrayRecord,
   stringOrNull,
 } from './settings/normalize.js';

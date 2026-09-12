@@ -40,3 +40,29 @@ export function stringOrNull(value: unknown): string | null {
 export function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
 }
+
+/**
+ * 「キー → 文字列配列」の辞書。リポジトリごとの UI 状態のように、
+ * 件数が際限なく増えうるものを保存するのに使う。
+ *
+ * 上限を超えた分は先頭から `keyLimit` 件だけ残す。呼び出し側が
+ * 「今使っているキーを先頭に置いて渡す」ことで、使用中の項目が落ちないようにできる。
+ */
+export function stringArrayRecord(
+  value: unknown,
+  keyLimit: number,
+  itemLimit: number,
+): Readonly<Record<string, readonly string[]>> {
+  const out: Record<string, readonly string[]> = {};
+  let kept = 0;
+  for (const [key, raw] of Object.entries(record(value))) {
+    if (kept >= keyLimit) break;
+    if (key.length === 0 || !Array.isArray(raw)) continue;
+    const items = stringArray(raw, itemLimit);
+    // 空配列は「既定と同じ」なので保存しない（設定ファイルが無駄に育つのを防ぐ）
+    if (items.length === 0) continue;
+    out[key] = items;
+    kept += 1;
+  }
+  return out;
+}

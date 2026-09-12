@@ -6,3 +6,5 @@ export type { ApplyThemeOptions, ThemeTokens } from './theme.js';
 export { computeWindow } from './virtualList.js';
 export type { VirtualListOptions, VirtualWindow } from './virtualList.js';
 export { createBridgeProxy } from './bridge.js';
+export { createTextMeasurer } from './textMeasure.js';
+export type { TextMeasurer } from './textMeasure.js';

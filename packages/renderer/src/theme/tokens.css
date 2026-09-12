@@ -36,6 +36,8 @@
 
   --app-metric-row-height: 22px;
   --app-metric-radius: 4px;
+  /* ahead/behind バッジのような、完全に丸めた枠のための値。 */
+  --app-metric-radius-pill: 999px;
   --app-metric-gap: 8px;
 
   /*

@@ -70,6 +70,27 @@ describe('設定の正規化', () => {
     expect(normalizeSettings({ branchPaneCollapsed: true }).branchPaneCollapsed).toBe(true);
   });
 
+  it('branchExpanded は壊れた値を捨て、リポジトリごとの配列だけを残す', () => {
+    expect(normalizeSettings({}).branchExpanded).toEqual({});
+    expect(normalizeSettings({ branchExpanded: 'nope' }).branchExpanded).toEqual({});
+    expect(
+      normalizeSettings({
+        branchExpanded: {
+          'C:/repo': ['local:feature', 42, null, 'remote:origin'],
+          'C:/empty': [],
+          'C:/bad': 'not-an-array',
+        },
+      }).branchExpanded,
+    ).toEqual({ 'C:/repo': ['local:feature', 'remote:origin'] });
+  });
+
+  it('branchExpanded はリポジトリ 30 件までで、先頭から残す', () => {
+    const raw: Record<string, string[]> = {};
+    for (let i = 0; i < 40; i += 1) raw['repo' + i] = ['local:feature'];
+    const kept = Object.keys(normalizeSettings({ branchExpanded: raw }).branchExpanded);
+    expect(kept).toHaveLength(30);
+    expect(kept[0]).toBe('repo0');
+  });
   it('commandLogHeight は範囲外を既定値に丸め、有効な値は保持する', () => {
     expect(normalizeSettings({ commandLogHeight: 1 }).commandLogHeight).toBe(120);
     expect(normalizeSettings({ commandLogHeight: 99999 }).commandLogHeight).toBe(800);

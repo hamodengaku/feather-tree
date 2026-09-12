@@ -5,6 +5,7 @@ import {
   pickFrom,
   record,
   stringArray,
+  stringArrayRecord,
   stringOrNull,
 } from '@feathertree/base-core';
 
@@ -36,6 +37,12 @@ export interface AppSettings {
   readonly branchLocalHeight: number;
   /** ブランチペインを左端の細い帯に折り畳んでいるか。 */
   readonly branchPaneCollapsed: boolean;
+  /**
+   * ブランチペインで展開中のフォルダ。リポジトリの絶対パス → 展開パスの配列。
+   * 値は 'local:feature/ui' のように 'local:' / 'remote:' を前置きしたフルパス。
+   * 既定は全折りたたみなので、開いている側を保存する。
+   */
+  readonly branchExpanded: Readonly<Record<string, readonly string[]>>;
   /** 実行ログパネルの高さ（px）。 */
   readonly commandLogHeight: number;
   /** WorkingTreePane の「ステージ済み」セクションの高さ（px）。残りは「変更」に割り当てる。 */
@@ -58,6 +65,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
   branchPaneCollapsed: false,
+  branchExpanded: {},
   commandLogHeight: 220,
   stagedHeight: 180,
   refocusUpdateMode: 'auto',
@@ -92,6 +100,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
     },
     branchLocalHeight: clampInt(o['branchLocalHeight'], 80, 4000, DEFAULT_SETTINGS.branchLocalHeight),
     branchPaneCollapsed: boolOr(o['branchPaneCollapsed'], DEFAULT_SETTINGS.branchPaneCollapsed),
+    branchExpanded: stringArrayRecord(o['branchExpanded'], 30, 2000),
     commandLogHeight: clampInt(o['commandLogHeight'], 120, 800, DEFAULT_SETTINGS.commandLogHeight),
     stagedHeight: clampInt(o['stagedHeight'], 80, 4000, DEFAULT_SETTINGS.stagedHeight),
     refocusUpdateMode: pickFrom(o['refocusUpdateMode'], REFOCUS_MODES, DEFAULT_SETTINGS.refocusUpdateMode),

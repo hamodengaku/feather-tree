@@ -114,6 +114,8 @@ export interface SettingsDto {
   readonly paneWidths: { readonly left: number; readonly center: number; readonly centerRatio: number | null };
   readonly branchLocalHeight: number;
   readonly branchPaneCollapsed: boolean;
+  /** リポジトリの絶対パス → ブランチペインで展開中のフォルダ（"local:" / "remote:" 前置き）。 */
+  readonly branchExpanded: Readonly<Record<string, readonly string[]>>;
   readonly commandLogHeight: number;
   readonly stagedHeight: number;
   readonly refocusUpdateMode: 'auto' | 'modal' | 'none';

@@ -20,6 +20,9 @@ import { ft } from '../bridge.js';
 import { applyTheme } from './theme.js';
 import { nextSelectionAfterRemoval } from './selection.js';
 
+/** ブランチペインの展開状態が無いときに返す共通の空配列（毎回作り直さない）。 */
+const EMPTY_EXPANDED: readonly string[] = [];
+
 /** 1 セクションが一度に取得する件数。仮想化しているので画面分 + 余裕で足りる。 */
 const PAGE_LIMIT = 200;
 
@@ -124,6 +127,16 @@ export class AppState {
     if (this.busy || this.activeId === null) return false;
     if (this.commitMessage.trim().length === 0) return false;
     return this.amend || (this.summary?.counts.staged ?? 0) > 0;
+  }
+
+  /**
+   * ブランチペインで展開中のフォルダ（アクティブなリポジトリの分だけ）。
+   * 既定は全折りたたみなので、設定には「開いている側」を保存している。
+   */
+  get branchExpanded(): readonly string[] {
+    const root = this.activeSession?.root ?? null;
+    if (root === null || this.settings === null) return EMPTY_EXPANDED;
+    return this.settings.branchExpanded[root] ?? EMPTY_EXPANDED;
   }
 
   /** 今いるブランチ名。detached HEAD やリポジトリ未取得では null（作成の起点に使えない）。 */
@@ -384,6 +397,37 @@ export class AppState {
   async setBranchPaneCollapsed(collapsed: boolean): Promise<void> {
     const result = await this.#ft.settingsUpdate({ branchPaneCollapsed: collapsed });
     if (result.ok) this.settings = result.value;
+  }
+
+  /**
+   * ブランチペインの展開状態の永続化（リポジトリごと）。
+   *
+   * SettingsStore.update() は浅いマージなので、辞書は全体を送る。
+   * 使用中のリポジトリのキーを先頭に置き、上限（30 件）を超えたときに
+   * 今開いているリポジトリの状態が切り捨てられないようにする。
+   */
+  async setBranchExpanded(paths: readonly string[]): Promise<void> {
+    const root = this.activeSession?.root ?? null;
+    if (root === null || this.settings === null) return;
+    const rest: Record<string, readonly string[]> = { ...this.settings.branchExpanded };
+    delete rest[root];
+    const next = paths.length === 0 ? rest : { [root]: [...paths], ...rest };
+
+    // 先に画面へ反映する。IPC の往復を待つと、main が重い git を抱えている間
+    // クリックしても三角マークすら変わらず「無反応」に見える。
+    const previous = this.settings.branchExpanded;
+    this.settings = { ...this.settings, branchExpanded: next };
+
+    const result = await this.#ft.settingsUpdate({ branchExpanded: next });
+    if (result.ok) {
+      this.settings = result.value;
+      return;
+    }
+    // 保存できなかったら見た目も戻す。黙って捨てると原因が分からなくなる。
+    if (this.settings !== null) {
+      this.settings = { ...this.settings, branchExpanded: previous };
+    }
+    this.error = result.error;
   }
 
   /** 実行ログパネルの高さの永続化。 */

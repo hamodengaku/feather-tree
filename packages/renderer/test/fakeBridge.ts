@@ -32,6 +32,7 @@ const SETTINGS: SettingsDto = {
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
   branchPaneCollapsed: false,
+  branchExpanded: {},
   commandLogHeight: 220,
   stagedHeight: 180,
   refocusUpdateMode: 'auto',

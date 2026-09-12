@@ -202,20 +202,28 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* main.panes のグリッドアイテムそのもの。min-width の既定は auto（= min-content 幅）で、
+       それをヘッダの nowrap なボタン群が押し上げる。0 にしないとファイル名の行が
+       差分ペインの上にはみ出して描画される。 */
+    min-width: 0;
     height: 100%;
     border-right: 1px solid var(--app-border-subtle);
+    overflow: hidden;
   }
 
   .groups {
     display: grid;
     flex: 1 1 auto;
     min-height: 0;
+    min-width: 0;
   }
 
   .group {
     display: flex;
     flex-direction: column;
     min-height: 0;
+    min-width: 0;
+    overflow: hidden;
     border-bottom: 1px solid var(--app-border-subtle);
   }
 
@@ -224,9 +232,12 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--app-metric-gap);
+    min-width: 0;
     padding: 6px 8px;
     background: var(--app-bg-surface);
     border-bottom: 1px solid var(--app-border-subtle);
+    /* 狭めたときにボタンを縦書きへ折り返させず、見出しを縮めて端から隠す。 */
+    overflow: hidden;
   }
 
   h2 {
@@ -235,6 +246,9 @@
     font-weight: 600;
     color: var(--app-text-secondary);
     white-space: nowrap;
+    /* ペインを狭めたとき、操作ボタンより先に見出しから縮ませる。 */
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .count {
@@ -245,12 +259,15 @@
 
   .actions {
     display: flex;
+    flex: 0 0 auto;
     gap: 4px;
   }
 
   .actions button {
+    flex: 0 0 auto;
     font-size: var(--app-font-size-mono);
     padding: 2px 8px;
+    white-space: nowrap;
   }
 
   .commit {
