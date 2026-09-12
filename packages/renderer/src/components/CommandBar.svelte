@@ -10,26 +10,36 @@
    * 実行中に出す文字はコマンドログと同じラベル（`git status` など）で、進捗の中身
    * （Receiving objects: 45%）は出さない。それは未実装（docs/01-architecture.md 6 章）。
    */
+  import { untrack } from 'svelte';
   import { expoOut } from 'svelte/easing';
   import { fade, fly } from 'svelte/transition';
   import { app } from '../lib/appState.svelte.js';
+  import { CommandHold } from '../lib/commandHold.svelte.js';
 
   /*
    * 所要時間と曲線。tokens.css に置けないのは、Svelte の transition が
    * CSS 変数ではなく数値を取るため。
    *
    * 120ms 以下は「動いた」ではなく「切り替わった」と受け取られるので、
-   * ふわっと見せるには 200ms 前後が要る。ただし git の大半は数十 ms で終わるため、
-   * 素直に伸ばすと短命なコマンドが薄いまま消える。
-   *
-   * そこで **expoOut**（最初に一気に立ち上がり、末尾が長く伸びる曲線）を使う。
-   * 60ms 時点の不透明度が cubicOut の 61% に対し 85% まで上がるので、
-   * 短いコマンドはほぼ見えたまま、長いコマンドだけがゆっくり落ち着く。
+   * ふわっと見せるには 200ms 前後が要る。曲線は expoOut
+   * （最初に立ち上がり、末尾が長く伸びる）で、止まり際をゆっくりにする。
    */
   const IN_MS = 220;
   const OUT_MS = 140;
 
-  const running = $derived(app.runningCommand);
+  /*
+   * 実行の有無をそのまま映さず、最低 500ms は残す（commandHold.svelte.ts）。
+   * untrack で包むのは、update が読み書きする内部状態をこの effect の
+   * 依存に含めないため。見張るのは app.runningCommand だけでよい。
+   */
+  const hold = new CommandHold();
+  $effect(() => {
+    const current = app.runningCommand;
+    untrack(() => hold.update(current));
+    return () => hold.dispose();
+  });
+
+  const running = $derived(hold.shown);
 </script>
 
 <div class="command-bar">
@@ -39,10 +49,9 @@
       中の文字だけを差し替える（opId で key を張らない）。
 
       1 操作で git は最大 3 個連続する（タブを開く = status → for-each-ref → remote）。
-      読み取り系は数十 ms なので 3 個が 200ms ほどに密集する。作り直すと
-      「前が消える 140ms」と「次が出る 220ms」が重なり、別々の文字列が同じ場所で
-      二重に見えてしまう。連続実行の 2 個目以降は「表示」ではなく「更新」なので、
-      演出の対象から外す。
+      作り直すと「前が消える 140ms」と「次が出る 220ms」が重なり、別々の文字列が
+      同じ場所で二重に見えてしまう。連続実行の 2 個目以降は「表示」ではなく
+      「更新」なので、演出の対象から外す。
     -->
     <div class="running" in:fly={{ y: 6, duration: IN_MS, easing: expoOut }} out:fade={{ duration: OUT_MS }}>
       git {running.args.join(' ')}
@@ -94,10 +103,18 @@
     text-overflow: ellipsis;
   }
 
+  /*
+   * 待機中の「ターミナルで開く」（--app-text-muted）より、さらに一段薄くする。
+   * こちらは押せる誘いではなく経過の報告なので、目を引かないほうがよい。
+   *
+   * muted より弱いトークンが無いので、背景（この帯の地の色そのもの）へ寄せて作る。
+   * opacity を使わないのは、Svelte の transition が同じ opacity を直接書き換えるため。
+   * 併用すると出入りが終わった瞬間に濃さが飛ぶ。
+   */
   .running {
     font-family: var(--app-font-mono);
     font-size: var(--app-font-size-mono);
-    color: var(--app-text-secondary);
+    color: color-mix(in srgb, var(--app-text-muted) 65%, var(--app-bg-app));
   }
 
   .idle {

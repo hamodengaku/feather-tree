@@ -3,6 +3,8 @@ import type {
   BranchDto,
   CommandLogEntryDto,
   CommandStartEvent,
+  CommitFileChangeDto,
+  CommitSummaryDto,
   ConfirmationDto,
   EnvironmentDto,
   FileDiffDto,
@@ -92,6 +94,30 @@ export class AppState {
   diff = $state<FileDiffDto | null>(null);
   diffLoading = $state(false);
 
+  /* ---------------------------------------------------------------- コミットログモード（決定 27） */
+
+  /** 取得済みのコミット。新しい順。追加ページは末尾に足す（#20 を skip 付きで呼ぶ）。 */
+  commits = $state<readonly CommitSummaryDto[]>([]);
+  logLoading = $state(false);
+  /** これ以上のページが無い（最後の応答が logPageSize 未満だった）。 */
+  logComplete = $state(false);
+  /** 選択中のコミットの oid。 */
+  selectedCommit = $state<string | null>(null);
+  commitFiles = $state<readonly CommitFileChangeDto[]>([]);
+  commitFilesLoading = $state(false);
+  /** コミット詳細「変更」タブで選択中のファイル。 */
+  selectedCommitPath = $state<string | null>(null);
+  commitDiff = $state<FileDiffDto | null>(null);
+  commitDiffLoading = $state(false);
+  commitDetailTab = $state<'info' | 'changes'>('info');
+
+  /**
+   * コミット関係の要求の世代番号。#diffSeq と同じ理由（古い応答で新しい選択を上書きしない）。
+   * 描画に使わないので $state にしない。
+   */
+  #commitFilesSeq = 0;
+  #commitDiffSeq = 0;
+
   /**
    * diff 要求の世代番号。$state にしない（描画に使わないため）。
    *
@@ -135,6 +161,12 @@ export class AppState {
       selected: SelectedFile | null;
       branches: readonly BranchDto[];
       remotes: readonly string[];
+      commits: readonly CommitSummaryDto[];
+      logComplete: boolean;
+      selectedCommit: string | null;
+      commitFiles: readonly CommitFileChangeDto[];
+      selectedCommitPath: string | null;
+      commitDiff: FileDiffDto | null;
     }
   >();
 
@@ -163,6 +195,28 @@ export class AppState {
     const head = this.summary?.head ?? null;
     if (head === null || head.detached) return null;
     return head.branch;
+  }
+
+  /**
+   * HEAD が指しているコミットの件名。無ければ null。
+   *
+   * ブランチペインの「現在の位置」とリポジトリタブ（決定 24）が同じものを出すための 1 箇所。
+   *
+   * 出所は取得済みのブランチ一覧（対応表 #3 の `%(contents:subject)`）なので git は増えない。
+   * **どのブランチかは一覧の `isHead` ではなく status 由来の `currentBranch` で決める。**
+   * ブランチ切替・作成の直後は一覧を取り直さない（#12 → #2 / #14 → #2）ので、
+   * 一覧側の `isHead` は古いままになる。
+   */
+  get headSubject(): string | null {
+    const head = this.summary?.head ?? null;
+    if (head === null || head.oid === null) return null;
+
+    const current = this.currentBranch;
+    if (current !== null) {
+      return this.branches.find((b) => !b.isRemote && b.shortName === current)?.subject ?? null;
+    }
+    // detached HEAD。`*` 印の付く ref が無いので oid の一致で探す
+    return this.branches.find((b) => b.oid === head.oid)?.subject ?? null;
   }
 
   /**
@@ -254,6 +308,12 @@ export class AppState {
     this.selected = cached.selected;
     this.branches = cached.branches;
     this.remotes = cached.remotes;
+    this.commits = cached.commits;
+    this.logComplete = cached.logComplete;
+    this.selectedCommit = cached.selectedCommit;
+    this.commitFiles = cached.commitFiles;
+    this.selectedCommitPath = cached.selectedCommitPath;
+    this.commitDiff = cached.commitDiff;
     this.#invalidateDiff();
     if (cached.selected !== null) await this.loadDiff(cached.selected);
   }
@@ -299,6 +359,12 @@ export class AppState {
       const result = await this.#ft.sessionRefresh(id, scope);
       if (!this.#check(result)) return;
       await this.reloadAll();
+      /*
+       * 履歴を見ているのに更新しても変わらない、では筋が通らないので取り直す。
+       * 対応表の例外「『更新』ボタン（コミットログモード）: #2 → #3 → #20」。
+       * **差分モードでは走らせない**（見えていないものを取り直さない）。
+       */
+      if (this.viewMode === 'log') await this.loadLog();
     });
   }
 
@@ -402,6 +468,130 @@ export class AppState {
     if (result.ok) this.commandLog = [...result.value];
   }
 
+  // ---------------------------------------------------------------- コミットログモード（決定 27）
+
+  /** 今のモード。設定に永続化してあるので、再起動しても履歴を読んでいた続きから開く。 */
+  get viewMode(): 'diff' | 'log' {
+    return this.settings?.viewMode ?? 'diff';
+  }
+
+  async setViewMode(mode: 'diff' | 'log'): Promise<void> {
+    const result = await this.#ft.settingsUpdate({ viewMode: mode });
+    if (result.ok) this.settings = result.value;
+  }
+
+  /**
+   * 履歴をまだ一度も取っていなければ取る。コミットログモードのペインから呼ぶ。
+   *
+   * **モードに入った瞬間に初めて #20 が走る。** 差分モードでいる限り履歴は取らない
+   * （見えていないもののために git を起動しない。docs/00-decisions.md「やらないこと」）。
+   */
+  async ensureLog(): Promise<void> {
+    if (this.activeId === null || this.logLoading || this.commits.length > 0) return;
+    await this.loadLog();
+  }
+
+  /** 履歴の取り直し（1 ページ目から）。選択していたコミットは消える。 */
+  async loadLog(): Promise<void> {
+    const id = this.activeId;
+    if (id === null) return;
+    this.logLoading = true;
+    try {
+      const result = await this.#ft.logGetPage(id, 0);
+      if (id !== this.activeId) return;
+      if (!this.#check(result)) return;
+      this.#clearLog();
+      this.commits = [...result.value];
+      this.logComplete = result.value.length < this.#logPageSize();
+    } finally {
+      this.logLoading = false;
+    }
+  }
+
+  /**
+   * スクロールが末尾に届いたときの追加読み込み。
+   * skip は取得済みの件数そのもの（#20 の --skip）。
+   */
+  async loadMoreLog(): Promise<void> {
+    const id = this.activeId;
+    if (id === null || this.logLoading || this.logComplete) return;
+    const skip = this.commits.length;
+    this.logLoading = true;
+    try {
+      const result = await this.#ft.logGetPage(id, skip);
+      // 追い越し（タブを替えた・1 ページ目から取り直した）の応答は捨てる
+      if (id !== this.activeId || this.commits.length !== skip) return;
+      if (!result.ok) {
+        this.error = result.error;
+        return;
+      }
+      this.commits = [...this.commits, ...result.value];
+      if (result.value.length < this.#logPageSize()) this.logComplete = true;
+    } finally {
+      this.logLoading = false;
+    }
+  }
+
+  #logPageSize(): number {
+    return this.settings?.logPageSize ?? 200;
+  }
+
+  /** コミットを選ぶ。変更ファイル一覧（#21）を 1 回だけ取る。 */
+  async selectCommit(oid: string): Promise<void> {
+    const id = this.activeId;
+    if (id === null || this.selectedCommit === oid) return;
+
+    this.selectedCommit = oid;
+    // 前のコミットのファイル選択と差分は意味を持たない。飛んでいる要求ごと捨てる
+    this.selectedCommitPath = null;
+    this.#commitDiffSeq += 1;
+    this.commitDiff = null;
+
+    const seq = (this.#commitFilesSeq += 1);
+    this.commitFilesLoading = true;
+    try {
+      const result = await this.#ft.commitGetFiles(id, oid);
+      if (seq !== this.#commitFilesSeq) return;
+      this.commitFiles = result.ok ? [...result.value] : [];
+      if (!result.ok) this.error = result.error;
+    } finally {
+      if (seq === this.#commitFilesSeq) this.commitFilesLoading = false;
+    }
+  }
+
+  /** コミット詳細「変更」タブでファイルを選ぶ。そのファイルの diff（#36）を取る。 */
+  async selectCommitPath(path: string): Promise<void> {
+    const id = this.activeId;
+    const oid = this.selectedCommit;
+    if (id === null || oid === null) return;
+
+    this.selectedCommitPath = path;
+    const seq = (this.#commitDiffSeq += 1);
+    this.commitDiffLoading = true;
+    try {
+      const result = await this.#ft.commitGetDiff(id, oid, path);
+      if (seq !== this.#commitDiffSeq) return;
+      this.commitDiff = result.ok ? result.value : null;
+      if (!result.ok) this.error = result.error;
+    } finally {
+      if (seq === this.#commitDiffSeq) this.commitDiffLoading = false;
+    }
+  }
+
+  /** コミット詳細ペインの高さの永続化。 */
+  async setLogDetailHeight(px: number): Promise<void> {
+    const clamped = Math.min(2000, Math.max(120, Math.round(px)));
+    const result = await this.#ft.settingsUpdate({ logDetailHeight: clamped });
+    if (result.ok) this.settings = result.value;
+  }
+
+  /** 「変更」タブの左ファイルリスト幅の永続化。 */
+  async setCommitFileListWidth(px: number): Promise<void> {
+    const clamped = Math.min(1200, Math.max(120, Math.round(px)));
+    const result = await this.#ft.settingsUpdate({ commitFileListWidth: clamped });
+    if (result.ok) this.settings = result.value;
+  }
+
   async setTheme(theme: SettingsDto['theme']): Promise<void> {
     const result = await this.#ft.settingsUpdate({ theme });
     if (result.ok) {
@@ -496,6 +686,12 @@ export class AppState {
     if (this.settings === null) return;
     const clamped = Math.min(4000, Math.max(80, Math.round(px)));
     const result = await this.#ft.settingsUpdate({ stagedHeight: clamped });
+    if (result.ok) this.settings = result.value;
+  }
+
+  /** リポジトリタブに現在情報を出すかの永続化（決定 24）。 */
+  async setTabShowCurrentInfo(show: boolean): Promise<void> {
+    const result = await this.#ft.settingsUpdate({ tabShowCurrentInfo: show });
     if (result.ok) this.settings = result.value;
   }
 
@@ -594,18 +790,37 @@ export class AppState {
     );
   }
 
+  /**
+   * コミット（対応表 #10 / #11）。
+   *
+   * 成功したときだけブランチ一覧も取り直す（例外「コミット後の反映: #10 → #2 → #3」）。
+   * ahead が進むうえ、**HEAD の件名の出所が #3 しかない**ので、取り直さないと
+   * ブランチペインの「現在の位置」とリポジトリタブに 1 つ前の件名が残る。
+   * 読むのは main のスナップショットなので、ここで git は増えない（#3 は main が済ませている）。
+   */
   async commit(): Promise<void> {
     const message = this.commitMessage;
     const amend = this.amend;
+    // 確認待ちで止まった場合は取り直さないよう、成功したことを onSuccess で拾う
+    let committed = false;
     const clear = (): void => {
       this.commitMessage = '';
       this.amend = false;
+      committed = true;
     };
     await this.#operate(
       (confirmed) => this.#ft.commit(this.#id(), { message, amend }, confirmed),
-      () => this.#operate(() => this.#ft.commit(this.#id(), { message, amend }, true), undefined, clear),
+      async () => {
+        await this.#operate(
+          () => this.#ft.commit(this.#id(), { message, amend }, true),
+          undefined,
+          clear,
+        );
+        if (committed) await this.reloadBranches();
+      },
       clear,
     );
+    if (committed) await this.reloadBranches();
   }
 
   /** ブランチのダブルクリックによる切替。確認不要（決定: ブランチ移動は無確認）。 */
@@ -802,6 +1017,12 @@ export class AppState {
       selected: this.selected,
       branches: this.branches,
       remotes: this.remotes,
+      commits: this.commits,
+      logComplete: this.logComplete,
+      selectedCommit: this.selectedCommit,
+      commitFiles: this.commitFiles,
+      selectedCommitPath: this.selectedCommitPath,
+      commitDiff: this.commitDiff,
     });
   }
 
@@ -813,8 +1034,22 @@ export class AppState {
     this.remotes = [];
     this.selected = null;
     this.#invalidateDiff();
+    this.#clearLog();
     this.commitMessage = '';
     this.amend = false;
+  }
+
+  /** コミットログモードの表示物を捨てる。飛んでいる要求も無効にする。 */
+  #clearLog(): void {
+    this.commits = [];
+    this.logComplete = false;
+    this.selectedCommit = null;
+    this.#commitFilesSeq += 1;
+    this.commitFiles = [];
+    this.selectedCommitPath = null;
+    this.#commitDiffSeq += 1;
+    this.commitDiff = null;
+    this.commitDetailTab = 'info';
   }
 }
 

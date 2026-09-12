@@ -116,14 +116,14 @@
             disabled={app.busy || changesTotal === 0}
             onclick={() => void app.discard({ kind: 'filtered', filter: { group: 'unstaged' } })}
           >
-            変更を破棄
+            変更をすべて破棄
           </button>
           <button
             class="danger"
             disabled={app.busy || (app.summary?.counts.untracked ?? 0) === 0}
             onclick={() => void app.deleteUntracked({ kind: 'filtered', filter: { group: 'untracked' } })}
           >
-            未追跡を削除
+            未追跡をすべて削除
           </button>
         </div>
       </header>

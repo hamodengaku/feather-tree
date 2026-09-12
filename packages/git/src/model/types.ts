@@ -80,7 +80,18 @@ export interface CommitSummary {
   readonly authorEmail: string;
   /** ISO 8601。 */
   readonly authoredAt: string;
+  readonly committerName: string;
+  readonly committerEmail: string;
+  /** ISO 8601。rebase や cherry-pick の後は authoredAt と食い違う。 */
+  readonly committedAt: string;
   readonly subject: string;
+  /**
+   * 件名を除いた本文。無ければ空文字。
+   *
+   * 一覧の取得（#20）でまとめて取る。コミットを選ぶたびに `show -s` を打つと
+   * 行を選ぶだけで git が 2 プロセス走るため（docs/02-git-command-map.md の「履歴」節）。
+   */
+  readonly body: string;
 }
 
 export type DiffLineKind = 'context' | 'added' | 'removed' | 'no-newline';

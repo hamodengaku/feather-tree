@@ -11,6 +11,8 @@ import {
 
 export type ThemeName = 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
 export type UntrackedMode = 'normal' | 'all';
+/** ペイン領域のモード（決定 27）。'diff' = 左右 3 分割、'log' = 上下 2 分割の履歴。 */
+export type ViewMode = 'diff' | 'log';
 /** ウィンドウ復帰時の更新方式（決定14の唯一の自動入口の挙動）。 */
 export type RefocusUpdateMode = 'auto' | 'modal' | 'none';
 
@@ -32,6 +34,23 @@ export interface AppSettings {
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
+  /** 差分モードとコミットログモードのどちらを出しているか（決定 27）。 */
+  readonly viewMode: ViewMode;
+  /**
+   * コミットログモードの下部（コミット詳細）ペインの高さ（px）。残りはコミットリストに割り当てる。
+   *
+   * 折り畳みの状態を持たないのは、縦帯の折り畳みボタンが**どちらのモードでも
+   * ブランチペインを相手にする**ため（決定 27）。畳めるペインは 1 つだけなので、
+   * 状態も `branchPaneCollapsed` 1 つで足りる。
+   */
+  readonly logDetailHeight: number;
+  /** コミット詳細ペイン「変更」タブの、左のファイルリストの幅（px）。 */
+  readonly commitFileListWidth: number;
+  /**
+   * リポジトリタブに現在情報（ブランチ名と HEAD の件名）を出すか（決定 24）。
+   * 切ると従来どおりリポジトリ名だけになる。
+   */
+  readonly tabShowCurrentInfo: boolean;
   readonly paneWidths: PaneWidths;
   /** ブランチペインの「ローカル」セクションの高さ（px）。残りは「リモート」に割り当てる。 */
   readonly branchLocalHeight: number;
@@ -62,6 +81,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   diffContextLines: 3,
   diffMaxLines: 20000,
   logPageSize: 200,
+  viewMode: 'diff',
+  logDetailHeight: 260,
+  commitFileListWidth: 260,
+  tabShowCurrentInfo: true,
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
   branchPaneCollapsed: false,
@@ -76,6 +99,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 const THEMES: readonly ThemeName[] = ['classic-dark', 'classic-light', 'phoenix-dark', 'phoenix-light'];
 const UNTRACKED: readonly UntrackedMode[] = ['normal', 'all'];
 const REFOCUS_MODES: readonly RefocusUpdateMode[] = ['auto', 'modal', 'none'];
+const VIEW_MODES: readonly ViewMode[] = ['diff', 'log'];
 
 /**
  * 設定ファイルは人間が手で編集しうるし、古いバージョンの残骸も入る。
@@ -93,6 +117,15 @@ export function normalizeSettings(raw: unknown): AppSettings {
     diffContextLines: clampInt(o['diffContextLines'], 0, 20, DEFAULT_SETTINGS.diffContextLines),
     diffMaxLines: clampInt(o['diffMaxLines'], 100, 200000, DEFAULT_SETTINGS.diffMaxLines),
     logPageSize: clampInt(o['logPageSize'], 20, 2000, DEFAULT_SETTINGS.logPageSize),
+    viewMode: pickFrom(o['viewMode'], VIEW_MODES, DEFAULT_SETTINGS.viewMode),
+    logDetailHeight: clampInt(o['logDetailHeight'], 120, 2000, DEFAULT_SETTINGS.logDetailHeight),
+    commitFileListWidth: clampInt(
+      o['commitFileListWidth'],
+      120,
+      1200,
+      DEFAULT_SETTINGS.commitFileListWidth,
+    ),
+    tabShowCurrentInfo: boolOr(o['tabShowCurrentInfo'], DEFAULT_SETTINGS.tabShowCurrentInfo),
     paneWidths: {
       left: clampInt(record(o['paneWidths'])['left'], 120, 1200, DEFAULT_SETTINGS.paneWidths.left),
       center: clampInt(record(o['paneWidths'])['center'], 200, 2000, DEFAULT_SETTINGS.paneWidths.center),

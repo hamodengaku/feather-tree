@@ -42,6 +42,14 @@
   const remotes = $derived(app.branches.filter((b) => b.isRemote));
   const head = $derived(app.summary?.head ?? null);
 
+  /**
+   * 「現在の位置」に出すコミットの件名。ハッシュの代わり。
+   *
+   * 8 桁の 16 進数より「何をしたコミットの上に居るか」のほうが手がかりになる。
+   * 導出はリポジトリタブ（決定 24）と共通（appState.headSubject）。
+   */
+  const headSubject = $derived(app.headSubject);
+
   /** 展開中のフォルダ（リポジトリごとに保存されている。既定は全折りたたみ）。 */
   const expanded = $derived(toExpandedSet(app.branchExpanded));
   const localRows = $derived(buildBranchTree(locals, expanded, 'local'));
@@ -199,7 +207,14 @@
         <div class="branch-name">{head.detached ? 'detached HEAD' : (head.branch ?? '(不明)')}</div>
         {#if head.oid === null}
           <div class="sub">コミットがまだありません</div>
+        {:else if headSubject !== null}
+          <div class="sub subject" title={headSubject}>{headSubject}</div>
         {:else}
+          <!--
+            どのブランチの先端でもない位置に居る（detached でコミットを直接見ている）。
+            件名が手元に無いので、ここだけはハッシュに落とす。
+            「detached HEAD」だけでは今どこに居るのか分からないため。
+          -->
           <div class="sub mono">{head.oid.slice(0, 8)}</div>
         {/if}
         {#if head.upstream !== null}
@@ -381,6 +396,18 @@
 
   .mono {
     font-family: var(--app-font-mono);
+  }
+
+  /*
+   * コミットの件名。長さは git 任せ（人が書いた文）なので、必ず 1 行で打ち切る。
+   * 折り返させると「現在の位置」の高さが件名次第で変わり、下の一覧がずれる
+   * （.head-section は flex: 0 0 auto で中身の高さをそのまま取る）。
+   * 全文は title 属性で読める。
+   */
+  .subject {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   li {

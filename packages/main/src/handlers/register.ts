@@ -132,6 +132,10 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     service.diffGet(id, path, staged),
   );
   bind(CHANNELS.logGetPage, (id: string, skip: number) => service.logGetPage(id, skip));
+  bind(CHANNELS.commitGetFiles, (id: string, oid: string) => service.commitGetFiles(id, oid));
+  bind(CHANNELS.commitGetDiff, (id: string, oid: string, path: string) =>
+    service.commitGetDiff(id, oid, path),
+  );
   bind(CHANNELS.branchList, (id: string) => service.branchList(id));
   bind(CHANNELS.branchSwitch, (id: string, branchName: string) => service.branchSwitch(id, branchName));
   bind(CHANNELS.branchCreate, (id: string, req: Parameters<Service['branchCreate']>[1]) =>

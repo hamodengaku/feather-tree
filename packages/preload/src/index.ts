@@ -65,6 +65,9 @@ const bridge: FeatherTreeBridge = {
   diffGet: (id: string, path: string, staged: boolean) =>
     ipcRenderer.invoke(CHANNELS.diffGet, id, path, staged),
   logGetPage: (id: string, skip: number) => ipcRenderer.invoke(CHANNELS.logGetPage, id, skip),
+  commitGetFiles: (id: string, oid: string) => ipcRenderer.invoke(CHANNELS.commitGetFiles, id, oid),
+  commitGetDiff: (id: string, oid: string, path: string) =>
+    ipcRenderer.invoke(CHANNELS.commitGetDiff, id, oid, path),
   branchList: (id: string) => ipcRenderer.invoke(CHANNELS.branchList, id),
   branchSwitch: (id: string, branchName: string) =>
     ipcRenderer.invoke(CHANNELS.branchSwitch, id, branchName),

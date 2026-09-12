@@ -170,6 +170,15 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     const log = await service.logGetPage(id, 0);
     expect(log[0]?.subject).toBe('日本語のコミット');
 
+    /*
+     * 6. ブランチ一覧の件名も新しくなっている
+     *    （対応表の例外「コミット後の反映: #10 → #2 → #3」）。
+     *    #3 を取り直さないと、ブランチペインの「現在の位置」とリポジトリタブに
+     *    1 つ前の件名が残る。#2 は件名を持たないので、ここが唯一の出所。
+     */
+    const head = service.branchList(id).find((b) => b.isHead);
+    expect(head?.subject).toBe('日本語のコミット');
+
     // 6. 残りは未ステージのまま
     const after = service.statusGetSummary(id);
     expect(after.counts.staged).toBe(0);
@@ -409,6 +418,47 @@ describe('Service (UI が通る経路の統合テスト)', () => {
    * 実際に fetch / push が動くかは packages/git 側で本物のリモート相手に見ている。
    * ここで見るのは **renderer が渡してきた名前を main が鵜呑みにしないこと**。
    */
+  /*
+   * コミット id は一覧照合ができない（main はページングで渡した分しか知らない）ので形で縛る。
+   * ここを緩めると、renderer から「rev として解釈される任意の文字列」を git に渡せてしまう。
+   */
+  it('コミット id として解釈されうる文字列を拒否する（16 進のみ通す）', async () => {
+    const id = await openDemo();
+
+    for (const bad of ['HEAD', 'HEAD~3', 'main', '--upload-pack=calc', '..', 'abc', 'g'.repeat(8)]) {
+      await expect(service.commitGetFiles(id, bad)).rejects.toMatchObject({
+        dto: { kind: 'internal' },
+      });
+    }
+  });
+
+  it('コミットの差分でも、リポジトリ外のパスは拒否する', async () => {
+    const id = await openDemo();
+    const log = await service.logGetPage(id, 0);
+    const oid = log[0]?.oid ?? '';
+
+    // assertInsideRoot が PathOutsideRootError を投げ、register の wrap が invalid-path に写す
+    await expect(service.commitGetDiff(id, oid, '../外.txt')).rejects.toMatchObject({
+      name: 'PathOutsideRootError',
+    });
+    await expect(service.commitGetDiff(id, oid, 'C:/Windows/system32/cmd.exe')).rejects.toThrow();
+  });
+
+  it('コミットの変更ファイルと、その diff を取得できる（対応表 #21 / #36）', async () => {
+    const id = await openDemo();
+    const log = await service.logGetPage(id, 0);
+    const oid = log[0]?.oid ?? '';
+
+    const files = await service.commitGetFiles(id, oid);
+    expect(files.length).toBeGreaterThan(0);
+
+    const target = files[0]?.path ?? '';
+    const diff = await service.commitGetDiff(id, oid, target);
+    expect(diff?.path).toBe(target);
+    // 過去のコミットからはステージできない
+    expect(diff?.hunkStageable).toBe(false);
+  });
+
   it('知らないリモート名は拒否する（renderer の値を鵜呑みにしない）', async () => {
     const id = await openDemo();
 

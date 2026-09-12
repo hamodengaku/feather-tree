@@ -2,6 +2,8 @@ import {
   GitCancelledError,
   GitCommandError,
   GitNotFoundError,
+  getCommitFileDiff,
+  getCommitFiles,
   getFileDiff,
   getLog,
   getStatus,
@@ -10,6 +12,7 @@ import {
   listRemotes,
   resolveRepository,
   type BranchRef,
+  type CommitFileChange,
   type CommitSummary,
   type FileDiff,
   type GitContext,
@@ -22,6 +25,11 @@ import { pageEntries, type StatusFilter, type StatusPage, type StatusSummary } f
 
 /** パッチ適用のために diff を取り直すときの行数上限（設定の上限値と同じ）。 */
 const PATCH_MAX_LINES = 200000;
+
+/** コマンドログとコマンドバーに出す短縮ハッシュ。40 文字を並べても読めない。 */
+function shortOid(oid: string): string {
+  return oid.slice(0, 7);
+}
 
 /**
  * git の実行が「今まさに走っている」ことの通知。
@@ -226,11 +234,30 @@ export class RepositorySession {
     return this.track(['diff', path], () => getFileDiff(this.context(signal), path, staged, options));
   }
 
-  /** 対応表 #20。 */
+  /** 対応表 #20。範囲は git 層で `--all` 固定。 */
   async getLogPage(skip: number, signal?: AbortSignal): Promise<CommitSummary[]> {
     const settings = this.#deps.settings();
     return this.track(['log'], () =>
       getLog(this.context(signal), { maxCount: settings.logPageSize, skip }),
+    );
+  }
+
+  /** 対応表 #21: コミットの変更ファイル一覧。マージコミットでは空になる（git の既定）。 */
+  async getCommitFiles(oid: string, signal?: AbortSignal): Promise<CommitFileChange[]> {
+    return this.track(['show', shortOid(oid)], () => getCommitFiles(this.context(signal), oid));
+  }
+
+  /**
+   * 対応表 #36: コミット内の 1 ファイルの diff。
+   * 文脈行数と行数上限は作業ツリーの diff（#18 / #19）と同じ設定に従う。
+   */
+  async getCommitDiff(oid: string, path: string, signal?: AbortSignal): Promise<FileDiff | null> {
+    const settings = this.#deps.settings();
+    return this.track(['show', shortOid(oid), path], () =>
+      getCommitFileDiff(this.context(signal), oid, path, {
+        contextLines: settings.diffContextLines,
+        maxLines: settings.diffMaxLines,
+      }),
     );
   }
 

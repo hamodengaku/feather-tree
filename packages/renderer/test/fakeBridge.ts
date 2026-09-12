@@ -5,7 +5,9 @@ import type {
   BranchDto,
   CommandEndEvent,
   CommandStartEvent,
+  CommitFileChangeDto,
   CommitRequest,
+  CommitSummaryDto,
   FeatherTreeBridge,
   FileEntryDto,
   FocusRefreshPromptEvent,
@@ -32,6 +34,10 @@ const SETTINGS: SettingsDto = {
   diffContextLines: 3,
   diffMaxLines: 20000,
   logPageSize: 200,
+  viewMode: 'diff',
+  logDetailHeight: 260,
+  commitFileListWidth: 260,
+  tabShowCurrentInfo: true,
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
   branchPaneCollapsed: false,
@@ -56,6 +62,23 @@ const HEAD: HeadInfoDto = {
 
 export function entry(path: string, over: Partial<FileEntryDto> = {}): FileEntryDto {
   return { kind: 'ordinary', path, staged: '.', worktree: 'M', ...over };
+}
+
+export function commit(oid: string, over: Partial<CommitSummaryDto> = {}): CommitSummaryDto {
+  return {
+    oid,
+    shortOid: oid.slice(0, 7),
+    parents: [],
+    authorName: '作者',
+    authorEmail: 'author@example.com',
+    authoredAt: '2026-09-10T12:00:00+09:00',
+    committerName: '作者',
+    committerEmail: 'author@example.com',
+    committedAt: '2026-09-10T12:00:00+09:00',
+    subject: `件名 ${oid}`,
+    body: '',
+    ...over,
+  };
 }
 
 export function branch(shortName: string, over: Partial<BranchDto> = {}): BranchDto {
@@ -95,6 +118,15 @@ export class FakeBridge {
   branches: BranchDto[] = [];
   /** main が保持しているリモート名。複数リモートの分岐を再現するときに差し替える。 */
   remotes: string[] = ['origin'];
+  /** logGetPage が返す履歴の全体。skip / logPageSize で切り出す。 */
+  commits: CommitSummaryDto[] = [];
+  /** commitGetFiles が返す変更ファイル。マージコミットを再現するときは空にする。 */
+  commitFiles: CommitFileChangeDto[] = [];
+  /**
+   * main が保持している設定。settingsUpdate で書き換わり、次の settingsGet に反映される（実物と同じ）。
+   * logPageSize のような「取得の振る舞いを変える設定」をテストから差し替えられるように可変にしてある。
+   */
+  settings: SettingsDto = { ...SETTINGS };
   seq = 1;
   /** この名前の書き込み操作で 'needs-confirmation' を返す。 */
   requireConfirmation: string | null = null;
@@ -224,11 +256,12 @@ export class FakeBridge {
       },
       settingsGet: () => {
         this.record('settingsGet');
-        return Promise.resolve(ok(SETTINGS));
+        return Promise.resolve(ok(this.settings));
       },
       settingsUpdate: (patch: Partial<SettingsDto>) => {
         this.record('settingsUpdate', patch);
-        return Promise.resolve(ok({ ...SETTINGS, ...patch }));
+        this.settings = { ...this.settings, ...patch };
+        return Promise.resolve(ok(this.settings));
       },
       sessionPickAndOpen: () => {
         this.record('sessionPickAndOpen');
@@ -336,7 +369,16 @@ export class FakeBridge {
       },
       logGetPage: (id: string, skip: number) => {
         this.record('logGetPage', id, skip);
-        return Promise.resolve(ok([]));
+        return Promise.resolve(ok(this.commits.slice(skip, skip + this.settings.logPageSize)));
+      },
+      commitGetFiles: (id: string, oid: string) => {
+        this.record('commitGetFiles', id, oid);
+        return Promise.resolve(ok(this.commitFiles));
+      },
+      commitGetDiff: (id: string, oid: string, path: string) => {
+        this.record('commitGetDiff', id, oid, path);
+        // コミットの差分はステージできない（main 側が必ず false を入れる）
+        return Promise.resolve(ok({ ...this.diffFor(path), hunkStageable: false }));
       },
       branchList: (id: string) => {
         this.record('branchList', id);

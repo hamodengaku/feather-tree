@@ -220,6 +220,14 @@ export class SessionOperations {
       gitCommit(this.#session.context(signal), message, options),
     );
     await this.#session.refreshStatus(signal);
+    /*
+     * ブランチ一覧も取り直す（対応表の例外「コミット後の反映: #10 → #2 → #3」）。
+     *
+     * ahead が 1 進むのがひとつ。もうひとつは **HEAD の件名の出所が #3 しかない**こと
+     * （#2 は件名を持たない）。取り直さないと、ブランチペインの「現在の位置」と
+     * リポジトリタブに 1 つ前のコミットの件名が残る。
+     */
+    await this.#session.refreshBranches(signal);
     return { oid, statusSeq: this.#session.statusSeq };
   }
 

@@ -4,8 +4,11 @@ const US = String.fromCharCode(0x1f);
 const NUL = String.fromCharCode(0x00);
 
 /**
- * `git log --format=%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%s%x00` の出力を解釈する。
- * 件名（%s）は改行を含まないため、NUL 区切りで確実に分割できる。
+ * `git log --format=%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI%x1f%s%x1f%b%x00`
+ * の出力を解釈する（対応表 #20）。
+ *
+ * レコード境界は NUL。件名（%s）は改行を含まないので安全で、本文（%b）は改行を含むが
+ * **最後のフィールド**なので境界を壊さない。
  */
 export function parseLog(stdout: string): CommitSummary[] {
   const commits: CommitSummary[] = [];
@@ -22,6 +25,13 @@ export function parseLog(stdout: string): CommitSummary[] {
 
     const parents = (f[2] ?? '').split(' ').filter((p) => p.length > 0);
 
+    /*
+     * 本文は最後のフィールドなので、10 番目以降を US で繋ぎ直す。
+     * こうしておけば本文に US が紛れ込んでも欠けない（他のフィールドと違い、
+     * 本文だけは「git が生成した文字列」ではなく人が書いた任意のテキスト）。
+     */
+    const body = f.slice(10).join(US).replace(/[\r\n]+$/, '');
+
     commits.push({
       oid,
       shortOid: f[1] ?? '',
@@ -29,7 +39,11 @@ export function parseLog(stdout: string): CommitSummary[] {
       authorName: f[3] ?? '',
       authorEmail: f[4] ?? '',
       authoredAt: f[5] ?? '',
-      subject: f[6] ?? '',
+      committerName: f[6] ?? '',
+      committerEmail: f[7] ?? '',
+      committedAt: f[8] ?? '',
+      subject: f[9] ?? '',
+      body,
     });
   }
 

@@ -103,6 +103,45 @@ describe('設定の正規化', () => {
     expect(normalizeSettings({ stagedHeight: 300 }).stagedHeight).toBe(300);
   });
 
+  /* コミットログモード（決定 27）の 4 キー。 */
+
+  it('viewMode は既定が差分モードで、知らない値なら既定へ落ちる', () => {
+    expect(normalizeSettings({}).viewMode).toBe('diff');
+    expect(normalizeSettings({ viewMode: 'log' }).viewMode).toBe('log');
+    expect(normalizeSettings({ viewMode: 'graph' }).viewMode).toBe('diff');
+    expect(normalizeSettings({ viewMode: 3 }).viewMode).toBe('diff');
+  });
+
+  it('logDetailHeight は範囲外を既定値に丸め、有効な値は保持する', () => {
+    expect(normalizeSettings({}).logDetailHeight).toBe(260);
+    expect(normalizeSettings({ logDetailHeight: 1 }).logDetailHeight).toBe(120);
+    expect(normalizeSettings({ logDetailHeight: 99999 }).logDetailHeight).toBe(2000);
+    expect(normalizeSettings({ logDetailHeight: 400 }).logDetailHeight).toBe(400);
+  });
+
+  /*
+   * 畳めるペインはブランチペインだけ（決定 27）。コミットログモードでも
+   * 縦帯の折り畳みボタンはそれを相手にするので、折り畳み状態のキーは 1 つしかない。
+   * logDetailCollapsed のような二重のキーを足さないことを、ここで固定しておく。
+   */
+  it('折り畳みの状態は branchPaneCollapsed の 1 つだけ', () => {
+    const keys = Object.keys(normalizeSettings({})).filter((k) => k.toLowerCase().includes('collapsed'));
+    expect(keys).toEqual(['branchPaneCollapsed']);
+  });
+
+  it('commitFileListWidth は範囲外を既定値に丸め、有効な値は保持する', () => {
+    expect(normalizeSettings({}).commitFileListWidth).toBe(260);
+    expect(normalizeSettings({ commitFileListWidth: 1 }).commitFileListWidth).toBe(120);
+    expect(normalizeSettings({ commitFileListWidth: 99999 }).commitFileListWidth).toBe(1200);
+    expect(normalizeSettings({ commitFileListWidth: 300 }).commitFileListWidth).toBe(300);
+  });
+
+  it('tabShowCurrentInfo は既定でオンで、真偽値以外なら既定に落ちる', () => {
+    expect(normalizeSettings({}).tabShowCurrentInfo).toBe(true);
+    expect(normalizeSettings({ tabShowCurrentInfo: false }).tabShowCurrentInfo).toBe(false);
+    expect(normalizeSettings({ tabShowCurrentInfo: 'yes' }).tabShowCurrentInfo).toBe(true);
+  });
+
   it('paneWidths.centerRatio は未指定/不正なら null、範囲外はクランプする', () => {
     expect(normalizeSettings({}).paneWidths.centerRatio).toBeNull();
     expect(normalizeSettings({ paneWidths: { centerRatio: 'nope' } }).paneWidths.centerRatio).toBeNull();

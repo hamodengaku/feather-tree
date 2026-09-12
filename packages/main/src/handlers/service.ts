@@ -23,6 +23,7 @@ import type {
   BranchSwitchResultDto,
   CommandLogEntryDto,
   CommitRequest,
+  CommitFileChangeDto,
   CommitResultDto,
   CommitSummaryDto,
   EnvironmentDto,
@@ -108,6 +109,8 @@ export interface Service {
   commit(id: string, req: CommitRequest, confirmed?: boolean): Promise<CommitResultDto>;
   diffGet(id: string, path: string, staged: boolean): Promise<FileDiffDto | null>;
   logGetPage(id: string, skip: number): Promise<readonly CommitSummaryDto[]>;
+  commitGetFiles(id: string, oid: string): Promise<readonly CommitFileChangeDto[]>;
+  commitGetDiff(id: string, oid: string, path: string): Promise<FileDiffDto | null>;
   branchList(id: string): readonly BranchDto[];
   branchSwitch(id: string, branchName: string): Promise<BranchSwitchResultDto>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<BranchCreateResultDto>;
@@ -209,6 +212,21 @@ export function createService(deps: ServiceDeps): Service {
       throw new HandlerError({ kind: 'internal', message: 'ブランチ「' + branch + '」がありません。' });
     }
     return branch;
+  };
+
+  /**
+   * renderer が送ってきたコミット id を検証する。
+   *
+   * `knownRemote` / `knownLocalBranch` と同じ趣旨だが、コミットは一覧を持たない
+   * （ページングで渡した分しか main は知らない）ので、**形で縛る**。
+   * 16 進 4〜64 文字だけを通せば、`HEAD~3` や `--upload-pack=...` のような
+   * 「rev として解釈される任意の文字列」を git に渡す口が塞がる。
+   */
+  const validOid = (oid: string): string => {
+    if (!/^[0-9a-f]{4,64}$/i.test(oid)) {
+      throw new HandlerError({ kind: 'internal', message: 'コミットの指定が不正です。' });
+    }
+    return oid;
   };
 
   /** renderer 由来の相対パスを検証してから絶対パスへ直す（規約: git に渡す前に必ず検証）。 */
@@ -369,6 +387,25 @@ export function createService(deps: ServiceDeps): Service {
     },
 
     logGetPage: async (id, skip) => requireSession(id).getLogPage(Math.max(0, skip)),
+
+    commitGetFiles: async (id, oid) => requireSession(id).getCommitFiles(validOid(oid)),
+
+    commitGetDiff: async (id, oid, path) => {
+      const session = requireSession(id);
+      assertInsideRoot(session.root, path);
+      const diff = await session.getCommitDiff(validOid(oid), path);
+      if (diff === null) return null;
+      // 作業ツリーの diff と同じ DTO を返すが、過去のコミットからはステージできないので
+      // hunkStageable は必ず false。canBuildPatch を呼ぶまでもない。
+      return {
+        path: diff.path,
+        oldPath: diff.oldPath,
+        binary: diff.binary,
+        hunks: diff.hunks,
+        truncated: diff.truncated,
+        hunkStageable: false,
+      };
+    },
 
     branchList: (id) => requireSession(id).branches,
 

@@ -1,4 +1,11 @@
 <script lang="ts">
+  /*
+   * 差分モードの右ペイン。**作業ツリーの差分を「ステージする／戻す」ための道具**で、
+   * hunk ボタンと 1 行モード（対応表 #33 / #34）が本体に織り込まれている。
+   *
+   * コミットの差分を見るだけなら components/ReadonlyDiffView.svelte を使う。
+   * あちらには操作の口が無い（過去のコミットからはステージできないため）。
+   */
   import type { DiffHunkDto, DiffLineDto } from '@feathertree/ipc';
   import { app } from '../lib/appState.svelte.js';
   import { hunkAllowsLines, singleLineSelection, wholeHunkSelection } from '../lib/diffSelection.js';

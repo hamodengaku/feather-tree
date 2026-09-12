@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FeatherTreeBridge } from '@feathertree/ipc';
 import { AppState } from '../src/lib/appState.svelte.js';
-import { FakeBridge, branch, entry, installDocumentStub } from './fakeBridge.js';
+import { FakeBridge, branch, commit, entry, installDocumentStub } from './fakeBridge.js';
 
 installDocumentStub();
 
@@ -264,6 +264,41 @@ describe('ステージングとコミット', () => {
     expect(app.commitMessage).toBe('');
     expect(app.amend).toBe(false);
     expect(bridge.countOf('statusGetPage')).toBeGreaterThan(pagesBefore);
+  });
+
+  /*
+   * 件名の出所は #3（for-each-ref）しかなく、#2 は件名を持たない。
+   * 取り直さないと「現在の位置」とリポジトリタブに 1 つ前の件名が残る
+   * （対応表の例外「コミット後の反映: #10 → #2 → #3」）。
+   */
+  it('コミット成功後はブランチ一覧も取り直す（件名を新鮮に保つため）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+    app.commitMessage = 'コミットする';
+    const before = bridge.countOf('branchList');
+
+    await app.commit();
+
+    expect(bridge.countOf('branchList')).toBe(before + 1);
+  });
+
+  it('確認待ちで止まったコミットではブランチ一覧を取り直さない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+      b.requireConfirmation = 'commit';
+    });
+    app.commitMessage = 'やり直す';
+    app.amend = true;
+    const before = bridge.countOf('branchList');
+
+    await app.commit();
+    expect(app.pendingConfirmation).not.toBeNull();
+    expect(bridge.countOf('branchList')).toBe(before);
+
+    // 承認して実際にコミットされたら取り直す
+    await app.acceptConfirmation();
+    expect(bridge.countOf('branchList')).toBe(before + 1);
   });
 
   it('ファイルを選ぶと diff を取得する', async () => {
@@ -881,5 +916,215 @@ describe('実行中の git コマンド (決定 26)', () => {
     expect(app.runningCommand).toBeNull();
     // ただし取りこぼし防止のため、保持自体はしている
     expect(app.runningCommands).toHaveLength(1);
+  });
+});
+
+describe('コミットログモード（決定 27）', () => {
+  it('モードを切り替えると設定に永続化される', async () => {
+    const { app, bridge } = await boot();
+
+    expect(app.viewMode).toBe('diff');
+    await app.setViewMode('log');
+
+    expect(app.viewMode).toBe('log');
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ viewMode: 'log' }]);
+  });
+
+  it('モードに入るまで履歴は取らない（見えていないものに git を使わない）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111'), commit('bbb2222')];
+    });
+
+    // 起動しただけでは #20 は走らない
+    expect(bridge.countOf('logGetPage')).toBe(0);
+
+    await app.ensureLog();
+    expect(bridge.countOf('logGetPage')).toBe(1);
+    expect(app.commits.map((c) => c.oid)).toEqual(['aaa1111', 'bbb2222']);
+    // ページ全体より少なく返ったので、これ以上は無い
+    expect(app.logComplete).toBe(true);
+  });
+
+  it('取得済みなら ensureLog は IPC を呼ばない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+    });
+
+    await app.ensureLog();
+    await app.ensureLog();
+
+    expect(bridge.countOf('logGetPage')).toBe(1);
+  });
+
+  it('末尾まで読むと skip 付きで次のページを取り、最後まで来たら止まる', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.settings = { ...b.settings, logPageSize: 2 };
+      b.commits = [commit('c1'), commit('c2'), commit('c3')];
+    });
+
+    await app.ensureLog();
+    expect(app.commits).toHaveLength(2);
+    expect(app.logComplete).toBe(false);
+
+    await app.loadMoreLog();
+    expect(bridge.lastArgsOf('logGetPage')).toEqual(['s1', 2]);
+    expect(app.commits.map((c) => c.oid)).toEqual(['c1', 'c2', 'c3']);
+    // 1 件しか返らなかった（ページ未満）ので打ち止め
+    expect(app.logComplete).toBe(true);
+
+    await app.loadMoreLog();
+    expect(bridge.countOf('logGetPage')).toBe(2);
+  });
+
+  it('コミットを選ぶと変更ファイル一覧を 1 回だけ取る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+      b.commitFiles = [{ status: 'M', path: 'src/a.ts', origPath: null }];
+    });
+
+    await app.ensureLog();
+    await app.selectCommit('aaa1111');
+
+    expect(bridge.lastArgsOf('commitGetFiles')).toEqual(['s1', 'aaa1111']);
+    expect(app.commitFiles.map((f) => f.path)).toEqual(['src/a.ts']);
+    // ファイルを選ぶまで diff は取らない
+    expect(bridge.countOf('commitGetDiff')).toBe(0);
+
+    // 同じコミットを選び直しても git は増えない
+    await app.selectCommit('aaa1111');
+    expect(bridge.countOf('commitGetFiles')).toBe(1);
+  });
+
+  it('ファイルを選ぶとそのコミットの diff を取る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+      b.commitFiles = [{ status: 'M', path: 'src/a.ts', origPath: null }];
+    });
+
+    await app.ensureLog();
+    await app.selectCommit('aaa1111');
+    await app.selectCommitPath('src/a.ts');
+
+    expect(bridge.lastArgsOf('commitGetDiff')).toEqual(['s1', 'aaa1111', 'src/a.ts']);
+    expect(app.commitDiff?.path).toBe('src/a.ts');
+    // 過去のコミットからはステージできない
+    expect(app.commitDiff?.hunkStageable).toBe(false);
+  });
+
+  it('別のコミットを選ぶと、前のコミットのファイル選択と差分は消える', async () => {
+    const { app } = await boot((b) => {
+      b.commits = [commit('aaa1111'), commit('bbb2222')];
+      b.commitFiles = [{ status: 'M', path: 'src/a.ts', origPath: null }];
+    });
+
+    await app.ensureLog();
+    await app.selectCommit('aaa1111');
+    await app.selectCommitPath('src/a.ts');
+    expect(app.commitDiff).not.toBeNull();
+
+    await app.selectCommit('bbb2222');
+    expect(app.selectedCommitPath).toBeNull();
+    expect(app.commitDiff).toBeNull();
+  });
+
+  it('更新ボタンは、コミットログモードのときだけ履歴も取り直す', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+    });
+
+    // 差分モードのままなら #20 は走らない
+    await app.refresh('full');
+    expect(bridge.countOf('logGetPage')).toBe(0);
+
+    await app.setViewMode('log');
+    await app.refresh('full');
+    expect(bridge.countOf('logGetPage')).toBe(1);
+  });
+
+  it('タブを切り替えても履歴を取り直さない（保持しているものを見せる）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+    });
+
+    await app.ensureLog();
+    await app.selectCommit('aaa1111');
+    expect(bridge.countOf('logGetPage')).toBe(1);
+
+    await app.activate('s2');
+    expect(app.commits).toHaveLength(0);
+    expect(app.selectedCommit).toBeNull();
+
+    await app.activate('s1');
+    expect(app.commits.map((c) => c.oid)).toEqual(['aaa1111']);
+    expect(app.selectedCommit).toBe('aaa1111');
+    // s1 に戻っても #20 は増えない
+    expect(bridge.countOf('logGetPage')).toBe(1);
+  });
+});
+
+describe('HEAD の件名（「現在の位置」とリポジトリタブが共有する）', () => {
+  it('status 由来のブランチ名で一覧を引き、件名を返す', async () => {
+    const { app } = await boot((b) => {
+      b.branches = [
+        branch('main', { isHead: true, oid: 'aaa', subject: 'main の件名' }),
+        branch('other', { oid: 'bbb', subject: 'other の件名' }),
+      ];
+      b.head = { oid: 'aaa', branch: 'main', detached: false, upstream: null, ahead: 0, behind: 0 };
+    });
+
+    expect(app.headSubject).toBe('main の件名');
+  });
+
+  /*
+   * 切替直後は一覧を取り直さない（#12 → #2）ので、一覧の isHead は前のブランチに付いたまま。
+   * isHead を信じると別のブランチの件名を出してしまう。判定は必ず status 由来で行う。
+   */
+  it('一覧の isHead が古くても、status が指すブランチの件名を出す', async () => {
+    const { app } = await boot((b) => {
+      b.branches = [
+        branch('main', { isHead: true, oid: 'aaa', subject: '古い HEAD の件名' }),
+        branch('feature', { oid: 'bbb', subject: '切り替えた先の件名' }),
+      ];
+      // status だけが新しい（feature へ切り替えた直後の状態）
+      b.head = { oid: 'bbb', branch: 'feature', detached: false, upstream: null, ahead: 0, behind: 0 };
+    });
+
+    expect(app.headSubject).toBe('切り替えた先の件名');
+  });
+
+  it('detached HEAD では oid の一致で探す', async () => {
+    const { app } = await boot((b) => {
+      b.branches = [branch('main', { oid: 'ccc', subject: 'その位置の件名' })];
+      b.head = { oid: 'ccc', branch: null, detached: true, upstream: null, ahead: 0, behind: 0 };
+    });
+
+    expect(app.headSubject).toBe('その位置の件名');
+  });
+
+  it('どのブランチの先端でもない位置なら null（タブと「現在の位置」は出さない）', async () => {
+    const { app } = await boot((b) => {
+      b.branches = [branch('main', { oid: 'aaa', subject: 'main の件名' })];
+      b.head = { oid: 'zzz', branch: null, detached: true, upstream: null, ahead: 0, behind: 0 };
+    });
+
+    expect(app.headSubject).toBeNull();
+  });
+
+  it('コミットがまだ無いリポジトリでは null', async () => {
+    const { app } = await boot((b) => {
+      b.head = { oid: null, branch: 'main', detached: false, upstream: null, ahead: 0, behind: 0 };
+    });
+
+    expect(app.headSubject).toBeNull();
+  });
+
+  it('タブへの現在情報の表示は設定で切れる（既定はオン）', async () => {
+    const { app, bridge } = await boot();
+
+    expect(app.settings?.tabShowCurrentInfo).toBe(true);
+    await app.setTabShowCurrentInfo(false);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ tabShowCurrentInfo: false }]);
+    expect(app.settings?.tabShowCurrentInfo).toBe(false);
   });
 });

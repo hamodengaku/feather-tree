@@ -29,6 +29,36 @@
   /* マーブル模様は起動時に JS が乱数で決める（lib/theme.ts）。CSS では固定できないので none。 */
   --app-bg-app-image: none;
 
+  /*
+   * コミットグラフのレーン色（決定 20）。
+   *
+   * **ここだけは theme.ts が流し込まない。** アクセント色から色相を回して導出するので、
+   * テーマが --app-accent を差し替えれば 6 本ぶんが自動で付いてくる
+   * （4 テーマ × 6 色を手で持つと、テーマを足すたびに配色の仕事が増える）。
+   *
+   * **色空間は OKLCH でなければならない。** 彩度と明度はアクセントのものを据え置き、
+   * 色相だけを回す。OKLCH の L は知覚的な明るさなので、回しても地色に対する読みやすさが変わらない。
+   *
+   * hsl() で同じことをすると破綻する（実測）。HSL の L は知覚的でないため、
+   * 同じ L でも緑や黄は赤より遥かに明るく見え、明るいテーマでレーンが地に溶ける。
+   * フェザー・ライトでの地色とのコントラスト比の実測:
+   *   hsl   → 1.51〜5.90（1.51 は WCAG 1.4.11 の非テキスト下限 3:1 を大きく割る）
+   *   oklch → 3.02〜4.05（全テーマ・全レーンで 3:1 以上）
+   *
+   * 色相の差は隣接レーンが似ないよう飛ばして取る（+150 / +60 / +210 / +105 / +285）。
+   * レーンが 7 本以上になったら先頭へ戻す（隣り合わなければ混同しない）。
+   *
+   * 相対色構文（oklch(from …)）は Chromium 119+、oklch() 自体は 111+。
+   * 決定 2 の Electron 44.2.0 は Chromium 152.0.7977.76（実測）なので十分に新しい。
+   * 色相に単位は付けない（calc(h + 60deg) は解釈されず黒に落ちる。これも実測）。
+   */
+  --app-graph-lane-0: var(--app-accent);
+  --app-graph-lane-1: oklch(from var(--app-accent) l c calc(h + 150));
+  --app-graph-lane-2: oklch(from var(--app-accent) l c calc(h + 60));
+  --app-graph-lane-3: oklch(from var(--app-accent) l c calc(h + 210));
+  --app-graph-lane-4: oklch(from var(--app-accent) l c calc(h + 105));
+  --app-graph-lane-5: oklch(from var(--app-accent) l c calc(h + 285));
+
   --app-font-ui: "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
   --app-font-mono: "Cascadia Mono", "Consolas", monospace;
   --app-font-size-ui: 13px;

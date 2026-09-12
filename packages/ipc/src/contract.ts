@@ -44,6 +44,8 @@ export const CHANNELS = {
 
   diffGet: 'diff:get',
   logGetPage: 'log:getPage',
+  commitGetFiles: 'commit:getFiles',
+  commitGetDiff: 'commit:getDiff',
   branchList: 'branch:list',
   branchSwitch: 'branch:switch',
   branchCreate: 'branch:create',
@@ -119,6 +121,12 @@ export interface SettingsDto {
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
+  /** ペイン領域のモード（決定 27）。'diff' = 左右 3 分割、'log' = 上下 2 分割の履歴。 */
+  readonly viewMode: 'diff' | 'log';
+  readonly logDetailHeight: number;
+  readonly commitFileListWidth: number;
+  /** リポジトリタブに現在情報（ブランチ名と HEAD の件名）を出すか（決定 24）。 */
+  readonly tabShowCurrentInfo: boolean;
   readonly paneWidths: { readonly left: number; readonly center: number; readonly centerRatio: number | null };
   readonly branchLocalHeight: number;
   readonly branchPaneCollapsed: boolean;
@@ -291,11 +299,26 @@ export interface HunkStageRequest {
 export interface CommitSummaryDto {
   readonly oid: string;
   readonly shortOid: string;
+  /** 親の oid。先頭が第一親。2 つ以上ならマージコミット。グラフのレーン計算に使う。 */
   readonly parents: readonly string[];
   readonly authorName: string;
   readonly authorEmail: string;
   readonly authoredAt: string;
+  readonly committerName: string;
+  readonly committerEmail: string;
+  readonly committedAt: string;
   readonly subject: string;
+  /** 件名を除いた本文。一覧取得（#20）でまとめて取る（コミットを選ぶたびに git を増やさないため）。 */
+  readonly body: string;
+}
+
+/** コミットの中で変わったファイル 1 件（対応表 #21）。 */
+export interface CommitFileChangeDto {
+  /** git の生の状態文字（'M' / 'A' / 'D' / 'R100' など）。 */
+  readonly status: string;
+  readonly path: string;
+  /** R / C のときの元パス。それ以外は null。 */
+  readonly origPath: string | null;
 }
 
 export interface BranchDto {
@@ -422,6 +445,16 @@ export interface FeatherTreeBridge {
 
   diffGet(id: string, path: string, staged: boolean): Promise<Result<FileDiffDto | null>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
+  /** 対応表 #21。マージコミットでは空配列（`git show` の既定）。 */
+  commitGetFiles(id: string, oid: string): Promise<Result<readonly CommitFileChangeDto[]>>;
+  /**
+   * 対応表 #36: コミット内の 1 ファイルの diff。
+   *
+   * 戻りは作業ツリーの diff と同じ `FileDiffDto` を使い回す。**`hunkStageable` は常に false**
+   * （過去のコミットからステージすることはできない）。DTO を分けないのは、
+   * 差分の描画側が同じ形だけを相手にできるようにするため。
+   */
+  commitGetDiff(id: string, oid: string, path: string): Promise<Result<FileDiffDto | null>>;
   branchList(id: string): Promise<Result<readonly BranchDto[]>>;
   branchSwitch(id: string, branchName: string): Promise<Result<BranchSwitchResultDto>>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<Result<BranchCreateResultDto>>;

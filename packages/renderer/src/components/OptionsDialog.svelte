@@ -49,6 +49,20 @@
       </select>
     </label>
 
+    <!--
+      チェックボックスは label ごと押せるように input を中に入れる（for/id を振らない）。
+      即時反映なので、押した瞬間にタブ段の見え方が変わる。
+    -->
+    <label class="check">
+      <input
+        type="checkbox"
+        checked={app.settings?.tabShowCurrentInfo ?? true}
+        onchange={(e) => void app.setTabShowCurrentInfo(e.currentTarget.checked)}
+      />
+      <span>レポジトリタブに現在情報を記載</span>
+    </label>
+    <p class="note">アクティブなタブに、ブランチ名と今のコミットの件名を並べます。</p>
+
     <div class="actions">
       <button onclick={onclose}>閉じる</button>
     </div>
@@ -88,6 +102,27 @@
     gap: 4px;
     margin-bottom: 14px;
     color: var(--app-text-secondary);
+  }
+
+  /* チェックボックスは横並び（.field の縦並びとは別物）。 */
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+    color: var(--app-text-secondary);
+  }
+
+  .check input {
+    flex: 0 0 auto;
+    margin: 0;
+  }
+
+  /* 設定の効きを 1 行で補う。項目名より一段引いた見た目にする。 */
+  .note {
+    margin: 0 0 14px 22px;
+    color: var(--app-text-muted);
+    font-size: var(--app-font-size-mono);
   }
 
   .actions {
