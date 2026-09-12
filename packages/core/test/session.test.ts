@@ -10,6 +10,7 @@ import {
   displayNameOf,
   locateGit,
   type AppSettings,
+  type CommandStart,
 } from '../src/index.js';
 
 // CLAUDE.md 規約 2: os.tmpdir() は使わずリポジトリ内に閉じる
@@ -29,6 +30,9 @@ describe('RepositorySession / SessionManager', () => {
   let manager: SessionManager;
   let commandLog: CommandLog;
   let settings: AppSettings;
+  /** コマンドバー向けの「実行中」通知（決定 26）を受け取る器。 */
+  let started: CommandStart[];
+  let ended: string[];
 
   beforeEach(async () => {
     dir = join(TEST_ROOT, randomBytes(8).toString('hex'));
@@ -39,11 +43,15 @@ describe('RepositorySession / SessionManager', () => {
 
     commandLog = new CommandLog();
     settings = DEFAULT_SETTINGS;
+    started = [];
+    ended = [];
     manager = new SessionManager({
       gitPath: GIT_PATH,
       tempDir: join(dir, '.ft-tmp'),
       commandLog,
       settings: () => settings,
+      onCommandStart: (event) => started.push(event),
+      onCommandEnd: (opId) => ended.push(opId),
     });
   });
 
@@ -199,6 +207,34 @@ describe('RepositorySession / SessionManager', () => {
     settings = { ...DEFAULT_SETTINGS, untrackedFiles: 'all' };
     await manager.requestStatusRefresh(session.id);
     expect(session.getStatusPage(0, 10).entries[0]?.path).toBe('sub/a.txt');
+  });
+
+  /*
+   * コマンドバーへの通知（決定 26）。
+   * 発火点は track() の 1 箇所だけなので、ここが守れていれば全 git 実行が映る。
+   */
+  it('git の実行ごとに開始と終了を通知する', async () => {
+    await write('a.txt', 'x');
+    const session = await manager.open(dir);
+
+    // 開くと status / for-each-ref / remote が走る（ルート解決は track を通らない）
+    expect(started.map((e) => e.args[0])).toEqual(['status', 'for-each-ref', 'remote']);
+    // 開始と終了は 1 対 1 で、全部終わっている
+    expect(ended).toEqual(started.map((e) => e.opId));
+    expect(started.every((e) => e.sessionId === session.id)).toBe(true);
+    // opId は実行ごとに別のもの
+    expect(new Set(started.map((e) => e.opId)).size).toBe(started.length);
+  });
+
+  it('実行が失敗しても終了は必ず通知する（コマンドバーに出しっぱなしにしない）', async () => {
+    const session = await manager.open(dir);
+    started.length = 0;
+    ended.length = 0;
+
+    await expect(session.track(['boom'], () => Promise.reject(new Error('失敗')))).rejects.toThrow('失敗');
+
+    expect(started.map((e) => e.args)).toEqual([['boom']]);
+    expect(ended).toEqual([started[0]?.opId]);
   });
 });
 

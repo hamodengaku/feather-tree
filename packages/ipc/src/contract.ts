@@ -49,8 +49,14 @@ export const CHANNELS = {
   branchCreate: 'branch:create',
   branchMerge: 'branch:merge',
 
+  remoteList: 'remote:list',
+  remoteFetch: 'remote:fetch',
+  remotePull: 'remote:pull',
+  remotePush: 'remote:push',
+
   shellOpenPath: 'shell:openPath',
   shellShowInFolder: 'shell:showInFolder',
+  shellOpenTerminal: 'shell:openTerminal',
 
   commandLogRecent: 'diag:commandLog',
 
@@ -58,6 +64,8 @@ export const CHANNELS = {
   eventSessionChanged: 'event:sessionChanged',
   eventProgress: 'event:progress',
   eventFocusRefreshPrompt: 'event:focusRefreshPrompt',
+  eventCommandStart: 'event:commandStart',
+  eventCommandEnd: 'event:commandEnd',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -321,6 +329,18 @@ export interface BranchMergeResultDto {
   readonly statusSeq: number;
 }
 
+/** リモート操作（対応表 #22〜#25）の結果。マージと同じく世代番号だけを返す。 */
+export interface RemoteResultDto {
+  readonly statusSeq: number;
+}
+
+export interface PushRequest {
+  readonly remote: string;
+  readonly branch: string;
+  /** 真なら --set-upstream（対応表 #25）。上流がまだ無いブランチに使う。 */
+  readonly setUpstream: boolean;
+}
+
 // ---------------------------------------------------------------- 診断と通知
 
 export interface CommandLogEntryDto {
@@ -339,10 +359,27 @@ export interface SessionChangedEvent {
   readonly statusSeq: number;
 }
 
+/** 進捗の行。**未実装**（送り手がいない）。docs/01-architecture.md 6 章。 */
 export interface ProgressEvent {
   readonly sessionId: string;
   readonly opId: string;
   readonly line: string;
+}
+
+/**
+ * git の実行が始まった／終わった（決定 26）。コマンドバーに出す。
+ * コマンドログ（CommandLogEntryDto）は終わったものしか持たないので、こちらが実行中を担う。
+ */
+export interface CommandStartEvent {
+  readonly sessionId: string;
+  /** 開始と終了を突き合わせる識別子。 */
+  readonly opId: string;
+  /** コマンドログと同じ短いラベル。 */
+  readonly args: readonly string[];
+}
+
+export interface CommandEndEvent {
+  readonly opId: string;
 }
 
 /** ウィンドウ復帰時、refocusUpdateMode が 'modal' のときに送る「更新しますか」通知。 */
@@ -389,8 +426,19 @@ export interface FeatherTreeBridge {
   branchSwitch(id: string, branchName: string): Promise<Result<BranchSwitchResultDto>>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<Result<BranchCreateResultDto>>;
   branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<Result<BranchMergeResultDto>>;
+  /** リモート名の一覧（対応表 #4 の結果のキャッシュ。git は走らない）。 */
+  remoteList(id: string): Promise<Result<readonly string[]>>;
+  remoteFetch(id: string, remote: string): Promise<Result<RemoteResultDto>>;
+  remotePull(id: string): Promise<Result<RemoteResultDto>>;
+  remotePush(id: string, req: PushRequest): Promise<Result<RemoteResultDto>>;
+
   shellOpenPath(id: string, path: string): Promise<Result<void>>;
   shellShowInFolder(id: string, path: string): Promise<Result<void>>;
+  /**
+   * リポジトリを外部ターミナルで開く（決定 26）。
+   * パスを渡さないのは意図的。**どこを開くかは main が持つセッションから決める**。
+   */
+  shellOpenTerminal(id: string): Promise<Result<void>>;
 
   commandLogRecent(limit: number): Promise<Result<readonly CommandLogEntryDto[]>>;
 
@@ -398,4 +446,6 @@ export interface FeatherTreeBridge {
   onSessionChanged(listener: (event: SessionChangedEvent) => void): () => void;
   onProgress(listener: (event: ProgressEvent) => void): () => void;
   onFocusRefreshPrompt(listener: (event: FocusRefreshPromptEvent) => void): () => void;
+  onCommandStart(listener: (event: CommandStartEvent) => void): () => void;
+  onCommandEnd(listener: (event: CommandEndEvent) => void): () => void;
 }

@@ -11,6 +11,7 @@ import {
   type HunkSelection,
   type RepositorySession,
   type SessionManager,
+  type TerminalLaunch,
 } from '@feathertree/core';
 import type {
   AppInfoDto,
@@ -28,7 +29,9 @@ import type {
   FileDiffDto,
   OperationResultDto,
   OperationTargetDto,
+  PushRequest,
   RefreshScope,
+  RemoteResultDto,
   SessionDto,
   SessionListDto,
   SessionStateDto,
@@ -65,6 +68,17 @@ export interface ServiceDeps {
   readonly openPath: (absolutePath: string) => Promise<string>;
   /** エクスプローラでそのファイルを選択した状態で開く。 */
   readonly showItemInFolder: (absolutePath: string) => void;
+  /**
+   * そのリポジトリをどのターミナルで開くか（決定 26）。null なら開けるものが無い。
+   * 判断は core の locateTerminal が持つ。ここで注入にしているのは、
+   * 開発機に何が入っているかでテスト結果が変わらないようにするため。
+   */
+  readonly resolveTerminal: (cwd: string) => Promise<TerminalLaunch | null>;
+  /**
+   * ターミナルを 1 つ起動する。
+   * 起動の成否は待たない（外部プロセスなので、落ちても本体には関係が無い）。
+   */
+  readonly launchTerminal: (launch: TerminalLaunch, cwd: string) => void;
 }
 
 export interface Service {
@@ -98,8 +112,13 @@ export interface Service {
   branchSwitch(id: string, branchName: string): Promise<BranchSwitchResultDto>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<BranchCreateResultDto>;
   branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<BranchMergeResultDto>;
+  remoteList(id: string): readonly string[];
+  remoteFetch(id: string, remote: string): Promise<RemoteResultDto>;
+  remotePull(id: string): Promise<RemoteResultDto>;
+  remotePush(id: string, req: PushRequest): Promise<RemoteResultDto>;
   shellOpenPath(id: string, path: string): Promise<void>;
   shellShowInFolder(id: string, path: string): Promise<void>;
+  shellOpenTerminal(id: string): Promise<void>;
   commandLogRecent(limit: number): readonly CommandLogEntryDto[];
 }
 
@@ -166,6 +185,30 @@ export function createService(deps: ServiceDeps): Service {
       }
     }
     return [req.path, req.hunks];
+  };
+
+  /**
+   * renderer が送ってきたリモート名／ブランチ名を、main が持っている一覧と突き合わせる。
+   *
+   * パスに assertInsideRoot を通すのと同じ趣旨。git の引数は配列で渡すので
+   * シェル解釈の事故は起きないが、**renderer が名前を自由に決められる状態にしない**
+   * （renderer は信頼できない入力を表示する層でもある。docs/01-architecture.md 10 章）。
+   */
+  const knownRemote = (id: string, remote: string): string => {
+    const session = requireSession(id);
+    if (!session.remotes.includes(remote)) {
+      throw new HandlerError({ kind: 'internal', message: 'リモート「' + remote + '」がありません。' });
+    }
+    return remote;
+  };
+
+  const knownLocalBranch = (id: string, branch: string): string => {
+    const session = requireSession(id);
+    const found = session.branches.some((b) => !b.isRemote && b.shortName === branch);
+    if (!found) {
+      throw new HandlerError({ kind: 'internal', message: 'ブランチ「' + branch + '」がありません。' });
+    }
+    return branch;
   };
 
   /** renderer 由来の相対パスを検証してから絶対パスへ直す（規約: git に渡す前に必ず検証）。 */
@@ -351,6 +394,37 @@ export function createService(deps: ServiceDeps): Service {
       const ops = opsFor(id);
       requireConfirmed(SessionOperations.confirmationFor('merge'), confirmed);
       return ops.mergeBranch(name);
+    },
+
+    /*
+     * リモート操作（対応表 #22〜#25）。確認は要らない（決定 16）。
+     * 引数は必ず main 側の一覧と照合してから git へ渡す。
+     */
+    remoteList: (id) => requireSession(id).remotes,
+
+    // async にしてあるのは、名前の照合で投げる例外も必ず reject として届けるため
+    remoteFetch: async (id, remote) => opsFor(id).fetch(knownRemote(id, remote)),
+
+    remotePull: async (id) => opsFor(id).pull(),
+
+    remotePush: async (id, req) =>
+      opsFor(id).push(knownRemote(id, req.remote), knownLocalBranch(id, req.branch), req.setUpstream),
+
+    /**
+     * リポジトリをターミナルで開く（決定 26）。
+     * renderer からはセッション id しか来ない。開く場所も実行ファイルもここで決める。
+     */
+    shellOpenTerminal: async (id) => {
+      const session = requireSession(id);
+      const launch = await deps.resolveTerminal(session.root);
+      if (launch === null) {
+        throw new HandlerError({
+          kind: 'git-not-found',
+          message: 'git を実行できるターミナルが見つかりません。',
+          detail: 'git.exe が PATH に無く、Git Bash も見つかりませんでした。',
+        });
+      }
+      deps.launchTerminal(launch, session.root);
     },
 
     shellOpenPath: async (id, path) => {

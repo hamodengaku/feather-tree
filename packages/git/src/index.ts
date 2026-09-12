@@ -33,6 +33,7 @@ export { getGitVersion, listRemotes, resolveRepository } from './commands/reposi
 export { getStatus } from './commands/status.js';
 export type { StatusOptions } from './commands/status.js';
 export { createBranch, listBranches, mergeBranch, switchBranch } from './commands/branches.js';
+export { fetchRemote, pullCurrent, pushBranch } from './commands/remote.js';
 export { getCommitFiles, getLog } from './commands/history.js';
 export type { LogOptions } from './commands/history.js';
 export { getFileDiff, getUntrackedFileDiff } from './commands/diff.js';

@@ -3,6 +3,8 @@
 
 export { locateGit } from './env/gitLocator.js';
 export type { GitLocation, GitLocatorDeps, GitSource } from './env/gitLocator.js';
+export { locateTerminal } from './env/terminalLocator.js';
+export type { TerminalLaunch, TerminalLocatorDeps } from './env/terminalLocator.js';
 export { checkGitVersion, MIN_GIT_MAJOR, MIN_GIT_MINOR } from './env/gitVersion.js';
 export type { GitVersionCheck } from './env/gitVersion.js';
 
@@ -24,7 +26,7 @@ export { AppSettingsStore } from './settings/settingsStore.js';
 export type { AppSettings, PaneWidths, ThemeName, UntrackedMode } from './settings/schema.js';
 
 export { RepositorySession, toMappedError } from './session/repositorySession.js';
-export type { SessionChange, SessionDeps } from './session/repositorySession.js';
+export type { CommandStart, SessionChange, SessionDeps } from './session/repositorySession.js';
 export { SessionManager, displayNameOf } from './session/sessionManager.js';
 export type { SessionInfo } from './session/sessionManager.js';
 export {

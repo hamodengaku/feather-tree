@@ -40,6 +40,13 @@ export default defineConfig({
     build: {
       outDir: resolve(root, 'out/renderer'),
       emptyOutDir: true,
+      /*
+       * 小さい画像を data URI に埋め込ませない。
+       * ロゴは srcset で密度ごとの素材を並べる（AppIcon.svelte）が、data URI は
+       * `data:image/png;base64,` 自体がカンマを含むため、srcset の区切りと紛らわしい。
+       * 実ファイル参照にしておけば読みづらさも曖昧さも無い。
+       */
+      assetsInlineLimit: 0,
       rollupOptions: { input: resolve(root, 'packages/renderer/index.html') },
     },
     plugins: [svelte()],

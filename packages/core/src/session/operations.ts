@@ -5,7 +5,10 @@ import {
   createBranch as gitCreateBranch,
   discardStagedAndWorktree,
   discardWorktree,
+  fetchRemote,
   mergeBranch as gitMergeBranch,
+  pullCurrent,
+  pushBranch,
   removeUntracked,
   stagePaths,
   switchBranch as gitSwitchBranch,
@@ -257,6 +260,49 @@ export class SessionOperations {
    */
   async mergeBranch(branchName: string, signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
     await this.#session.track(['merge'], () => gitMergeBranch(this.#session.context(signal), branchName));
+    await this.#session.refreshStatus(signal);
+    await this.#session.refreshBranches(signal);
+    return { statusSeq: this.#session.statusSeq };
+  }
+
+  /*
+   * リモート操作（対応表 #22〜#25）。3 つとも確認は不要（決定 16 — 確認が要るのは
+   * 強制プッシュだけで、それは未実装）。
+   *
+   * 3 つとも実行後に status とブランチ一覧を取り直す。リモート追跡ブランチが動けば
+   * ahead/behind が必ず変わり、取り直さないとブランチペインの数字が嘘になるため
+   * （docs/02-git-command-map.md「フェッチ / プル / プッシュ後の反映」）。
+   */
+
+  /** 対応表 #22。作業ツリーは動かないが、追跡ブランチが動くので一覧は取り直す。 */
+  async fetch(remote: string, signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
+    await this.#session.track(['fetch', remote], () =>
+      fetchRemote(this.#session.context(signal), remote),
+    );
+    await this.#session.refreshStatus(signal);
+    await this.#session.refreshBranches(signal);
+    return { statusSeq: this.#session.statusSeq };
+  }
+
+  /** 対応表 #23。上流が無ければ git 自身が失敗する（先回りして判定しない）。 */
+  async pull(signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
+    await this.#session.track(['pull'], () => pullCurrent(this.#session.context(signal)));
+    await this.#session.refreshStatus(signal);
+    await this.#session.refreshBranches(signal);
+    return { statusSeq: this.#session.statusSeq };
+  }
+
+  /** 対応表 #24 / #25。setUpstream が真なら --set-upstream を付ける。 */
+  async push(
+    remote: string,
+    branch: string,
+    setUpstream: boolean,
+    signal?: AbortSignal,
+  ): Promise<{ readonly statusSeq: number }> {
+    const label = setUpstream ? ['push', '--set-upstream', remote, branch] : ['push', remote, branch];
+    await this.#session.track(label, () =>
+      pushBranch(this.#session.context(signal), remote, branch, setUpstream),
+    );
     await this.#session.refreshStatus(signal);
     await this.#session.refreshBranches(signal);
     return { statusSeq: this.#session.statusSeq };

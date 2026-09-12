@@ -1,7 +1,11 @@
+import { spawn } from 'node:child_process';
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import { CHANNELS } from '@feathertree/ipc';
+import { applyTitleBarOverlay } from '@feathertree/base-electron';
+import { locateTerminal } from '@feathertree/core';
 import type { AppContext } from '../appContext.js';
 import { wrap } from '../errors.js';
+import { chromeFor } from '../windowChrome.js';
 import { createService, type Service } from './service.js';
 
 /**
@@ -21,7 +25,16 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     git: () => ctx.git,
     gitVersion: () => ctx.gitVersion,
     settings: () => ctx.currentSettings(),
-    updateSettings: (patch) => ctx.settings.update(patch),
+    /*
+     * キャプション領域（OS が描く ─ □ ×）は CSS の外にあるので、テーマを変えても勝手には
+     * 追従しない。設定更新を通る唯一の経路であるここで塗り直す。
+     * service.ts 側ではなくここに置くのは、あちらを Electron 非依存に保つため。
+     */
+    updateSettings: async (patch) => {
+      const updated = await ctx.settings.update(patch);
+      applyTitleBarOverlay(getWindow(), chromeFor(updated.theme));
+      return updated;
+    },
     reloadGit: () => ctx.reloadGit(),
     sessions: () => ctx.sessions(),
     commandLog: () => ctx.commandLog,
@@ -38,6 +51,30 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     openPath: (absolutePath) => shell.openPath(absolutePath),
     showItemInFolder: (absolutePath) => {
       shell.showItemInFolder(absolutePath);
+    },
+    resolveTerminal: (cwd) =>
+      locateTerminal({ env: process.env, cwd, gitPath: ctx.git?.gitPath ?? null }),
+
+    /*
+     * ターミナルの起動（決定 26）。
+     *
+     * shell: false + 引数配列。コマンド文字列は組み立てない（決定 6 と同じ理由で、
+     * 引用符とスペースの事故を根本から避ける）。
+     * detached + unref でアプリから切り離す。付けないとアプリ終了時に道連れになり、
+     * windowsHide も false でなければコンソールの窓が出ない。
+     * stdio を捨てるのは、相手の出力を読む気が無いため（読まないパイプは詰まる）。
+     */
+    launchTerminal: (launch, cwd) => {
+      const child = spawn(launch.exe, [...launch.args], {
+        cwd,
+        shell: false,
+        detached: true,
+        windowsHide: false,
+        stdio: 'ignore',
+      });
+      // 起動に失敗しても本体は動き続ける。握り潰さないと unhandled になる。
+      child.on('error', () => undefined);
+      child.unref();
     },
   });
 
@@ -103,9 +140,17 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.branchMerge, (id: string, branchName: string, confirmed?: boolean) =>
     service.branchMerge(id, branchName, confirmed),
   );
+  bind(CHANNELS.remoteList, (id: string) => service.remoteList(id));
+  bind(CHANNELS.remoteFetch, (id: string, remote: string) => service.remoteFetch(id, remote));
+  bind(CHANNELS.remotePull, (id: string) => service.remotePull(id));
+  bind(CHANNELS.remotePush, (id: string, req: Parameters<Service['remotePush']>[1]) =>
+    service.remotePush(id, req),
+  );
+
   bind(CHANNELS.shellOpenPath, (id: string, path: string) => service.shellOpenPath(id, path));
   bind(CHANNELS.shellShowInFolder, (id: string, path: string) =>
     service.shellShowInFolder(id, path),
   );
+  bind(CHANNELS.shellOpenTerminal, (id: string) => service.shellOpenTerminal(id));
   bind(CHANNELS.commandLogRecent, (limit: number) => service.commandLogRecent(limit));
 }

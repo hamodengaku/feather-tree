@@ -9,6 +9,8 @@ dist/
 release/
 # TypeScript のインクリメンタルビルド情報
 *.tsbuildinfo
+# scripts/make-icon.mjs が build/icon/*.png から組み立てる（素材の方を版管理する）
+build/icon.ico
 
 # ---------------------------------------------------------------- ローカル専用
 # npm / Electron / electron-builder のキャッシュ、開発時の userData

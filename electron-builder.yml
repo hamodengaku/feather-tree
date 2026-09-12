@@ -24,9 +24,11 @@ electronLanguages:
   - en-US
 
 win:
-  # アプリアイコンは build/icon-app.png（正方形・背景透過）を正とする。
-  # 変換スクリプトは廃止したので、差し替えるときはこのファイル自体を置き換える。
-  icon: build/icon-app.png
+  # アイコンは .ico を直接渡す。PNG を渡すと electron-builder が機械的に縮小して
+  # 全サイズを作ってしまい、16px / 20px が潰れるため（build/icon/README.md）。
+  # この .ico は scripts/make-icon.mjs が build/icon/*.png を詰めて作る（縮小はしない）。
+  # 生成物なので版管理していない。`npm run icon` で作り直す（dist が前段で自動実行する）。
+  icon: build/icon.ico
   target:
     - target: portable
       arch:

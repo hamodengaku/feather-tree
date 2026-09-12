@@ -18,15 +18,16 @@
     "lint:deps": "depcruise packages --config .dependency-cruiser.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dist": "npm run build && node scripts/dist.mjs",
+    "dist": "npm run icon && npm run build && node scripts/dist.mjs",
     "measure": "node scripts/measure.mjs",
     "verify": "npm run lint:deps && npm run typecheck && npm run test",
     "check:svelte": "svelte-check --tsconfig packages/renderer/tsconfig.json",
     "postinstall": "node scripts/postinstall.mjs",
     "test:perf": "node scripts/test-perf.mjs",
+    "icon": "node scripts/make-icon.mjs",
     "clean": "node scripts/clean.mjs out release",
     "demo:repo": "node scripts/make-demo-repo.mjs",
-    "dist:dir": "npm run build && node scripts/dist.mjs --dir"
+    "dist:dir": "npm run icon && npm run build && node scripts/dist.mjs --dir"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

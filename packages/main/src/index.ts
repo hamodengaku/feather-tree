@@ -1,9 +1,16 @@
 import { join } from 'node:path';
 import { app, BrowserWindow, Menu } from 'electron';
-import { CHANNELS, type FocusRefreshPromptEvent, type SessionChangedEvent } from '@feathertree/ipc';
+import {
+  CHANNELS,
+  type CommandEndEvent,
+  type CommandStartEvent,
+  type FocusRefreshPromptEvent,
+  type SessionChangedEvent,
+} from '@feathertree/ipc';
 import { AppContext } from './appContext.js';
 import { registerHandlers } from './handlers/register.js';
-import { hardenWindow, writeStartupMetrics } from '@feathertree/base-electron';
+import { hardenWindow, titleBarOverlayOptions, writeStartupMetrics } from '@feathertree/base-electron';
+import { WINDOW_BACKGROUND, chromeFor } from './windowChrome.js';
 
 const processStart = Date.now();
 
@@ -18,22 +25,14 @@ app.setPath('userData', context.userDataDir);
  * パッケージ済みの exe にはアイコンが埋め込まれているので指定不要。
  * 開発時は指定しないと Electron の既定アイコンが出るので、build/ から読む
  * （build/ は files に含めていないため、パッケージ後は存在しない）。
+ *
+ * 配布物と同じ絵を見るため、マスター（icon-app.png）ではなく
+ * 実際に .ico へ入る素材（build/icon/256.png）を読む。
  */
 function resolveWindowIcon(): string | undefined {
   if (app.isPackaged) return undefined;
-  return join(app.getAppPath(), 'build', 'icon-app.png');
+  return join(app.getAppPath(), 'build', 'icon', '256.png');
 }
-
-/**
- * 最初のペイントで白／黒がちらつかないよう、ウィンドウ背景をテーマに合わせる。
- * 値は renderer の lib/theme.ts の --app-bg-app と対になっている。
- */
-const WINDOW_BACKGROUND = {
-  'classic-dark': '#1b1d21',
-  'classic-light': '#f5f6f7',
-  'phoenix-dark': '#1f1615',
-  'phoenix-light': '#fbf3ef',
-} as const satisfies Record<string, string>;
 
 let mainWindow: BrowserWindow | null = null;
 let appReadyMs = 0;
@@ -50,6 +49,14 @@ function createWindow(): BrowserWindow {
     show: false,
     backgroundColor: WINDOW_BACKGROUND[settings.theme],
     title: 'FeatherTree',
+    /*
+     * 決定 24: OS のタイトル行を消し、その高さを renderer のタブ段が受け取る。
+     * 'hidden' は枠の描画だけを消す指定で、frame: false とは違いリサイズ枠・Snap Layouts・
+     * ダブルクリック最大化は OS 側に残る。最小化 / 最大化 / 閉じるも OS が右上へ描き続けるため、
+     * ウィンドウ操作用の IPC を持たなくて済む。色はテーマ切替時に register.ts が塗り直す。
+     */
+    titleBarStyle: 'hidden',
+    titleBarOverlay: titleBarOverlayOptions(chromeFor(settings.theme)),
     ...(icon === undefined ? {} : { icon }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -117,6 +124,21 @@ function notifySessionChanged(sessionId: string): void {
   mainWindow.webContents.send(CHANNELS.eventSessionChanged, event);
 }
 
+/**
+ * git の実行開始と終了をコマンドバーへ送る（決定 26）。
+ * 発火点は RepositorySession.track() の 1 箇所だけ。
+ */
+function notifyCommandStart(event: CommandStartEvent): void {
+  if (mainWindow === null || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(CHANNELS.eventCommandStart, event);
+}
+
+function notifyCommandEnd(opId: string): void {
+  if (mainWindow === null || mainWindow.isDestroyed()) return;
+  const event: CommandEndEvent = { opId };
+  mainWindow.webContents.send(CHANNELS.eventCommandEnd, event);
+}
+
 function notifyFocusRefreshPrompt(sessionId: string): void {
   if (mainWindow === null || mainWindow.isDestroyed()) return;
   const event: FocusRefreshPromptEvent = { sessionId };
@@ -134,6 +156,8 @@ void app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   await context.initialize();
   await context.restoreSessions();
+  context.onCommandStart = notifyCommandStart;
+  context.onCommandEnd = notifyCommandEnd;
   registerHandlers(context, () => mainWindow);
   mainWindow = createWindow();
   mainWindow.on('closed', () => {

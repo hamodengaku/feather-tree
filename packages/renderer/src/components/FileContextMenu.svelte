@@ -52,6 +52,9 @@
     flex-direction: column;
     gap: 2px;
     padding: 4px;
+    /* ブランチが数十件あると画面外まで伸びる。器の側で止めて中を送る。 */
+    max-height: 60vh;
+    overflow-y: auto;
     background: var(--app-bg-surface);
     border: 1px solid var(--app-border-strong);
     border-radius: var(--app-metric-radius);

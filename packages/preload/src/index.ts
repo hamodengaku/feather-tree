@@ -9,12 +9,15 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   CHANNELS,
   type BranchCreateRequest,
+  type CommandEndEvent,
+  type CommandStartEvent,
   type HunkStageRequest,
   type CommitRequest,
   type FeatherTreeBridge,
   type FocusRefreshPromptEvent,
   type OperationTargetDto,
   type ProgressEvent,
+  type PushRequest,
   type RefreshScope,
   type SessionChangedEvent,
   type SettingsDto,
@@ -68,9 +71,15 @@ const bridge: FeatherTreeBridge = {
   branchCreate: (id: string, req: BranchCreateRequest) => ipcRenderer.invoke(CHANNELS.branchCreate, id, req),
   branchMerge: (id: string, branchName: string, confirmed?: boolean) =>
     ipcRenderer.invoke(CHANNELS.branchMerge, id, branchName, confirmed),
+  remoteList: (id: string) => ipcRenderer.invoke(CHANNELS.remoteList, id),
+  remoteFetch: (id: string, remote: string) => ipcRenderer.invoke(CHANNELS.remoteFetch, id, remote),
+  remotePull: (id: string) => ipcRenderer.invoke(CHANNELS.remotePull, id),
+  remotePush: (id: string, req: PushRequest) => ipcRenderer.invoke(CHANNELS.remotePush, id, req),
+
   shellOpenPath: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.shellOpenPath, id, path),
   shellShowInFolder: (id: string, path: string) =>
     ipcRenderer.invoke(CHANNELS.shellShowInFolder, id, path),
+  shellOpenTerminal: (id: string) => ipcRenderer.invoke(CHANNELS.shellOpenTerminal, id),
 
   commandLogRecent: (limit: number) => ipcRenderer.invoke(CHANNELS.commandLogRecent, limit),
 
@@ -80,6 +89,10 @@ const bridge: FeatherTreeBridge = {
     subscribe(CHANNELS.eventProgress, listener),
   onFocusRefreshPrompt: (listener: (event: FocusRefreshPromptEvent) => void) =>
     subscribe(CHANNELS.eventFocusRefreshPrompt, listener),
+  onCommandStart: (listener: (event: CommandStartEvent) => void) =>
+    subscribe(CHANNELS.eventCommandStart, listener),
+  onCommandEnd: (listener: (event: CommandEndEvent) => void) =>
+    subscribe(CHANNELS.eventCommandEnd, listener),
 };
 
 contextBridge.exposeInMainWorld('ft', bridge);

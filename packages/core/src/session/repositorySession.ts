@@ -23,11 +23,29 @@ import { pageEntries, type StatusFilter, type StatusPage, type StatusSummary } f
 /** パッチ適用のために diff を取り直すときの行数上限（設定の上限値と同じ）。 */
 const PATCH_MAX_LINES = 200000;
 
+/**
+ * git の実行が「今まさに走っている」ことの通知。
+ * コマンドログ（CommandLogEntry）は終わったものだけを持つので、それでは実行中が分からない。
+ */
+export interface CommandStart {
+  readonly sessionId: string;
+  /** 開始と終了を突き合わせるための識別子。セッション内で一意。 */
+  readonly opId: string;
+  /** コマンドログと同じ短いラベル（['fetch', 'origin'] など）。 */
+  readonly args: readonly string[];
+}
+
 export interface SessionDeps {
   readonly gitPath: string;
   readonly tempDir: string;
   readonly commandLog: CommandLog;
   readonly settings: () => AppSettings;
+  /**
+   * git の実行開始と終了。コマンドバーに出すためのもの（決定 26）。
+   * 省略可能にしてあるのは、通知先を持たない使い方（テスト・将来の CLI）を壊さないため。
+   */
+  readonly onCommandStart?: (event: CommandStart) => void;
+  readonly onCommandEnd?: (opId: string) => void;
 }
 
 export type SessionChange = 'status' | 'branches' | 'remotes' | 'log';
@@ -49,6 +67,8 @@ export class RepositorySession {
   #statusSeq = 0;
   #branches: readonly BranchRef[] = [];
   #remotes: readonly string[] = [];
+  /** track() が発行する opId の連番。 */
+  #opSeq = 0;
 
   readonly #listeners = new Set<(change: SessionChange) => void>();
 
@@ -227,9 +247,15 @@ export class RepositorySession {
   /**
    * 実行を必ずコマンドログへ記録する。透明性の担保（決定 16）。
    * 読み取りだけでなく**書き込み操作もここを通す**（SessionOperations から使う）。
+   *
+   * **全 git 実行が通る唯一の関門**なので、実行中の通知もここだけで行う。
+   * 操作を足すたびに通知を書き足す必要は無い。
+   * 唯一の例外はルート解決（対応表 #1）で、セッションが立つ前なので通らない。
    */
   async track<T>(args: readonly string[], run: () => Promise<T>): Promise<T> {
     const startedAt = Date.now();
+    const opId = this.id + ':' + String(++this.#opSeq);
+    this.#deps.onCommandStart?.({ sessionId: this.id, opId, args });
     try {
       const result = await run();
       this.#deps.commandLog.add({
@@ -249,6 +275,8 @@ export class RepositorySession {
         ...(mapped.detail === undefined ? {} : { stderr: mapped.detail }),
       });
       throw err;
+    } finally {
+      this.#deps.onCommandEnd?.(opId);
     }
   }
 

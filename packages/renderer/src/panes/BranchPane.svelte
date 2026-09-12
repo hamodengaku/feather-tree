@@ -36,8 +36,6 @@
     listsHeight === 0 ? storedLocalHeight : Math.min(storedLocalHeight, maxLocalHeight),
   );
 
-  const collapsed = $derived(app.settings?.branchPaneCollapsed ?? false);
-
   // ブランチ一覧は status とは別に保持する（更新ボタンとタブの切り替わりで取り直す）。
   // 削除・名前変更は Phase 6 の残り。
   const locals = $derived(app.branches.filter((b) => !b.isRemote));
@@ -191,17 +189,6 @@
 {#snippet remoteRow(row: BranchTreeRow)}{@render branchRow(row, 'remote')}{/snippet}
 {#snippet localRow(row: BranchTreeRow)}{@render branchRow(row, 'local')}{/snippet}
 
-{#if collapsed}
-  <div class="strip">
-    <button
-      class="expand-btn"
-      title="ブランチペインを開く"
-      onclick={() => void app.setBranchPaneCollapsed(false)}
-    >
-      ›
-    </button>
-  </div>
-{:else}
 <div class="pane">
   <section class="head-section">
     <h2>現在の位置</h2>
@@ -230,13 +217,6 @@
     <section class="list">
       <div class="list-header">
         <h2>リモート <span class="count">{remotes.length}</span></h2>
-        <button
-          class="collapse-btn"
-          title="ブランチペインを閉じる"
-          onclick={() => void app.setBranchPaneCollapsed(true)}
-        >
-          ‹
-        </button>
       </div>
       <VirtualBranchList rows={remoteRows} row={remoteRow} />
     </section>
@@ -267,7 +247,6 @@
     </section>
   </div>
 </div>
-{/if}
 
 {#if contextMenu !== null}
   {@const menu = contextMenu}
@@ -378,42 +357,6 @@
   .new-branch-btn:disabled {
     opacity: 0.4;
     cursor: default;
-  }
-
-  .collapse-btn,
-  .expand-btn {
-    flex: 0 0 auto;
-    background: none;
-    border: none;
-    color: var(--app-text-secondary);
-    cursor: pointer;
-    font-size: calc(var(--app-font-size-ui) * 2);
-    line-height: 1;
-  }
-
-  .collapse-btn {
-    margin-right: 4px;
-    padding: 4px 8px;
-  }
-
-  .collapse-btn:hover,
-  .expand-btn:hover {
-    color: var(--app-text-primary);
-    background: var(--app-bg-hover);
-  }
-
-  .strip {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    height: 100%;
-    border-right: 1px solid var(--app-border-subtle);
-    background: var(--app-bg-surface);
-  }
-
-  .expand-btn {
-    margin-top: 4px;
-    padding: 6px 4px;
   }
 
   .count {

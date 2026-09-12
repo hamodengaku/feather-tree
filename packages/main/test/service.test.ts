@@ -30,6 +30,9 @@ describe('Service (UI が通る経路の統合テスト)', () => {
   let opened: string[] = [];
   let shownInFolder: string[] = [];
   let openPathFailure = '';
+  let launched: { exe: string; args: string[]; cwd: string }[] = [];
+  /** locateTerminal の答えを差し替える。null なら「開けるものが無い」。 */
+  let terminal: { exe: string; args: readonly string[] } | null = { exe: 'wt.exe', args: [] };
 
   beforeEach(async () => {
     dir = join(TEST_ROOT, randomBytes(8).toString('hex'));
@@ -44,6 +47,8 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     opened = [];
     shownInFolder = [];
     openPathFailure = '';
+    launched = [];
+    terminal = { exe: 'wt.exe', args: [] };
 
     const sessions = new SessionManager({
       gitPath: GIT_PATH,
@@ -78,6 +83,10 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       },
       showItemInFolder: (absolutePath: string) => {
         shownInFolder.push(absolutePath);
+      },
+      resolveTerminal: () => Promise.resolve(terminal),
+      launchTerminal: (launch, cwd) => {
+        launched.push({ exe: launch.exe, args: [...launch.args], cwd });
       },
     });
   });
@@ -394,6 +403,63 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     expect(args).toContain('for-each-ref');
   });
 
+  /*
+   * リモート操作（対応表 #22〜#25）の入口の検証。
+   *
+   * 実際に fetch / push が動くかは packages/git 側で本物のリモート相手に見ている。
+   * ここで見るのは **renderer が渡してきた名前を main が鵜呑みにしないこと**。
+   */
+  it('知らないリモート名は拒否する（renderer の値を鵜呑みにしない）', async () => {
+    const id = await openDemo();
+
+    await expect(service.remoteFetch(id, 'どこでもない')).rejects.toMatchObject({
+      dto: { kind: 'internal' },
+    });
+  });
+
+  it('知らないブランチ名へのプッシュは拒否する', async () => {
+    // リモート一覧を読むのはタブを開く瞬間だけ（対応表 #1 → #2 → #3 → #4）
+    await git(dir, ['remote', 'add', 'origin', 'D:/nowhere.git']);
+    const id = await openDemo();
+
+    await expect(
+      service.remotePush(id, { remote: 'origin', branch: '存在しない', setUpstream: false }),
+    ).rejects.toMatchObject({ dto: { kind: 'internal' } });
+  });
+
+  it('リモート一覧は git を動かさずスナップショットから返す', async () => {
+    await git(dir, ['remote', 'add', 'origin', 'D:/nowhere.git']);
+    const id = await openDemo();
+
+    const before = commandLog.size;
+    expect(service.remoteList(id)).toEqual(['origin']);
+    expect(commandLog.size).toBe(before);
+  });
+
+  /*
+   * ターミナル起動（決定 26）。renderer からはセッション id しか来ず、
+   * 開く場所も実行ファイルも main が決めることを確かめる。
+   */
+  it('ターミナルはリポジトリルートで起動する（renderer はパスを渡さない）', async () => {
+    const id = await openDemo();
+
+    await service.shellOpenTerminal(id);
+
+    expect(launched).toHaveLength(1);
+    expect(launched[0]?.exe).toBe('wt.exe');
+    expect(launched[0]?.cwd).toBe(service.sessionList().sessions[0]?.root);
+  });
+
+  it('git を実行できるターミナルが無ければ、起動せずエラーにする', async () => {
+    const id = await openDemo();
+    terminal = null;
+
+    await expect(service.shellOpenTerminal(id)).rejects.toMatchObject({
+      dto: { kind: 'git-not-found' },
+    });
+    expect(launched).toHaveLength(0);
+  });
+
   it('タブを閉じると設定からも消える', async () => {
     const id = await openDemo();
     expect(settings.openRepositories).toHaveLength(1);
@@ -446,6 +512,8 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       pickDirectory: () => Promise.resolve(null),
       openPath: () => Promise.resolve(''),
       showItemInFolder: () => undefined,
+      resolveTerminal: () => Promise.resolve(null),
+      launchTerminal: () => undefined,
     });
 
     const env = noGit.appGetEnvironment();

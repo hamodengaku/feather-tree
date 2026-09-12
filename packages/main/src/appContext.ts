@@ -7,6 +7,7 @@ import {
   checkGitVersion,
   locateGit,
   type AppSettings,
+  type CommandStart,
   type GitLocation,
   type GitVersionCheck,
 } from '@feathertree/core';
@@ -24,6 +25,15 @@ export class AppContext {
   readonly commandLog = new CommandLog();
   readonly userDataDir: string;
   readonly tempDir: string;
+
+  /**
+   * git の実行開始／終了の通知先（決定 26）。
+   *
+   * 差し込み口を可変フィールドにしてあるのは、SessionManager が遅延生成であるため。
+   * index.ts が BrowserWindow を作った後にここへ入れれば、以降に立つセッションに届く。
+   */
+  onCommandStart: ((event: CommandStart) => void) | null = null;
+  onCommandEnd: ((opId: string) => void) | null = null;
 
   #sessions: SessionManager | null = null;
   #git: GitLocation | null = null;
@@ -91,6 +101,9 @@ export class AppContext {
         tempDir: this.tempDir,
         commandLog: this.commandLog,
         settings: () => this.settings.current,
+        // 生成時点では通知先が未設定でも、呼ばれる時には入っている（毎回読み直す）
+        onCommandStart: (event) => this.onCommandStart?.(event),
+        onCommandEnd: (opId) => this.onCommandEnd?.(opId),
       });
     }
     return this.#sessions;

@@ -760,3 +760,126 @@ describe('ブランチのマージ (対応表 #35)', () => {
     expect(bridge.countOf('branchMerge')).toBe(1);
   });
 });
+
+describe('リモート操作 (対応表 #22〜#25)', () => {
+  it('フェッチはリモート名を渡し、ブランチ一覧も取り直す（ahead/behind が変わるため）', async () => {
+    const { app, bridge } = await boot();
+    const before = bridge.countOf('branchList');
+
+    await app.fetch('origin');
+
+    expect(bridge.lastArgsOf('remoteFetch')).toEqual(['s1', 'origin']);
+    expect(bridge.countOf('branchList')).toBe(before + 1);
+    expect(app.error).toBeNull();
+  });
+
+  it('プルはセッション id だけを渡す（どこから取るかは git の設定に委ねる）', async () => {
+    const { app, bridge } = await boot();
+
+    await app.pull();
+
+    expect(bridge.lastArgsOf('remotePull')).toEqual(['s1']);
+  });
+
+  it('上流が無いブランチのプッシュは --set-upstream つきで送る（対応表 #25）', async () => {
+    const { app, bridge } = await boot();
+
+    await app.push('origin', 'feature', true);
+
+    expect(bridge.lastArgsOf('remotePush')).toEqual([
+      's1',
+      { remote: 'origin', branch: 'feature', setUpstream: true },
+    ]);
+  });
+
+  it('リモート一覧はセッションを開いたときに取る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.remotes = ['origin', 'upstream'];
+    });
+
+    expect(app.remotes).toEqual(['origin', 'upstream']);
+    expect(bridge.countOf('remoteList')).toBe(1);
+  });
+
+  it('プッシュのダイアログはリモートが無ければ開かない', async () => {
+    const { app } = await boot((b) => {
+      b.remotes = [];
+    });
+
+    app.openPushDialog();
+
+    expect(app.pushDialogOpen).toBe(false);
+  });
+
+  it('プッシュに成功したときだけダイアログを閉じる', async () => {
+    const { app } = await boot();
+    app.openPushDialog();
+    expect(app.pushDialogOpen).toBe(true);
+
+    await app.push('origin', 'main', false, () => app.closePushDialog());
+
+    expect(app.pushDialogOpen).toBe(false);
+  });
+
+  it('プッシュに失敗したらダイアログは開いたままにする（条件を変えて試し直せる）', async () => {
+    const bridge = new FakeBridge();
+    const failing: FeatherTreeBridge = {
+      ...bridge.build(),
+      remotePush: () =>
+        Promise.resolve({
+          ok: false,
+          error: { kind: 'git-failed', message: 'リモートに新しいコミットがあります' },
+        }),
+    };
+    const app = await load(failing);
+    app.openPushDialog();
+
+    await app.push('origin', 'main', false, () => app.closePushDialog());
+
+    expect(app.pushDialogOpen).toBe(true);
+    expect(app.error?.message).toBe('リモートに新しいコミットがあります');
+  });
+
+  it('ターミナルで開くのはセッション id だけを渡す（パスは main が決める）', async () => {
+    const { app, bridge } = await boot();
+
+    await app.openTerminal();
+
+    expect(bridge.lastArgsOf('shellOpenTerminal')).toEqual(['s1']);
+    expect(app.error).toBeNull();
+  });
+});
+
+describe('実行中の git コマンド (決定 26)', () => {
+  it('開始で立ち、終了で消える', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.emitCommandStart({ sessionId: 's1', opId: 's1:1', args: ['fetch', 'origin'] });
+    expect(app.runningCommand?.args).toEqual(['fetch', 'origin']);
+
+    bridge.emitCommandEnd('s1:1');
+    expect(app.runningCommand).toBeNull();
+  });
+
+  it('並行して走っているときは最後に始まったものを映す', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.emitCommandStart({ sessionId: 's1', opId: 's1:1', args: ['status'] });
+    bridge.emitCommandStart({ sessionId: 's1', opId: 's1:2', args: ['diff', 'a.txt'] });
+    expect(app.runningCommand?.args).toEqual(['diff', 'a.txt']);
+
+    // 後から始まったほうが先に終わっても、残っているものへ戻るだけ
+    bridge.emitCommandEnd('s1:2');
+    expect(app.runningCommand?.args).toEqual(['status']);
+  });
+
+  it('他のタブで走っているものは映さない', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.emitCommandStart({ sessionId: 's2', opId: 's2:1', args: ['status'] });
+
+    expect(app.runningCommand).toBeNull();
+    // ただし取りこぼし防止のため、保持自体はしている
+    expect(app.runningCommands).toHaveLength(1);
+  });
+});

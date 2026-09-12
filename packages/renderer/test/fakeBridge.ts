@@ -3,12 +3,15 @@ import type {
   FileDiffDto,
   HunkStageRequest,
   BranchDto,
+  CommandEndEvent,
+  CommandStartEvent,
   CommitRequest,
   FeatherTreeBridge,
   FileEntryDto,
   FocusRefreshPromptEvent,
   HeadInfoDto,
   OperationTargetDto,
+  PushRequest,
   RefreshScope,
   Result,
   SessionChangedEvent,
@@ -90,12 +93,16 @@ export class FakeBridge {
   head: HeadInfoDto = HEAD;
   /** main が保持しているブランチ一覧。外部での変更を再現するときに差し替える。 */
   branches: BranchDto[] = [];
+  /** main が保持しているリモート名。複数リモートの分岐を再現するときに差し替える。 */
+  remotes: string[] = ['origin'];
   seq = 1;
   /** この名前の書き込み操作で 'needs-confirmation' を返す。 */
   requireConfirmation: string | null = null;
   confirmedCalls: string[] = [];
   changedListeners: ((e: SessionChangedEvent) => void)[] = [];
   focusPromptListeners: ((e: FocusRefreshPromptEvent) => void)[] = [];
+  commandStartListeners: ((e: CommandStartEvent) => void)[] = [];
+  commandEndListeners: ((e: CommandEndEvent) => void)[] = [];
 
   /** diffGet の応答を遅らせる（世代番号による競合排除の検証用）。 */
   diffDelayMs = 0;
@@ -131,6 +138,15 @@ export class FakeBridge {
     for (const listener of this.focusPromptListeners) {
       listener({ sessionId });
     }
+  }
+
+  /** main が git を走らせ始めた／走り終えたことにする。 */
+  emitCommandStart(event: CommandStartEvent): void {
+    for (const listener of this.commandStartListeners) listener(event);
+  }
+
+  emitCommandEnd(opId: string): void {
+    for (const listener of this.commandEndListeners) listener({ opId });
   }
 
   /** kind:'paths' の対象を staged⇄changes 間で実際に移動させる（テストで移動先を検証するため）。 */
@@ -342,12 +358,35 @@ export class FakeBridge {
         if (result.ok) this.seq += 1;
         return Promise.resolve(result);
       },
+      remoteList: (id: string) => {
+        this.record('remoteList', id);
+        return Promise.resolve(ok(this.remotes));
+      },
+      remoteFetch: (id: string, remote: string) => {
+        this.record('remoteFetch', id, remote);
+        this.seq += 1;
+        return Promise.resolve(ok({ statusSeq: this.seq }));
+      },
+      remotePull: (id: string) => {
+        this.record('remotePull', id);
+        this.seq += 1;
+        return Promise.resolve(ok({ statusSeq: this.seq }));
+      },
+      remotePush: (id: string, req: PushRequest) => {
+        this.record('remotePush', id, req);
+        this.seq += 1;
+        return Promise.resolve(ok({ statusSeq: this.seq }));
+      },
       shellOpenPath: (id: string, path: string) => {
         this.record('shellOpenPath', id, path);
         return Promise.resolve(ok(undefined));
       },
       shellShowInFolder: (id: string, path: string) => {
         this.record('shellShowInFolder', id, path);
+        return Promise.resolve(ok(undefined));
+      },
+      shellOpenTerminal: (id: string) => {
+        this.record('shellOpenTerminal', id);
         return Promise.resolve(ok(undefined));
       },
       commandLogRecent: (limit: number) => {
@@ -365,6 +404,18 @@ export class FakeBridge {
         this.focusPromptListeners.push(listener);
         return () => {
           this.focusPromptListeners = this.focusPromptListeners.filter((l) => l !== listener);
+        };
+      },
+      onCommandStart: (listener) => {
+        this.commandStartListeners.push(listener);
+        return () => {
+          this.commandStartListeners = this.commandStartListeners.filter((l) => l !== listener);
+        };
+      },
+      onCommandEnd: (listener) => {
+        this.commandEndListeners.push(listener);
+        return () => {
+          this.commandEndListeners = this.commandEndListeners.filter((l) => l !== listener);
         };
       },
     };

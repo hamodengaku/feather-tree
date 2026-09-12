@@ -2,6 +2,7 @@ import type { FeatherTreeBridge } from '@feathertree/ipc';
 import type {
   BranchDto,
   CommandLogEntryDto,
+  CommandStartEvent,
   ConfirmationDto,
   EnvironmentDto,
   FileDiffDto,
@@ -76,6 +77,16 @@ export class AppState {
    * main のスナップショットを読むだけで git は動かない（#3 を実行するのは main 側）。
    */
   branches = $state<readonly BranchDto[]>([]);
+  /** リモート名の一覧。プッシュ／フェッチ先の選択に使う。 */
+  remotes = $state<readonly string[]>([]);
+
+  /**
+   * 実行中の git コマンド（決定 26）。末尾が最新。
+   *
+   * 並行して走ることがある（diff を読みながら status を取り直す等）ので配列で持つ。
+   * 終了通知が来たものから取り除く。
+   */
+  runningCommands = $state<readonly CommandStartEvent[]>([]);
 
   selected = $state<SelectedFile | null>(null);
   diff = $state<FileDiffDto | null>(null);
@@ -107,6 +118,13 @@ export class AppState {
    */
   createBranchOpen = $state(false);
 
+  /**
+   * プッシュのダイアログ。
+   * 開くボタンはツールバー段にあるが、ダイアログ自体は App.svelte の最上位に置く
+   * （createBranchOpen と同じ理由）。
+   */
+  pushDialogOpen = $state(false);
+
   /** セッションごとの状態。タブ切替で一覧を取り直さないためのキャッシュ。 */
   readonly #cache = new SvelteMap<
     string,
@@ -116,6 +134,7 @@ export class AppState {
       changes: Section;
       selected: SelectedFile | null;
       branches: readonly BranchDto[];
+      remotes: readonly string[];
     }
   >();
 
@@ -146,6 +165,18 @@ export class AppState {
     return head.branch;
   }
 
+  /**
+   * 今アクティブなタブで実行中のコマンドのうち、最後に始まったもの。
+   * コマンドバーはこれ 1 つだけを映す（複数を並べても読めない）。
+   */
+  get runningCommand(): CommandStartEvent | null {
+    for (let i = this.runningCommands.length - 1; i >= 0; i -= 1) {
+      const event = this.runningCommands[i];
+      if (event !== undefined && event.sessionId === this.activeId) return event;
+    }
+    return null;
+  }
+
   async initialize(): Promise<void> {
     const [env, settings, list] = await Promise.all([
       this.#ft.appGetEnvironment(),
@@ -174,6 +205,18 @@ export class AppState {
     this.#ft.onFocusRefreshPrompt((event) => {
       if (event.sessionId !== this.activeId) return;
       this.focusRefreshPrompt = event;
+    });
+
+    /*
+     * 実行中の git コマンド（決定 26）。
+     * ここでセッションを絞り込まないのは、終了通知を取りこぼすと配列に残り続けるため。
+     * 全タブ分を溜めて、表示する段（runningCommand）で絞る。
+     */
+    this.#ft.onCommandStart((event) => {
+      this.runningCommands = [...this.runningCommands, event];
+    });
+    this.#ft.onCommandEnd((event) => {
+      this.runningCommands = this.runningCommands.filter((c) => c.opId !== event.opId);
     });
   }
 
@@ -210,6 +253,7 @@ export class AppState {
     this.changes = cached.changes;
     this.selected = cached.selected;
     this.branches = cached.branches;
+    this.remotes = cached.remotes;
     this.#invalidateDiff();
     if (cached.selected !== null) await this.loadDiff(cached.selected);
   }
@@ -265,6 +309,15 @@ export class AppState {
   async reloadAll(): Promise<void> {
     await this.reloadActive();
     await this.reloadBranches();
+    await this.reloadRemotes();
+  }
+
+  /** リモート名の取り直し。ブランチ一覧と同じく main のスナップショットを読むだけ。 */
+  async reloadRemotes(): Promise<void> {
+    const id = this.activeId;
+    if (id === null) return;
+    const result = await this.#ft.remoteList(id);
+    if (result.ok) this.remotes = [...result.value];
   }
 
   /** ブランチ一覧の取り直し。main のスナップショットを読むだけで git は動かない。 */
@@ -611,6 +664,62 @@ export class AppState {
     });
   }
 
+  /**
+   * リポジトリを外部ターミナルで開く（決定 26）。
+   * どこを開くかは main が決めるので、渡すのはセッション id だけ。
+   * git を動かさないので openFile と同じ軽い経路を通す。
+   */
+  openTerminal(): Promise<void> {
+    return this.#run(async () => {
+      this.#check(await this.#ft.shellOpenTerminal(this.#id()));
+    });
+  }
+
+  /*
+   * リモート操作（対応表 #22〜#25）。3 つとも確認は不要（決定 16）。
+   *
+   * git の実行と main 側の取り直しは #operate が済ませるが、#operate 末尾の
+   * reloadActive はブランチ一覧を含まない。リモート操作は必ず ahead/behind を
+   * 動かすので、**ここだけは一覧も取り直す**（読むのは main のスナップショットで git は動かない）。
+   */
+
+  async fetch(remote: string): Promise<void> {
+    await this.#operate(() => this.#ft.remoteFetch(this.#id(), remote));
+    await this.reloadBranches();
+  }
+
+  async pull(): Promise<void> {
+    await this.#operate(() => this.#ft.remotePull(this.#id()));
+    await this.reloadBranches();
+  }
+
+  openPushDialog(): void {
+    if (this.activeId === null || this.remotes.length === 0) return;
+    this.pushDialogOpen = true;
+  }
+
+  closePushDialog(): void {
+    this.pushDialogOpen = false;
+  }
+
+  /**
+   * setUpstream が真なら対応表 #25（上流を張りながらプッシュ）。
+   * 成功時だけ onSuccess を呼ぶ（失敗したらダイアログを閉じず、条件を変えて再試行させる）。
+   */
+  async push(
+    remote: string,
+    branch: string,
+    setUpstream: boolean,
+    onSuccess?: () => void,
+  ): Promise<void> {
+    await this.#operate(
+      () => this.#ft.remotePush(this.#id(), { remote, branch, setUpstream }),
+      undefined,
+      onSuccess,
+    );
+    await this.reloadBranches();
+  }
+
   dismissError(): void {
     this.error = null;
   }
@@ -692,6 +801,7 @@ export class AppState {
       changes: this.changes,
       selected: this.selected,
       branches: this.branches,
+      remotes: this.remotes,
     });
   }
 
@@ -700,6 +810,7 @@ export class AppState {
     this.staged = emptySection();
     this.changes = emptySection();
     this.branches = [];
+    this.remotes = [];
     this.selected = null;
     this.#invalidateDiff();
     this.commitMessage = '';

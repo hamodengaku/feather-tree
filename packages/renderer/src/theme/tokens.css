@@ -41,6 +41,25 @@
   --app-metric-gap: 8px;
 
   /*
+   * タブ段の高さ。決定 24 でここが旧 OS ウィンドウ枠の位置になった。
+   * main の windowChrome.ts の TITLE_BAR_HEIGHT と必ず同じ値にする
+   * （OS が描く ─ □ × の高さがあちらの値になるので、ずらすと段差が出る）。
+   */
+  --app-metric-tabbar-height: 34px;
+  /*
+   * タブ段の右端に空けるキャプション領域の幅。
+   * 通常は env(titlebar-area-width) から実測できるので、これはそれが取れない場合の保険
+   * （Windows の ─ □ × 3 個分の見込み幅）。
+   */
+  --app-metric-caption-reserve: 138px;
+
+  /*
+   * 縦帯（アプリヘッダより下の全高に立つ帯）の幅。
+   * 記号 1 文字分ぎりぎりだと帯として見えないので、少し余裕を持たせている。
+   */
+  --app-metric-activitybar-width: 45px;
+
+  /*
    * 重なり順。position: fixed の要素は必ずこのどれかを指定する。
    * DOM の記述順に頼ると「ペインの中に置いたダイアログが後続のペインに隠れる」事故が起きる。
    */
