@@ -18,6 +18,11 @@ electronDownload:
 asar: true
 compression: maximum
 
+# Chromium が持ち込む WebGPU 用 DLL（dxcompiler / dxil、計約 26MB）を削る（決定 5）。
+# files は app 側にしか効かないので、Electron 本体のファイルはこのフックで消すしかない。
+# 成果物の作成前に呼ばれるため、portable exe にも zip にも含まれない。
+afterPack: scripts/afterPack.mjs
+
 # 不要ロケールを落として配布サイズを削る
 electronLanguages:
   - ja
