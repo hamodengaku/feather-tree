@@ -11,6 +11,13 @@ import { AppContext } from './appContext.js';
 import { registerHandlers } from './handlers/register.js';
 import { hardenWindow, titleBarOverlayOptions, writeStartupMetrics } from '@feathertree/base-electron';
 import { WINDOW_BACKGROUND, chromeFor } from './windowChrome.js';
+import {
+  SPLASH_SAFETY_MS,
+  createSplashWindow,
+  delay,
+  fadeOutAndClose,
+  remainingHoldMs,
+} from './splashWindow.js';
 
 const processStart = Date.now();
 
@@ -36,6 +43,59 @@ function resolveWindowIcon(): string | undefined {
 
 let mainWindow: BrowserWindow | null = null;
 let appReadyMs = 0;
+
+/**
+ * スプラッシュ（決定 28）。起動中だけ存在する。
+ *
+ * 閉じる経路が 3 つある（正常終了・起動処理の失敗・保険タイマー）ので、
+ * 二重に閉じないよう handOverToMainWindow() の 1 箇所に集約する。
+ */
+let splashWindow: BrowserWindow | null = null;
+let splashShownAt = 0;
+let splashShownMs: number | undefined;
+let splashSafetyTimer: NodeJS.Timeout | null = null;
+let handedOver = false;
+
+/**
+ * スプラッシュから本体へ渡す。
+ *
+ * **順番が重要**: 本体を show() してからスプラッシュを閉じる。
+ * 逆にすると、本体が無い瞬間に `window-all-closed` が走ってアプリが終了する
+ * （docs/01-architecture.md 11 章）。
+ */
+async function handOverToMainWindow(): Promise<void> {
+  if (handedOver) return;
+  handedOver = true;
+
+  if (splashSafetyTimer !== null) {
+    clearTimeout(splashSafetyTimer);
+    splashSafetyTimer = null;
+  }
+
+  const splash = splashWindow;
+  splashWindow = null;
+
+  // スプラッシュを出していた時間が最低表示時間に届いていなければ、その分だけ待つ
+  if (splash !== null && !splash.isDestroyed()) {
+    await delay(remainingHoldMs(splashShownAt, Date.now()));
+  }
+
+  const window = mainWindow;
+  if (window !== null && !window.isDestroyed()) {
+    window.show();
+    const windowShownMs = Date.now() - processStart;
+    writeStartupMetrics(context.userDataDir, {
+      appReadyMs,
+      readyToShowMs,
+      ...(splashShownMs === undefined ? {} : { splashShownMs }),
+      windowShownMs,
+    });
+  }
+
+  if (splash !== null) await fadeOutAndClose(splash);
+}
+
+let readyToShowMs = 0;
 
 function createWindow(): BrowserWindow {
   const settings = context.currentSettings();
@@ -72,10 +132,14 @@ function createWindow(): BrowserWindow {
 
   hardenWindow(window);
 
+  /*
+   * show() はここでは呼ばない（決定 28）。
+   * スプラッシュの最低表示時間を待ってから出すので、引き渡しに任せる。
+   * readyToShowMs は「表示できるようになった時刻」として、実際に見えた時刻とは別に記録する。
+   */
   window.once('ready-to-show', () => {
-    const readyToShowMs = Date.now() - processStart;
-    window.show();
-    writeStartupMetrics(context.userDataDir, { appReadyMs, readyToShowMs });
+    readyToShowMs = Date.now() - processStart;
+    void handOverToMainWindow();
   });
 
   /**
@@ -154,13 +218,38 @@ void app.whenReady().then(async () => {
   // Electron 既定のメニュー（File / Edit / View / Window）は git クライアントには不要。
   // 縦の表示領域を無駄にするので出さない。
   Menu.setApplicationMenu(null);
-  await context.initialize();
-  await context.restoreSessions();
-  context.onCommandStart = notifyCommandStart;
-  context.onCommandEnd = notifyCommandEnd;
-  registerHandlers(context, () => mainWindow);
-  mainWindow = createWindow();
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+
+  /*
+   * スプラッシュ（決定 28）を最優先で出す。
+   *
+   * 設定の読み込みだけ先に済ませる（JSON 1 本なので速い）。テーマに合わせた背景色で
+   * 出したいので設定が要るが、この後の git 探索やタブ復元を待つ必要は無い。
+   */
+  await context.loadSettings();
+  splashWindow = createSplashWindow(context.currentSettings().theme, app.getVersion());
+  splashShownAt = Date.now();
+  splashShownMs = splashShownAt - processStart;
+  // 起動処理が固まっても、閉じるボタンの無い板が残り続けないようにする
+  splashSafetyTimer = setTimeout(() => void handOverToMainWindow(), SPLASH_SAFETY_MS);
+
+  try {
+    await context.initialize();
+    await context.restoreSessions();
+    context.onCommandStart = notifyCommandStart;
+    context.onCommandEnd = notifyCommandEnd;
+    registerHandlers(context, () => mainWindow);
+    mainWindow = createWindow();
+    mainWindow.on('closed', () => {
+      mainWindow = null;
+    });
+  } catch (err) {
+    /*
+     * 起動処理が投げてもスプラッシュは必ず閉じる。
+     * ここで閉じないと、枠なし・常に手前・閉じるボタン無しの板だけが残る。
+     * 本体ウィンドウが無い状態で閉じるとアプリは終了するが、
+     * 起動に失敗しているのだからそれが正しい振る舞い。
+     */
+    await handOverToMainWindow();
+    throw err;
+  }
 });

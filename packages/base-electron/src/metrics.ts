@@ -15,6 +15,18 @@ export interface StartupMetrics {
   readonly appReadyMs: number;
   /** プロセス開始からウィンドウ表示可能まで。 */
   readonly readyToShowMs: number;
+  /**
+   * プロセス開始からスプラッシュ表示まで。スプラッシュを出さない構成なら省略する。
+   * 「押した」の合図が出るまでの時間で、体感の起動の速さはここで決まる。
+   */
+  readonly splashShownMs?: number;
+  /**
+   * プロセス開始から本体ウィンドウが**実際に見える**まで。
+   *
+   * `readyToShowMs` は「表示できるようになった時刻」で、スプラッシュの最低表示時間が
+   * あると実際に見える時刻とは別物になる。両方を取って混同しないようにする。
+   */
+  readonly windowShownMs?: number;
 }
 
 export const STARTUP_METRICS_FILE = 'startup-metrics.json';

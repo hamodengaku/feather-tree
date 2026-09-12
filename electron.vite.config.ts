@@ -47,7 +47,17 @@ export default defineConfig({
        * 実ファイル参照にしておけば読みづらさも曖昧さも無い。
        */
       assetsInlineLimit: 0,
-      rollupOptions: { input: resolve(root, 'packages/renderer/index.html') },
+      /*
+       * 入力は 2 つ。index.html が本体、splash.html が起動時のスプラッシュ（決定 28）。
+       * スプラッシュは別の BrowserWindow なので、独立した HTML とエントリが必要になる。
+       * 出力は out/renderer/ の直下に同名で並び、electron-builder の files（out/**）に入る。
+       */
+      rollupOptions: {
+        input: {
+          index: resolve(root, 'packages/renderer/index.html'),
+          splash: resolve(root, 'packages/renderer/splash.html'),
+        },
+      },
     },
     plugins: [svelte()],
   },

@@ -16,22 +16,31 @@
   import icon32 from '../../../../build/icon/32.png';
   import icon64 from '../../../../build/icon/64.png';
   import icon128 from '../../../../build/icon/128.png';
+  import icon256 from '../../../../build/icon/256.png';
 
   interface Props {
-    /** 表示サイズ（CSS px）。素材を用意してある 16（タブ段）と 64（ようこそ画面）のみ。 */
-    size?: 16 | 64;
+    /**
+     * 表示サイズ（CSS px）。素材を用意してある 16（タブ段）・64（ようこそ画面）・
+     * 128（スプラッシュ）のみ。
+     */
+    size?: 16 | 64 | 128;
   }
 
   const { size = 16 }: Props = $props();
 
-  const large = $derived(size === 64);
-  const src = $derived(large ? icon64 : icon16);
-  /** 1.5x は 64 表示のときは素材が無い（96.png は作っていない）ので 2x だけにする。 */
-  const srcset = $derived(
-    large
-      ? `${icon64} 1x, ${icon128} 2x`
-      : `${icon16} 1x, ${icon24} 1.5x, ${icon32} 2x`,
-  );
+  /**
+   * 表示サイズごとの 1x / 2x の素材。
+   * 1.5x は 16 表示のときだけ素材がある（96.png と 192.png は作っていない）。
+   */
+  const SOURCES = {
+    16: { src: icon16, srcset: `${icon16} 1x, ${icon24} 1.5x, ${icon32} 2x` },
+    64: { src: icon64, srcset: `${icon64} 1x, ${icon128} 2x` },
+    128: { src: icon128, srcset: `${icon128} 1x, ${icon256} 2x` },
+  } as const;
+
+  const large = $derived(size !== 16);
+  const src = $derived(SOURCES[size].src);
+  const srcset = $derived(SOURCES[size].srcset);
 </script>
 
 <!--

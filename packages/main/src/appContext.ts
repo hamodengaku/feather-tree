@@ -58,10 +58,22 @@ export class AppContext {
     return this.settings.current;
   }
 
-  /** 起動時に 1 回だけ。git の探索とバージョン確認はここでしか行わない。 */
-  async initialize(): Promise<void> {
+  /**
+   * settings.json を読むだけ。**initialize() より先に呼ぶ。**
+   *
+   * 分けてあるのはスプラッシュ（決定 28）のため。スプラッシュの背景色と文字色は
+   * テーマに合わせたいので設定が必要だが、git の探索（reg を spawn することもある）や
+   * `--version` を待つ必要は無い。JSON 1 本を読んだ時点で絵を出せる。
+   */
+  async loadSettings(): Promise<void> {
     await this.settings.load();
+  }
 
+  /**
+   * 起動時に 1 回だけ。git の探索とバージョン確認はここでしか行わない。
+   * 設定は `loadSettings()` が済ませてある前提。
+   */
+  async initialize(): Promise<void> {
     const configured = this.settings.current.gitPath;
     this.#git = await locateGit({
       env: process.env,

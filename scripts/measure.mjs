@@ -107,9 +107,17 @@ async function main() {
   if (!metrics) {
     out('  起動計測: 失敗（30 秒以内に startup-metrics.json が現れませんでした）');
   } else {
-    out(`  プロセス起動 -> app.ready      : ${metrics.appReadyMs} ms`);
-    out(`  プロセス起動 -> ウィンドウ表示 : ${metrics.readyToShowMs} ms`);
-    out(`  実測待ち時間（参考）           : ${wallMs} ms`);
+    out(`  プロセス起動 -> app.ready        : ${metrics.appReadyMs} ms`);
+    // スプラッシュ（決定 28）を出す構成では、ここが「押した」の合図が出るまでの時間
+    if (metrics.splashShownMs !== undefined) {
+      out(`  プロセス起動 -> スプラッシュ表示 : ${metrics.splashShownMs} ms`);
+    }
+    out(`  プロセス起動 -> 本体が表示可能   : ${metrics.readyToShowMs} ms`);
+    // 最低表示時間の分だけ readyToShowMs より後ろにずれる（混同しないよう別に出す）
+    if (metrics.windowShownMs !== undefined) {
+      out(`  プロセス起動 -> 本体が実際に表示 : ${metrics.windowShownMs} ms`);
+    }
+    out(`  実測待ち時間（参考）             : ${wallMs} ms`);
   }
 
   await sleep(2500);
