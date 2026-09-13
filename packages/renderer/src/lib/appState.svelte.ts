@@ -19,16 +19,29 @@ import type {
   StatusGroupDto,
   StatusSummaryDto,
 } from '@feathertree/ipc';
-import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { tick } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import { ft } from '../bridge.js';
 import { applyTheme } from './theme.js';
 import { nextSelectionAfterRemoval } from './selection.js';
+import { TabActivity } from './tabActivity.js';
 
 /** ブランチペインの展開状態が無いときに返す共通の空配列（毎回作り直さない）。 */
 const EMPTY_EXPANDED: readonly string[] = [];
 
 /** 1 セクションが一度に取得する件数。仮想化しているので画面分 + 余裕で足りる。 */
 const PAGE_LIMIT = 200;
+
+/**
+ * タブの読み込み帯の対象にしない実行（ラベルの先頭語）。
+ *
+ * どれも選択やスクロールに伴う読み取りで、タブに出ている状態は変わらない。
+ * 高頻度なので、拾うとファイルを選ぶたびに帯が出入りする。
+ * 除外リストにしてあるのは、状態を変える git を将来足したときに書き足し忘れても
+ * 「帯が出ない」失敗にならないようにするため（逆の失敗＝ちらつきは目で気づける）。
+ * `read-untracked` は git ではないが、track() を通るので同じラベル体系に載っている。
+ */
+const VIEW_ONLY_COMMANDS: ReadonlySet<string> = new Set(['diff', 'read-untracked', 'show', 'log']);
 
 export interface SelectedFile {
   readonly path: string;
@@ -60,9 +73,13 @@ function emptySection(): Section {
  */
 export class AppState {
   readonly #ft: FeatherTreeBridge;
+  /** タブの読み込み帯（発動条件は tabActivity.ts）。 */
+  readonly #tabActivity: TabActivity;
 
-  constructor(bridge: FeatherTreeBridge) {
+  /** tabActivity を差し替えられるのはテストのため（時間の規則を 0 にして同期的に確かめる）。 */
+  constructor(bridge: FeatherTreeBridge, options: { readonly tabActivity?: TabActivity } = {}) {
     this.#ft = bridge;
+    this.#tabActivity = options.tabActivity ?? new TabActivity();
   }
 
   environment = $state<EnvironmentDto | null>(null);
@@ -90,15 +107,6 @@ export class AppState {
    * 終了通知が来たものから取り除く。
    */
   runningCommands = $state<readonly CommandStartEvent[]>([]);
-
-  /**
-   * 一覧を読み込んでいる最中のタブ。
-   *
-   * リポジトリを開くときはタブを先に立てるので（openRepository）、
-   * 中身が空のタブが先に現れる。その間タブに回転印を出して、止まっていない
-   * ことを示す。複数タブを並行して読み込むことがあるので集合で持つ。
-   */
-  readonly loadingSessions = new SvelteSet<string>();
 
   selected = $state<SelectedFile | null>(null);
   diff = $state<FileDiffDto | null>(null);
@@ -281,7 +289,8 @@ export class AppState {
     // main 側の自動更新（ウィンドウ復帰時）を受けて表示を合わせる
     this.#ft.onSessionChanged((event) => {
       if (event.sessionId !== this.activeId) return;
-      void this.reloadActive();
+      const id = event.sessionId;
+      void this.#updating(id, () => this.#reflect(id, () => this.reloadActive()));
     });
 
     // refocusUpdateMode === 'modal' のとき、main はここに「更新するか」を委ねてくる
@@ -297,9 +306,13 @@ export class AppState {
      */
     this.#ft.onCommandStart((event) => {
       this.runningCommands = [...this.runningCommands, event];
+      this.#syncGitActivity(event.sessionId);
     });
     this.#ft.onCommandEnd((event) => {
+      // 終了通知は opId しか持たないので、取り除く前にどのタブのものかを引いておく
+      const ended = this.runningCommands.find((c) => c.opId === event.opId);
       this.runningCommands = this.runningCommands.filter((c) => c.opId !== event.opId);
+      if (ended !== undefined) this.#syncGitActivity(ended.sessionId);
     });
 
     /*
@@ -312,9 +325,12 @@ export class AppState {
     });
   }
 
-  /** タブが読み込み中か。回転印を出すのはこのタブだけ。 */
-  isLoading(id: string): boolean {
-    return this.loadingSessions.has(id);
+  /**
+   * このタブに読み込み帯を出すか（決定 26）。
+   * 意味は「このタブに出ている内容は古く、まもなく変わる」。発動条件は tabActivity.ts。
+   */
+  isUpdating(id: string): boolean {
+    return this.#tabActivity.isShown(id);
   }
 
   /**
@@ -415,35 +431,54 @@ export class AppState {
     this.sessions = [...this.sessions, opened];
     this.activeId = opened.id;
     this.#clearActive();
-    this.loadingSessions.add(opened.id);
 
-    try {
-      await this.#run(async () => {
-        const loaded = await this.#ft.sessionLoad(opened.id);
-        if (!this.#check(loaded)) return;
-        // 読み込み中に別のタブへ移られていたら、そちらの表示を上書きしない
-        if (this.activeId !== opened.id) return;
-        await this.reloadAll();
-      });
-    } finally {
-      this.loadingSessions.delete(opened.id);
-    }
+    // 中身がまだ無いタブなので、読み込み帯は遅延なしで出す
+    await this.#run(() =>
+      this.#updating(
+        opened.id,
+        async () => {
+          const loaded = await this.#ft.sessionLoad(opened.id);
+          if (!this.#check(loaded)) return;
+          await this.#reflect(opened.id, () => this.reloadAll());
+        },
+        true,
+      ),
+    );
   }
 
-  /** タブ切替。一覧の取り直しはせず、キャッシュから復元する。 */
+  /**
+   * タブ切替。読み込み済みのタブは、一覧の取り直しをせずキャッシュから復元する。
+   *
+   * キャッシュが無いタブ（復元直後でまだ読み込んでいない・操作中に離れて捨てた）は
+   * **先に切り替えてから読み込む**。main は sessionActivate の中で #2 〜 #4 を走らせるので、
+   * 応答を待ってから activeId を移すと、その間の git がコマンドバーに映らず、
+   * 画面も前のタブのまま固まって見える（リポジトリを開くときと同じ理由）。
+   */
   async activate(id: string): Promise<void> {
     if (id === this.activeId) return;
     this.#saveCache();
+
+    const cached = this.#cache.get(id);
+    if (cached === undefined) {
+      this.activeId = id;
+      this.#clearActive();
+      // 中身がまだ無いタブなので、読み込み帯は遅延なしで出す
+      await this.#updating(
+        id,
+        async () => {
+          const result = await this.#ft.sessionActivate(id);
+          if (!this.#check(result)) return;
+          await this.#reflect(id, () => this.reloadAll());
+        },
+        true,
+      );
+      return;
+    }
+
     const result = await this.#ft.sessionActivate(id);
     if (!this.#check(result)) return;
 
     this.activeId = id;
-    const cached = this.#cache.get(id);
-    if (cached === undefined) {
-      this.#clearActive();
-      await this.reloadAll();
-      return;
-    }
     this.summary = cached.summary;
     this.staged = cached.staged;
     this.changes = cached.changes;
@@ -478,6 +513,7 @@ export class AppState {
     const result = await this.#ft.sessionClose(id);
     if (!this.#check(result)) return;
     this.#cache.delete(id);
+    this.#tabActivity.forget(id);
 
     const list = await this.#ft.sessionList();
     if (!list.ok) return;
@@ -497,17 +533,21 @@ export class AppState {
   async refresh(scope: 'status' | 'full' = 'full'): Promise<void> {
     const id = this.activeId;
     if (id === null) return;
-    await this.#run(async () => {
-      const result = await this.#ft.sessionRefresh(id, scope);
-      if (!this.#check(result)) return;
-      await this.reloadAll();
-      /*
-       * 履歴を見ているのに更新しても変わらない、では筋が通らないので取り直す。
-       * 対応表の例外「『更新』ボタン（コミットログモード）: #2 → #3 → #20」。
-       * **差分モードでは走らせない**（見えていないものを取り直さない）。
-       */
-      if (this.viewMode === 'log') await this.loadLog();
-    });
+    await this.#run(() =>
+      this.#updating(id, async () => {
+        const result = await this.#ft.sessionRefresh(id, scope);
+        if (!this.#check(result)) return;
+        await this.#reflect(id, async () => {
+          await this.reloadAll();
+          /*
+           * 履歴を見ているのに更新しても変わらない、では筋が通らないので取り直す。
+           * 対応表の例外「『更新』ボタン（コミットログモード）: #2 → #3 → #20」。
+           * **差分モードでは走らせない**（見えていないものを取り直さない）。
+           */
+          if (this.viewMode === 'log' && this.activeId === id) await this.loadLog();
+        });
+      }),
+    );
   }
 
   /**
@@ -525,7 +565,8 @@ export class AppState {
     const id = this.activeId;
     if (id === null) return;
     const result = await this.#ft.remoteList(id);
-    if (result.ok) this.remotes = [...result.value];
+    // 待っている間に別のタブへ移られていたら、そちらの表示を上書きしない
+    if (result.ok && id === this.activeId) this.remotes = [...result.value];
   }
 
   /** ブランチ一覧の取り直し。main のスナップショットを読むだけで git は動かない。 */
@@ -533,7 +574,8 @@ export class AppState {
     const id = this.activeId;
     if (id === null) return;
     const result = await this.#ft.branchList(id);
-    if (result.ok) this.branches = [...result.value];
+    // 待っている間に別のタブへ移られていたら、そちらの表示を上書きしない
+    if (result.ok && id === this.activeId) this.branches = [...result.value];
   }
 
   async reloadActive(): Promise<void> {
@@ -545,6 +587,9 @@ export class AppState {
       this.#ft.statusGetPage(id, { offset: 0, limit: PAGE_LIMIT, filter: { group: 'staged' } }),
       this.#ft.statusGetPage(id, { offset: 0, limit: PAGE_LIMIT, filter: { group: 'changes' } }),
     ]);
+
+    // 待っている間に別のタブへ移られていたら、そちらの表示を上書きしない
+    if (id !== this.activeId) return;
 
     if (summary.ok) this.summary = summary.value;
     if (staged.ok) this.staged = { entries: [...staged.value.entries], total: staged.value.filteredTotal };
@@ -943,26 +988,20 @@ export class AppState {
   async commit(): Promise<void> {
     const message = this.commitMessage;
     const amend = this.amend;
-    // 確認待ちで止まった場合は取り直さないよう、成功したことを onSuccess で拾う
-    let committed = false;
     const clear = (): void => {
       this.commitMessage = '';
       this.amend = false;
-      committed = true;
     };
+    // ブランチ一覧の取り直しは #operate が成功したときだけ行う（確認待ちで止まったら取り直さない）
     await this.#operate(
       (confirmed) => this.#ft.commit(this.#id(), { message, amend }, confirmed),
-      async () => {
-        await this.#operate(
-          () => this.#ft.commit(this.#id(), { message, amend }, true),
-          undefined,
-          clear,
-        );
-        if (committed) await this.reloadBranches();
-      },
+      () =>
+        this.#operate(() => this.#ft.commit(this.#id(), { message, amend }, true), undefined, clear, {
+          branches: true,
+        }),
       clear,
+      { branches: true },
     );
-    if (committed) await this.reloadBranches();
   }
 
   /** ブランチのダブルクリックによる切替。確認不要（決定: ブランチ移動は無確認）。 */
@@ -1041,13 +1080,11 @@ export class AppState {
    */
 
   async fetch(remote: string): Promise<void> {
-    await this.#operate(() => this.#ft.remoteFetch(this.#id(), remote));
-    await this.reloadBranches();
+    await this.#operate(() => this.#ft.remoteFetch(this.#id(), remote), undefined, undefined, { branches: true });
   }
 
   async pull(): Promise<void> {
-    await this.#operate(() => this.#ft.remotePull(this.#id()));
-    await this.reloadBranches();
+    await this.#operate(() => this.#ft.remotePull(this.#id()), undefined, undefined, { branches: true });
   }
 
   openPushDialog(): void {
@@ -1073,8 +1110,8 @@ export class AppState {
       () => this.#ft.remotePush(this.#id(), { remote, branch, setUpstream }),
       undefined,
       onSuccess,
+      { branches: true },
     );
-    await this.reloadBranches();
   }
 
   dismissError(): void {
@@ -1103,13 +1140,21 @@ export class AppState {
    * 書き込み操作の共通処理。
    * main が 'needs-confirmation' で拒否したら確認ダイアログを出し、承認後に再実行する。
    * 確認の判定は renderer では行わない（決定 16）。
+   *
+   * 対象のタブは**呼んだ時点の activeId で固定する**。操作中に別のタブへ移られても、
+   * 読み込み帯と反映は操作を始めたタブに付く（#reflect）。確認待ちで止まったときは
+   * ここで抜けるので、ダイアログを出している間は帯を出さない。
+   *
+   * @param options.branches 成功したらブランチ一覧も取り直す（コミット・リモート操作）。
    */
   async #operate<T>(
     call: (confirmed?: boolean) => Promise<Result<T>>,
     retry?: () => Promise<void>,
     onSuccess?: () => void,
+    options: { readonly branches?: boolean } = {},
   ): Promise<void> {
-    await this.#run(async () => {
+    const id = this.activeId;
+    const body = async (): Promise<void> => {
       const result = await call();
       if (!result.ok) {
         const needsConfirm =
@@ -1124,8 +1169,14 @@ export class AppState {
         return;
       }
       onSuccess?.();
-      await this.reloadActive();
-    });
+      if (id === null) return;
+      await this.#reflect(id, async () => {
+        await this.reloadActive();
+        if (options.branches === true && this.activeId === id) await this.reloadBranches();
+      });
+    };
+    // タブが無いときは call の中の #id() が投げ、#run がエラー帯に出す
+    await this.#run(() => (id === null ? body() : this.#updating(id, body)));
   }
 
   async #run(body: () => Promise<void>): Promise<void> {
@@ -1137,6 +1188,48 @@ export class AppState {
     } finally {
       this.busy = false;
     }
+  }
+
+  /**
+   * 表示を更新する操作を、読み込み帯の「意図」として包む（tabActivity.ts）。
+   * 反映の終わりは DOM の更新まで（tick）とする。
+   *
+   * @param immediate 中身がまだ無いタブなら true（帯を遅延なしで出す）。
+   */
+  async #updating(id: string, body: () => Promise<void>, immediate = false): Promise<void> {
+    this.#tabActivity.begin(id, immediate);
+    try {
+      await body();
+      await tick();
+    } finally {
+      this.#tabActivity.end(id);
+    }
+  }
+
+  /**
+   * 操作の結果を、操作を始めたタブの表示へ反映する。
+   *
+   * 終わった時点で別のタブへ移っていたら読み直さず、**そのタブのキャッシュを捨てる**。
+   * 残しておくと、戻ったときに操作前の表示が復元され、タブ切替では読み直しも
+   * 走らないので古いまま居座る。捨てておけば、戻ったときにキャッシュの無いタブとして
+   * main のスナップショットを読み直す（git は走らない）。
+   * 反映の途中で移られた場合も同じ（reload* は移られたら書き込まずに抜ける）。
+   */
+  async #reflect(id: string, reload: () => Promise<void>): Promise<void> {
+    if (this.activeId === id) await reload();
+    if (this.activeId !== id) this.#cache.delete(id);
+  }
+
+  /**
+   * 実行中通知が変わったタブについて、状態系の git が走っているかを読み込み帯へ伝える。
+   * main が自発的に走らせる git（ウィンドウ復帰時の自動更新）は renderer に意図が無いので、
+   * これでしか拾えない。
+   */
+  #syncGitActivity(sessionId: string): void {
+    const running = this.runningCommands.some(
+      (c) => c.sessionId === sessionId && !VIEW_ONLY_COMMANDS.has(c.args[0] ?? ''),
+    );
+    this.#tabActivity.setGit(sessionId, running);
   }
 
   #check<T>(result: Result<T>): result is { ok: true; value: T } {

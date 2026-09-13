@@ -21,6 +21,10 @@
   import OpenRepositoryMenu from './components/OpenRepositoryMenu.svelte';
   import CloneDialog from './components/CloneDialog.svelte';
   import CloneConfirmDialog from './components/CloneConfirmDialog.svelte';
+  import { fade } from 'svelte/transition';
+
+  /** 読み込み帯の出入りの所要時間。Svelte の transition は CSS 変数を取れないのでここに置く。 */
+  const BAND_FADE_MS = 160;
 
   void app.initialize();
 
@@ -204,21 +208,21 @@
             ondragover={(e) => handleTabDragOver(session.id, e)}
             ondragend={handleTabDragEnd}
           >
+            <!--
+              読み込み帯（決定 26。発動条件は lib/tabActivity.ts）。
+              背景に敷くのでタブの幅を変えない。出ていない間は要素ごと無い（待機時に動くものを残さない）。
+            -->
+            {#if app.isUpdating(session.id)}
+              <span class="tab-band" aria-hidden="true" transition:fade={{ duration: BAND_FADE_MS }}></span>
+            {/if}
             <button
               class="tab-label"
               role="tab"
               aria-selected={session.id === app.activeId}
-              aria-busy={app.isLoading(session.id)}
+              aria-busy={app.isUpdating(session.id)}
               title={session.id === app.activeId ? tabTitle(session.root) : session.root}
               onclick={() => void app.activate(session.id)}
             >
-              <!--
-                読み込み中の回転印。タブは #1（ルート解決）だけで先に立つので、
-                #2 〜 #4 が走っている間はここだけが動く。
-              -->
-              {#if app.isLoading(session.id)}
-                <span class="tab-spinner" aria-hidden="true"></span>
-              {/if}
               <span class="tab-repo">{session.displayName}</span>
               <!--
                 現在情報はアクティブなタブだけ（他のタブの状態は手元に無い）。
@@ -446,6 +450,8 @@
    * 下辺の角は丸めない（丸めるとツールバー段との間に切れ目が見える）。
    */
   .tab {
+    /* 読み込み帯（.tab-band）の絶対配置の基準 */
+    position: relative;
     display: flex;
     align-items: center;
     height: calc(var(--app-metric-tabbar-height) - 4px);
@@ -496,36 +502,78 @@
   }
 
   /*
-   * 読み込み中の回転印。寸法はブランチ名の丸（line-height: 15px）に収まる 10px。
-   * 主役はリポジトリ名なので、輪は控えめな線色にして先頭だけをアクセント色にする。
+   * 読み込み帯（決定 26）。「このタブに出ている内容は古く、まもなく変わる」の印。
+   *
+   * 背景に敷くのでタブの幅を変えない（印を差し込むと右側のタブが全部ずれ、× の押し間違いを招く）。
+   * 進捗率は分からないので全幅の不定形にする。一部だけ塗ると「そこで止まっている」と読まれる。
+   *
+   * 地の薄い色（::before）と流れる明るい帯（::after）を分けてあるのは、
+   * 動きを抑える設定で帯だけを止め、地を明滅させるため。
+   * 要素そのものには opacity を書かない（Svelte の fade が同じ opacity を直接書き換える）。
+   *
+   * 動かすのは transform と opacity だけ。background-position のアニメーションは
+   * 毎フレームの再ペイントになるので使わないこと。
    */
-  .tab-spinner {
-    flex: 0 0 auto;
-    width: 10px;
-    height: 10px;
-    border: 2px solid var(--app-border-subtle);
-    border-top-color: var(--app-accent);
-    border-radius: 50%;
-    animation: tab-spin 700ms linear infinite;
+  .tab-band {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    overflow: hidden;
+    pointer-events: none;
   }
 
-  @keyframes tab-spin {
+  .tab-band::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--app-accent) 11%, transparent);
+  }
+
+  .tab-band::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 45%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--app-accent) 30%, transparent),
+      transparent
+    );
+    transform: translateX(-100%);
+    animation: tab-band-sweep 1.8s ease-in-out infinite;
+  }
+
+  @keyframes tab-band-sweep {
     to {
-      transform: rotate(360deg);
+      transform: translateX(230%);
     }
   }
 
-  /* 動きを抑える設定では回さない。止まっていないことは明滅で示す。 */
+  /* 動きを抑える設定では流さない。止まっていないことは地の明滅で示す。 */
   @media (prefers-reduced-motion: reduce) {
-    .tab-spinner {
-      animation: tab-spinner-pulse 1.2s ease-in-out infinite;
+    .tab-band::after {
+      animation: none;
+      opacity: 0;
+    }
+
+    .tab-band::before {
+      animation: tab-band-pulse 1.6s ease-in-out infinite;
     }
   }
 
-  @keyframes tab-spinner-pulse {
+  @keyframes tab-band-pulse {
     50% {
-      opacity: 0.25;
+      opacity: 0.35;
     }
+  }
+
+  /* 帯（絶対配置）より手前に描く。位置指定の無い要素は、絶対配置の兄弟より奥に描かれるため。 */
+  .tab-label,
+  .tab-close {
+    position: relative;
   }
 
   /*

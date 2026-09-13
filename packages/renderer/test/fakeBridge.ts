@@ -132,6 +132,29 @@ export class FakeBridge {
     release?.();
   }
 
+  /**
+   * 名前を指定した呼び出しを releaseCall() まで返さない（今は sessionActivate / remoteFetch）。
+   * 「main が応答するまでの間に renderer がどう見えるか」を観察するために使う。
+   */
+  readonly #held = new Set<string>();
+  readonly #waiting = new Map<string, () => void>();
+
+  holdCall(name: string): void {
+    this.#held.add(name);
+  }
+
+  releaseCall(name: string): void {
+    this.#held.delete(name);
+    const release = this.#waiting.get(name);
+    this.#waiting.delete(name);
+    release?.();
+  }
+
+  async #gate(name: string): Promise<void> {
+    if (!this.#held.has(name)) return;
+    await new Promise<void>((release) => this.#waiting.set(name, release));
+  }
+
   /** クローンの保存先選択の結果。null ならキャンセル。 */
   clonePickResult: string | null = 'D:/work';
   /** sessionCloneAndCreate が立てるタブ。 */
@@ -339,10 +362,11 @@ export class FakeBridge {
         this.record('sessionList');
         return Promise.resolve(ok({ sessions: this.sessions, activeId: this.activeId }));
       },
-      sessionActivate: (id: string) => {
+      sessionActivate: async (id: string) => {
         this.record('sessionActivate', id);
+        await this.#gate('sessionActivate');
         this.activeId = id;
-        return Promise.resolve(ok(null));
+        return ok(null);
       },
       sessionClose: (id: string) => {
         this.record('sessionClose', id);
@@ -468,10 +492,11 @@ export class FakeBridge {
         this.record('remoteList', id);
         return Promise.resolve(ok(this.remotes));
       },
-      remoteFetch: (id: string, remote: string) => {
+      remoteFetch: async (id: string, remote: string) => {
         this.record('remoteFetch', id, remote);
+        await this.#gate('remoteFetch');
         this.seq += 1;
-        return Promise.resolve(ok({ statusSeq: this.seq }));
+        return ok({ statusSeq: this.seq });
       },
       remotePull: (id: string) => {
         this.record('remotePull', id);

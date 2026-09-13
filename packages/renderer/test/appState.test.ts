@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FeatherTreeBridge } from '@feathertree/ipc';
 import { AppState } from '../src/lib/appState.svelte.js';
+import { TabActivity } from '../src/lib/tabActivity.js';
 import { FakeBridge, branch, commit, entry, installDocumentStub } from './fakeBridge.js';
 
 installDocumentStub();
@@ -11,8 +12,9 @@ installDocumentStub();
  * 設計上の制約（タブ切替で一覧を取り直さない・確認は main が強制する）を確認する。
  */
 async function load(bridge: FeatherTreeBridge): Promise<AppState> {
-  // bridge を注入するので window.ft も document も不要
-  const app = new AppState(bridge);
+  // bridge を注入するので window.ft も document も不要。
+  // 読み込み帯の時間の規則は 0 にする（タイマーを残さず、出入りを同期的に確かめる。規則自体は tabActivity.test.ts）
+  const app = new AppState(bridge, { tabActivity: new TabActivity({ delayMs: 0, minMs: 0, graceMs: 0 }) });
   await app.initialize();
   return app;
 }
@@ -931,7 +933,7 @@ describe('リポジトリを開く（タブを先に立てる）', () => {
   /** 保留中の IPC を挟んだ状態で、溜まったマイクロタスクを流し切る。 */
   const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-  it('読み込みが終わる前にタブが立ち、アクティブになり、回転印が出る', async () => {
+  it('読み込みが終わる前にタブが立ち、アクティブになり、読み込み帯が出る', async () => {
     const { app, bridge } = await boot((b) => {
       b.holdLoad = true;
     });
@@ -942,13 +944,13 @@ describe('リポジトリを開く（タブを先に立てる）', () => {
     // まだ sessionLoad は返っていない
     expect(app.sessions.map((s) => s.id)).toEqual(['s1', 's2', 's3']);
     expect(app.activeId).toBe('s3');
-    expect(app.isLoading('s3')).toBe(true);
-    expect(app.isLoading('s1')).toBe(false);
+    expect(app.isUpdating('s3')).toBe(true);
+    expect(app.isUpdating('s1')).toBe(false);
 
     bridge.releaseLoad();
     await opening;
 
-    expect(app.isLoading('s3')).toBe(false);
+    expect(app.isUpdating('s3')).toBe(false);
   });
 
   it('タブを立ててから読み込む順序で呼ぶ', async () => {
@@ -1003,6 +1005,139 @@ describe('リポジトリを開く（タブを先に立てる）', () => {
     expect(app.sessions).toHaveLength(2);
     expect(app.activeId).toBe('s2');
     expect(bridge.countOf('sessionActivate')).toBe(1);
+  });
+});
+
+/*
+ * タブの読み込み帯の発動条件（docs/01-architecture.md 8 章）。
+ *
+ * 帯の意味は「このタブに出ている内容は古く、まもなく変わる」。
+ * 時間の規則は tabActivity.test.ts で確かめるので、ここでは 0 にして「いつ・どのタブに立つか」だけを見る。
+ */
+describe('タブの読み込み帯（発動条件）', () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('未読込のタブへ切り替えると、main の応答より先に切り替わって帯が出る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.holdCall('sessionActivate');
+    });
+
+    const switching = app.activate('s2');
+    await flush();
+
+    // main はまだ #2 〜 #4 を走らせている。表示は既に s2（実行中の git がコマンドバーに映る）
+    expect(app.activeId).toBe('s2');
+    expect(app.isUpdating('s2')).toBe(true);
+    expect(app.isUpdating('s1')).toBe(false);
+
+    bridge.releaseCall('sessionActivate');
+    await switching;
+
+    expect(app.isUpdating('s2')).toBe(false);
+  });
+
+  it('読み込み済みのタブへの切替では帯を出さない', async () => {
+    const { app, bridge } = await boot();
+    await app.activate('s2');
+
+    bridge.holdCall('sessionActivate');
+    const back = app.activate('s1');
+    await flush();
+    expect(app.isUpdating('s1')).toBe(false);
+
+    bridge.releaseCall('sessionActivate');
+    await back;
+    expect(app.activeId).toBe('s1');
+  });
+
+  it('選択に伴う git（diff / show / log）では出さず、状態系の git では出す', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.emitCommandStart({ sessionId: 's1', opId: 's1:1', args: ['diff', 'a.txt'] });
+    bridge.emitCommandStart({ sessionId: 's1', opId: 's1:2', args: ['show', 'abc1234'] });
+    bridge.emitCommandStart({ sessionId: 's1', opId: 's1:3', args: ['log'] });
+    expect(app.isUpdating('s1')).toBe(false);
+
+    // ウィンドウ復帰時の自動更新（main が自発的に走らせる。renderer に意図は無い）
+    bridge.emitCommandStart({ sessionId: 's1', opId: 's1:4', args: ['status'] });
+    expect(app.isUpdating('s1')).toBe(true);
+
+    bridge.emitCommandEnd('s1:4');
+    expect(app.isUpdating('s1')).toBe(false);
+  });
+
+  it('非アクティブなタブで走る git でも、そのタブに帯が出る', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.emitCommandStart({ sessionId: 's2', opId: 's2:1', args: ['fetch', 'origin'] });
+
+    expect(app.isUpdating('s2')).toBe(true);
+    expect(app.isUpdating('s1')).toBe(false);
+
+    bridge.emitCommandEnd('s2:1');
+    expect(app.isUpdating('s2')).toBe(false);
+  });
+
+  it('操作中に別のタブへ移っても、帯と反映は操作を始めたタブに付く', async () => {
+    const { app, bridge } = await boot();
+    bridge.holdCall('remoteFetch');
+
+    const fetching = app.fetch('origin');
+    await flush();
+    expect(app.isUpdating('s1')).toBe(true);
+
+    await app.activate('s2');
+    expect(app.isUpdating('s1')).toBe(true);
+    expect(app.isUpdating('s2')).toBe(false);
+
+    const mark = bridge.calls.length;
+    bridge.releaseCall('remoteFetch');
+    await fetching;
+
+    expect(app.isUpdating('s1')).toBe(false);
+    // 終了時のアクティブなタブ（s2）を読み直していない
+    const after = bridge.calls.slice(mark).map((c) => c.name);
+    expect(after).not.toContain('statusGetSummary');
+    expect(after).not.toContain('branchList');
+
+    // s1 のキャッシュ（fetch 前の表示）は捨ててあるので、戻ると main のスナップショットを読み直す
+    const pagesBefore = bridge.countOf('statusGetPage');
+    await app.activate('s1');
+    expect(bridge.countOf('statusGetPage')).toBeGreaterThan(pagesBefore);
+  });
+
+  it('操作中に離れなかったタブは、これまでどおりその場で反映する', async () => {
+    const { app, bridge } = await boot();
+    const before = bridge.countOf('branchList');
+
+    await app.fetch('origin');
+
+    expect(bridge.countOf('branchList')).toBe(before + 1);
+    expect(app.isUpdating('s1')).toBe(false);
+  });
+
+  it('確認待ちの間は帯を出さない', async () => {
+    const { app } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+      b.requireConfirmation = 'commit';
+    });
+    app.commitMessage = 'やり直す';
+    app.amend = true;
+
+    await app.commit();
+
+    expect(app.pendingConfirmation).not.toBeNull();
+    expect(app.isUpdating('s1')).toBe(false);
+  });
+
+  it('タブを閉じたら帯も消す', async () => {
+    const { app, bridge } = await boot();
+    bridge.emitCommandStart({ sessionId: 's2', opId: 's2:1', args: ['fetch', 'origin'] });
+    expect(app.isUpdating('s2')).toBe(true);
+
+    await app.closeTab('s2');
+
+    expect(app.isUpdating('s2')).toBe(false);
   });
 });
 
