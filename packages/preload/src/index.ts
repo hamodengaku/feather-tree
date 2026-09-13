@@ -9,8 +9,10 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   CHANNELS,
   type BranchCreateRequest,
+  type CloneProgressEvent,
   type CloneRequest,
   type CommandEndEvent,
+  type CommandLogEntryDto,
   type CommandStartEvent,
   type HunkStageRequest,
   type CommitRequest,
@@ -43,6 +45,7 @@ const bridge: FeatherTreeBridge = {
   sessionOpen: (root: string) => ipcRenderer.invoke(CHANNELS.sessionOpen, root),
   clonePickDirectory: () => ipcRenderer.invoke(CHANNELS.clonePickDirectory),
   sessionCloneAndCreate: (req: CloneRequest) => ipcRenderer.invoke(CHANNELS.sessionCloneAndCreate, req),
+  cloneCancel: () => ipcRenderer.invoke(CHANNELS.cloneCancel),
   sessionList: () => ipcRenderer.invoke(CHANNELS.sessionList),
   sessionActivate: (id: string) => ipcRenderer.invoke(CHANNELS.sessionActivate, id),
   sessionClose: (id: string) => ipcRenderer.invoke(CHANNELS.sessionClose, id),
@@ -94,12 +97,16 @@ const bridge: FeatherTreeBridge = {
     subscribe(CHANNELS.eventSessionChanged, listener),
   onProgress: (listener: (event: ProgressEvent) => void) =>
     subscribe(CHANNELS.eventProgress, listener),
+  onCloneProgress: (listener: (event: CloneProgressEvent) => void) =>
+    subscribe(CHANNELS.eventCloneProgress, listener),
   onFocusRefreshPrompt: (listener: (event: FocusRefreshPromptEvent) => void) =>
     subscribe(CHANNELS.eventFocusRefreshPrompt, listener),
   onCommandStart: (listener: (event: CommandStartEvent) => void) =>
     subscribe(CHANNELS.eventCommandStart, listener),
   onCommandEnd: (listener: (event: CommandEndEvent) => void) =>
     subscribe(CHANNELS.eventCommandEnd, listener),
+  onCommandLogged: (listener: (entry: CommandLogEntryDto) => void) =>
+    subscribe(CHANNELS.eventCommandLogged, listener),
 };
 
 contextBridge.exposeInMainWorld('ft', bridge);

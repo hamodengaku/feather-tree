@@ -9,6 +9,11 @@ export interface CommandLogEntry {
   readonly elapsedMs: number;
   /** 失敗時のみ。 */
   readonly stderr?: string;
+  /**
+   * どのまとまりの実行か（識別子の意味はアプリが決める。FeatherTree ではタブのセッション id）。
+   * 無ければどのまとまりにも属さない（セッションが立つ前のクローンなど）。
+   */
+  readonly scope?: string;
 }
 
 /**
@@ -22,6 +27,7 @@ export class CommandLog {
   readonly #capacity: number;
   #entries: CommandLogEntry[] = [];
   #nextSeq = 1;
+  readonly #listeners = new Set<(entry: CommandLogEntry) => void>();
 
   constructor(capacity = 500) {
     this.#capacity = capacity;
@@ -38,7 +44,23 @@ export class CommandLog {
     if (this.#entries.length > this.#capacity) {
       this.#entries = this.#entries.slice(this.#entries.length - this.#capacity);
     }
+    for (const listener of this.#listeners) {
+      try {
+        listener(full);
+      } catch {
+        // 通知先の失敗で、記録した側（コマンドの実行）を巻き込まない
+      }
+    }
     return full;
+  }
+
+  /**
+   * 記録が増えたときに呼ぶ。購読解除用の関数を返す。
+   * 表示側が「取り直すきっかけ」を待たずに、増えた分をそのまま受け取るため。
+   */
+  onAdd(listener: (entry: CommandLogEntry) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   /** 新しい順に返す。 */

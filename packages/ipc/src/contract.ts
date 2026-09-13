@@ -28,6 +28,7 @@ export const CHANNELS = {
   sessionOpen: 'session:open',
   clonePickDirectory: 'clone:pickDirectory',
   sessionCloneAndCreate: 'session:cloneAndCreate',
+  cloneCancel: 'clone:cancel',
   sessionList: 'session:list',
   sessionActivate: 'session:activate',
   sessionClose: 'session:close',
@@ -68,9 +69,11 @@ export const CHANNELS = {
   // main -> renderer の通知
   eventSessionChanged: 'event:sessionChanged',
   eventProgress: 'event:progress',
+  eventCloneProgress: 'event:cloneProgress',
   eventFocusRefreshPrompt: 'event:focusRefreshPrompt',
   eventCommandStart: 'event:commandStart',
   eventCommandEnd: 'event:commandEnd',
+  eventCommandLogged: 'event:commandLogged',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -368,6 +371,12 @@ export interface PushRequest {
 }
 
 /**
+ * クローンの方法（決定 9）。
+ * shallow は `--depth 1`、large は shallow → LFS 一括取得 → refspec 設定 → unshallow の自動実行（対応表 #37〜#41）。
+ */
+export type CloneMode = 'normal' | 'shallow' | 'large';
+
+/**
  * クローン（対応表 #37）の入力。
  * main は parentDir が存在するディレクトリであること、name が 1 階層のフォルダ名であること、
  * url が `-` で始まらないことを検証してから git に渡す。
@@ -378,8 +387,63 @@ export interface CloneRequest {
   readonly parentDir: string;
   /** 作成するフォルダ名。区切り文字を含まない。 */
   readonly name: string;
-  /** 真なら `--depth 1`。 */
-  readonly shallow: boolean;
+  readonly mode: CloneMode;
+}
+
+export type CloneStageState = 'pending' | 'running' | 'done' | 'skipped' | 'failed' | 'cancelled';
+
+/**
+ * クローンの進捗の 1 段階（1 行）。段階表は始まる前にすべて並ぶ。
+ * 行の解析は main（core）で済ませてあり、renderer は git の出力形式を知らない。
+ */
+export interface CloneStageDto {
+  readonly id: string;
+  /** 日本語の段階名。 */
+  readonly label: string;
+  /** git の原文名（Receiving objects 等）。 */
+  readonly source: string;
+  /** 見出しのまとまり。 */
+  readonly group: 'clone' | 'lfs' | 'config' | 'unshallow';
+  readonly step: string;
+  readonly state: CloneStageState;
+  /** 0〜100。件数だけの段階や未開始は null。 */
+  readonly percent: number | null;
+  readonly current: number | null;
+  readonly total: number | null;
+  /** 転送量と速度（`1.20 MiB | 2.00 MiB/s`）。 */
+  readonly detail: string | null;
+  /** epoch ms。 */
+  readonly startedAt: number | null;
+  readonly endedAt: number | null;
+}
+
+/** 失敗時のヒントや警告（docs/02-git-command-map.md「クローン失敗時のヒント」）。 */
+export interface CloneHintDto {
+  readonly id: string;
+  readonly title: string;
+  readonly body: string;
+  /** 利用者がターミナルで打つコマンド。アプリは実行しない。 */
+  readonly commands: readonly string[];
+}
+
+/**
+ * クローンの結果。git の失敗・中止も IPC のエラーにせず、これで返す（ダイアログにヒントを出すため）。
+ *  - succeeded: 全手順が済んだ（警告のヒントはありうる）
+ *  - partial: クローンはできたが、途中の手順が失敗・中止した（session は立っている）
+ *  - failed: クローンできなかった（session は null）
+ */
+export interface CloneOutcomeDto {
+  readonly result: 'succeeded' | 'partial' | 'failed';
+  readonly cancelled: boolean;
+  readonly session: SessionDto | null;
+  /** クローン先のフォルダ。 */
+  readonly target: string;
+  readonly stages: readonly CloneStageDto[];
+  readonly hints: readonly CloneHintDto[];
+  /** クローンしたフォルダで後から打つコマンド（シャローの推奨・大規模の残り手順）。 */
+  readonly followUps: readonly string[];
+  /** コピー用の生ログ。 */
+  readonly log: string;
 }
 
 // ---------------------------------------------------------------- 診断と通知
@@ -392,6 +456,8 @@ export interface CommandLogEntryDto {
   readonly exitCode: number;
   readonly elapsedMs: number;
   readonly stderr?: string;
+  /** どのタブの実行か。タブに属さない実行（セッションが立つ前のクローン）は null。 */
+  readonly sessionId: string | null;
 }
 
 export interface SessionChangedEvent {
@@ -402,13 +468,18 @@ export interface SessionChangedEvent {
 
 /**
  * 進捗の行（git の stderr を CR / LF で切ったもの）。docs/01-architecture.md 6 章。
- * 今の送り手はクローン（対応表 #37）だけ。
+ * fetch / push / ブランチ切替の進捗のための型で、今は送り手がいない（クローンは CloneProgressEvent）。
  */
 export interface ProgressEvent {
-  /** セッションが立つ前の操作（クローン）では null。 */
-  readonly sessionId: string | null;
+  readonly sessionId: string;
   readonly opId: string;
   readonly line: string;
+}
+
+/** クローンの進捗。段階表のスナップショットを丸ごと送る（main で 200ms に間引く）。 */
+export interface CloneProgressEvent {
+  readonly opId: string;
+  readonly stages: readonly CloneStageDto[];
 }
 
 /**
@@ -461,11 +532,14 @@ export interface FeatherTreeBridge {
   /** クローンの保存先（親フォルダ）を選ぶ。キャンセルされたら null。git は動かない。 */
   clonePickDirectory(): Promise<Result<string | null>>;
   /**
-   * クローンしてタブを立てる。対応表 #37 → #1 で、sessionPickAndCreate と同じ「1 段目」。
-   * 実行中は event:progress（sessionId: null）で進捗行が届く。
-   * 一覧（#2 〜 #4）は取らないので、renderer はタブを立ててから sessionLoad を呼ぶ。
+   * クローンしてタブを立てる。対応表 #37〜#41 → #1 で、sessionPickAndCreate と同じ「1 段目」。
+   * 実行中は event:cloneProgress で段階表が届く。同時に 1 本だけ（実行中に呼ぶと internal エラー）。
+   * git の失敗・中止は ok: true の結果（result: failed / partial）で返る。ok: false は入力検証の違反だけ。
+   * 一覧（#2 〜 #4）は取らないので、renderer は session が立っていればタブを立ててから sessionLoad を呼ぶ。
    */
-  sessionCloneAndCreate(req: CloneRequest): Promise<Result<SessionDto>>;
+  sessionCloneAndCreate(req: CloneRequest): Promise<Result<CloneOutcomeDto>>;
+  /** 実行中のクローンを中止する。実行中でなければ何もしない。 */
+  cloneCancel(): Promise<Result<null>>;
   sessionList(): Promise<Result<SessionListDto>>;
   sessionActivate(id: string): Promise<Result<null>>;
   sessionClose(id: string): Promise<Result<null>>;
@@ -522,7 +596,13 @@ export interface FeatherTreeBridge {
   /** 購読解除用の関数を返す。 */
   onSessionChanged(listener: (event: SessionChangedEvent) => void): () => void;
   onProgress(listener: (event: ProgressEvent) => void): () => void;
+  onCloneProgress(listener: (event: CloneProgressEvent) => void): () => void;
   onFocusRefreshPrompt(listener: (event: FocusRefreshPromptEvent) => void): () => void;
   onCommandStart(listener: (event: CommandStartEvent) => void): () => void;
   onCommandEnd(listener: (event: CommandEndEvent) => void): () => void;
+  /**
+   * コマンドログに 1 件増えた（全タブ分）。実行ログパネルはこれで増えた分を受け取る
+   * （取り直すきっかけが操作の後に限られていると、表示が古いまま残るため）。
+   */
+  onCommandLogged(listener: (entry: CommandLogEntryDto) => void): () => void;
 }

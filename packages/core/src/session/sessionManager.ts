@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { RefreshCoordinator } from '@feathertree/base-core';
-import { cloneRepository } from '@feathertree/git';
-import { RepositorySession, toMappedError, type SessionDeps } from './repositorySession.js';
+import { runClone, type CloneProgressListener, type CloneRunRequest, type CloneRunResult } from '../clone/cloneRunner.js';
+import { RepositorySession, type SessionDeps } from './repositorySession.js';
 
 export interface SessionInfo {
   readonly id: string;
@@ -10,14 +10,12 @@ export interface SessionInfo {
   readonly displayName: string;
 }
 
-/** クローン（対応表 #37）の行き先。検証は呼び出し側（main）が済ませている前提。 */
-export interface CloneTarget {
-  readonly url: string;
-  /** 保存先の親フォルダ。git の cwd になる。 */
-  readonly parentDir: string;
-  /** 作成するフォルダ名（1 階層）。 */
-  readonly name: string;
-  readonly shallow: boolean;
+/** クローン（対応表 #37〜#41）の行き先と方法。検証は呼び出し側（main）が済ませている前提。 */
+export type CloneTarget = CloneRunRequest;
+
+/** クローンの結果。クローン自体ができていれば（succeeded / partial）セッションが立っている。 */
+export interface CloneOutcome extends CloneRunResult {
+  readonly session: RepositorySession | null;
 }
 
 /**
@@ -97,51 +95,48 @@ export class SessionManager {
   }
 
   /**
-   * クローンしてタブを立てる（対応表 #37 → #1）。create() と同じく一覧は取らない。
+   * クローンしてタブを立てる（対応表 #37〜#41 → #1）。create() と同じく一覧は取らない。
    *
-   * セッションが立つ前の実行なので RepositorySession.track() を通らない。
-   * コマンドログへの記録（決定 16 の透明性）はここで直接行う。失敗も記録する。
-   * コマンドバーには映らないので、進捗は onProgress で呼び出し側に渡す。
+   * 手順の実行・コマンドログへの記録・ヒントの組み立ては cloneRunner が持つ。
+   * git の失敗や中止は例外にせず結果で返す。**クローン自体ができていれば、途中で失敗・中止しても
+   * タブを立てる**（決定 9。取得済みの数 GB を無駄にしない）。
+   * #1 は中止の signal を渡さない。中止はクローンの手順に対するもので、立てるタブまで止めない。
    */
-  async clone(
-    req: CloneTarget,
-    onProgress: (line: string) => void,
-    signal?: AbortSignal,
-  ): Promise<RepositorySession> {
+  async clone(req: CloneTarget, onProgress: CloneProgressListener, signal?: AbortSignal): Promise<CloneOutcome> {
     const target = join(req.parentDir, req.name);
     const existing = this.findByRoot(target);
     if (existing !== null) {
+      // 同じ場所のタブがあるならクローンは必ず失敗する（空でないフォルダ）。git を走らせずにそのタブを返す
       this.#activeId = existing.id;
-      return existing;
+      return { result: 'succeeded', cancelled: false, target, stages: [], hints: [], followUps: [], log: '', session: existing };
     }
 
-    const args = ['clone', ...(req.shallow ? ['--depth', '1'] : []), req.url];
-    const startedAt = Date.now();
+    const run = await runClone(
+      req,
+      { gitPath: this.#deps.gitPath, tempDir: this.#deps.tempDir, commandLog: this.#deps.commandLog },
+      onProgress,
+      signal,
+    );
+    if (run.result === 'failed') return { ...run, session: null };
+
     try {
-      await cloneRepository(
-        {
-          gitPath: this.#deps.gitPath,
-          cwd: req.parentDir,
-          tempDir: this.#deps.tempDir,
-          ...(signal === undefined ? {} : { signal }),
-        },
-        { url: req.url, directory: target, shallow: req.shallow },
-        onProgress,
-      );
-    } catch (err) {
-      const mapped = toMappedError(err);
-      this.#deps.commandLog.add({
-        cwd: req.parentDir,
-        args,
-        exitCode: mapped.exitCode ?? -1,
-        elapsedMs: Date.now() - startedAt,
-        ...(mapped.detail === undefined ? {} : { stderr: mapped.detail }),
-      });
-      throw err;
+      return { ...run, session: await this.create(run.target) };
+    } catch {
+      return {
+        ...run,
+        result: 'partial',
+        session: null,
+        hints: [
+          ...run.hints,
+          {
+            id: 'open-failed',
+            title: 'クローンしたフォルダを開けませんでした',
+            body: '「リポジトリを開く」の「ローカルのリポジトリを開く…」から、次のフォルダを開いてください：' + run.target,
+            commands: [],
+          },
+        ],
+      };
     }
-    this.#deps.commandLog.add({ cwd: req.parentDir, args, exitCode: 0, elapsedMs: Date.now() - startedAt });
-
-    return this.create(target, signal);
   }
 
   /** 1 段目と 2 段目をまとめて行う。UI からは使わない（テストと将来の CLI 用）。 */

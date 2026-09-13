@@ -5,7 +5,9 @@
 
   let url = $state('');
   let parentDir = $state('');
+  /** クローン方法。2 つは同時に選べない（片方を入れると他方が外れる。両方外すと通常のクローン）。 */
   let shallow = $state(false);
+  let large = $state(false);
   /**
    * フォルダ名を自分で指定するか。切っている間は URL から補完した名前を使い、欄は触れない。
    * 入れた瞬間は補完済みの名前を初期値として引き継ぎ、そこから書き換えさせる。
@@ -42,10 +44,21 @@
     url = '';
     parentDir = root === null ? '' : parentOf(root);
     shallow = false;
+    large = false;
     customName = false;
     typedName = '';
     committed = false;
   });
+
+  function onShallowChange(checked: boolean): void {
+    shallow = checked;
+    if (checked) large = false;
+  }
+
+  function onLargeChange(checked: boolean): void {
+    large = checked;
+    if (checked) shallow = false;
+  }
 
   function onCustomNameChange(checked: boolean): void {
     customName = checked;
@@ -66,7 +79,8 @@
   function submit(event: SubmitEvent): void {
     event.preventDefault();
     if (!canSubmit) return;
-    app.confirmClone({ url: url.trim(), parentDir: parentDir.trim(), name: name.trim(), shallow });
+    const mode = large ? 'large' : shallow ? 'shallow' : 'normal';
+    app.confirmClone({ url: url.trim(), parentDir: parentDir.trim(), name: name.trim(), mode });
   }
 </script>
 
@@ -128,25 +142,20 @@
         </label>
       </div>
 
+      <!--
+        クローン方法（決定 9）。シャローで後から履歴を戻す手順は、完了したときに確認ダイアログで出す。
+      -->
       <label class="check">
-        <input type="checkbox" bind:checked={shallow} />
+        <input type="checkbox" checked={shallow} onchange={(e) => onShallowChange(e.currentTarget.checked)} />
         <span>最新コミットのみ取得（シャロークローン）</span>
       </label>
-      <!--
-        チェックしたときだけ、後で戻す手順を出す。順番は config → unshallow
-        （逆にすると、履歴は戻るがブランチが 1 本に絞られたまま残る）。
-      -->
-      {#if shallow}
-        <div class="note">
-          タイムアウトしづらくなります。のちほど
-          <code class="cmd">git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'</code>
-          と
-          <code class="cmd">git fetch --unshallow</code>
-          してください
-        </div>
-      {:else}
-        <p class="note">タイムアウトしづらくなります</p>
-      {/if}
+      <p class="note">タイムアウトしづらくなります</p>
+
+      <label class="check">
+        <input type="checkbox" checked={large} onchange={(e) => onLargeChange(e.currentTarget.checked)} />
+        <span>大規模レポジトリをいい感じにクローンする</span>
+      </label>
+      <p class="note">タイムアウト対策とLFSロードを全自動で行います</p>
 
       {#if preview.length > 0}
         <p class="preview mono" title={preview}>{preview} に作成します</p>
@@ -232,23 +241,6 @@
     margin: 0 0 14px 22px;
     color: var(--app-text-muted);
     font-size: var(--app-font-size-mono);
-  }
-
-  /*
-   * 後で打つコマンド。1 つずつ行を分け、長い refspec は折り返さず横に送る（途中で改行されると写し間違える）。
-   * 押すと全体が選択されるので、そのままコピーできる。
-   */
-  .cmd {
-    display: block;
-    margin: 3px 0;
-    padding: 2px 6px;
-    overflow-x: auto;
-    white-space: pre;
-    user-select: all;
-    font-family: var(--app-font-mono);
-    color: var(--app-text-secondary);
-    background: var(--app-bg-raised);
-    border-radius: var(--app-metric-radius);
   }
 
   .preview {

@@ -7,7 +7,9 @@ import {
   type FocusRefreshPromptEvent,
   type SessionChangedEvent,
 } from '@feathertree/ipc';
+import type { CommandLogEntry } from '@feathertree/core';
 import { AppContext } from './appContext.js';
+import { toCommandLogEntryDto } from './handlers/commandLogDto.js';
 import { registerHandlers } from './handlers/register.js';
 import { hardenWindow, titleBarOverlayOptions, writeStartupMetrics } from '@feathertree/base-electron';
 import { WINDOW_BACKGROUND, chromeFor } from './windowChrome.js';
@@ -203,6 +205,15 @@ function notifyCommandEnd(opId: string): void {
   mainWindow.webContents.send(CHANNELS.eventCommandEnd, event);
 }
 
+/**
+ * コマンドログに 1 件増えたことを実行ログパネルへ送る（全タブ分）。
+ * 発火点は CommandLog.add なので、track() を通る実行もクローンも同じ経路で届く。
+ */
+function notifyCommandLogged(entry: CommandLogEntry): void {
+  if (mainWindow === null || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(CHANNELS.eventCommandLogged, toCommandLogEntryDto(entry));
+}
+
 function notifyFocusRefreshPrompt(sessionId: string): void {
   if (mainWindow === null || mainWindow.isDestroyed()) return;
   const event: FocusRefreshPromptEvent = { sessionId };
@@ -237,6 +248,7 @@ void app.whenReady().then(async () => {
     await context.restoreSessions();
     context.onCommandStart = notifyCommandStart;
     context.onCommandEnd = notifyCommandEnd;
+    context.commandLog.onAdd(notifyCommandLogged);
     registerHandlers(context, () => mainWindow);
     mainWindow = createWindow();
     mainWindow.on('closed', () => {

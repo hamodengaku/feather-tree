@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FeatherTreeBridge } from '@feathertree/ipc';
+import type { CommandLogEntryDto, FeatherTreeBridge } from '@feathertree/ipc';
 import { AppState } from '../src/lib/appState.svelte.js';
 import { TabActivity } from '../src/lib/tabActivity.js';
 import { FakeBridge, branch, commit, entry, installDocumentStub } from './fakeBridge.js';
@@ -149,6 +149,74 @@ describe('ペイン幅', () => {
 
     await app.setCommandLogHeight(99999);
     expect(app.settings?.commandLogHeight).toBe(800);
+  });
+
+  describe('実行ログ（タブごとの表示と追記通知）', () => {
+    const logEntry = (seq: number, sessionId: string | null, args: string[] = ['status']): CommandLogEntryDto => ({
+      seq,
+      at: '2026-09-13T12:00:00.000Z',
+      cwd: 'D:/repo',
+      args,
+      exitCode: 0,
+      elapsedMs: 1,
+      sessionId,
+    });
+
+    it('パネルを開くと main の保持分を取り直す（閉じるときは取らない）', async () => {
+      const { app, bridge } = await boot((b) => {
+        b.commandLogEntries = [logEntry(1, 's1')];
+      });
+
+      await app.toggleCommandLog();
+      expect(app.showCommandLog).toBe(true);
+      expect(bridge.lastArgsOf('commandLogRecent')).toEqual([500]);
+      expect(app.commandLog.map((e) => e.seq)).toEqual([1]);
+
+      await app.toggleCommandLog();
+      expect(app.showCommandLog).toBe(false);
+      expect(bridge.countOf('commandLogRecent')).toBe(1);
+    });
+
+    it('追記通知で先頭に増え、同じ seq は二重に入れない', async () => {
+      const { app, bridge } = await boot();
+
+      bridge.emitCommandLogged(logEntry(1, 's1'));
+      bridge.emitCommandLogged(logEntry(2, 's1', ['diff', 'a.txt']));
+      expect(app.commandLog.map((e) => e.seq)).toEqual([2, 1]);
+
+      // 取り直しと行き違って同じ記録が届いても増えない
+      await app.reloadCommandLog();
+      bridge.commandLoggedListeners.forEach((l) => l(logEntry(2, 's1', ['diff', 'a.txt'])));
+      expect(app.commandLog.map((e) => e.seq)).toEqual([2, 1]);
+    });
+
+    it('既定はアクティブなタブの実行だけ。「すべて」はタブに属さない実行も含む', async () => {
+      const { app, bridge } = await boot();
+      bridge.emitCommandLogged(logEntry(1, 's1'));
+      bridge.emitCommandLogged(logEntry(2, 's2'));
+      bridge.emitCommandLogged(logEntry(3, null, ['clone', 'git@example.com:o/r.git']));
+
+      expect(app.activeId).toBe('s1');
+      expect(app.visibleCommandLog.map((e) => e.seq)).toEqual([1]);
+
+      await app.activate('s2');
+      expect(app.visibleCommandLog.map((e) => e.seq)).toEqual([2]);
+
+      app.setCommandLogScope('all');
+      expect(app.visibleCommandLog.map((e) => e.seq)).toEqual([3, 2, 1]);
+    });
+
+    it('タブが 1 つも無いとき、「このタブ」は空で、「すべて」ではクローンの記録が見える', async () => {
+      const { app, bridge } = await boot((b) => {
+        b.sessions = [];
+        b.activeId = null;
+      });
+      bridge.emitCommandLogged(logEntry(1, null, ['clone', 'git@example.com:o/r.git']));
+
+      expect(app.visibleCommandLog).toEqual([]);
+      app.setCommandLogScope('all');
+      expect(app.visibleCommandLog.map((e) => e.seq)).toEqual([1]);
+    });
   });
 
   it('ステージ済み/変更の分割高さを変更・永続化できる', async () => {
@@ -1147,7 +1215,8 @@ describe('タブの読み込み帯（発動条件）', () => {
  */
 describe('リポジトリを開く口（ポップアップ）とクローン', () => {
   const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
-  const request = { url: 'https://example.com/owner/cloned.git', parentDir: 'D:/work', name: 'cloned', shallow: false };
+  const request = { url: 'https://example.com/owner/cloned.git', parentDir: 'D:/work', name: 'cloned', mode: 'normal' as const };
+  const hint = { id: 'destination-exists', title: '保存先に同じ名前のフォルダがあり、空ではありません', body: '戻る', commands: [] };
 
   it('ポップアップは位置を持って開き、閉じると null に戻る', async () => {
     const { app } = await boot();
@@ -1159,61 +1228,157 @@ describe('リポジトリを開く口（ポップアップ）とクローン', (
     expect(app.openRepoMenu).toBeNull();
   });
 
-  it('クローンに成功するとダイアログを閉じ、タブを立ててから読み込む', async () => {
+  it('クローンに成功してもダイアログは閉じず結果を出し、タブを立ててから読み込む', async () => {
     const { app, bridge } = await boot();
     app.openCloneDialog();
+    app.confirmClone(request);
 
-    await app.cloneRepository(request, () => app.closeCloneDialog());
+    await app.cloneRepository(request);
 
-    expect(app.cloneDialogOpen).toBe(false);
+    // 完了表示と推奨コマンドを読ませるため、自動では閉じない（決定 9）
+    expect(app.cloneDialogOpen).toBe(true);
+    expect(app.cloneConfirm).toEqual(request);
+    expect(app.cloneOutcome?.result).toBe('succeeded');
     expect(app.cloning).toBe(false);
+    expect(app.error).toBeNull();
     expect(app.sessions.map((s) => s.id)).toEqual(['s1', 's2', 's4']);
     expect(app.activeId).toBe('s4');
     expect(bridge.lastArgsOf('sessionCloneAndCreate')).toEqual([request]);
     const names = bridge.calls.map((c) => c.name);
     expect(names.indexOf('sessionLoad')).toBeGreaterThan(names.indexOf('sessionCloneAndCreate'));
     expect(bridge.lastArgsOf('sessionLoad')).toEqual(['s4']);
+
+    app.closeCloneDialog();
+    expect(app.cloneDialogOpen).toBe(false);
+    expect(app.cloneOutcome).toBeNull();
+    expect(app.cloneConfirm).toBeNull();
   });
 
-  it('失敗したらダイアログは開いたままで、エラーを出し、タブは増えない', async () => {
+  /*
+   * 実アプリでは確認ダイアログが $state に入った cloneConfirm（Proxy）を渡してくる。
+   * Proxy は IPC の structured clone を通らず「An object could not be cloned.」で git の前に落ちていた。
+   * テスト（vitest）ではブラウザ用の Svelte 実行時が使われず $state が Proxy にならないので、
+   * 同じ形を自前の Proxy で作って渡す。
+   */
+  it('Proxy（$state の中身）を渡しても、IPC に送れる形に組み直して届ける', async () => {
+    const { app, bridge } = await boot();
+    app.openCloneDialog();
+    const proxied = new Proxy({ ...request }, {});
+    // 前提: Proxy はそのままでは structured clone を通らない
+    expect(() => structuredClone(proxied)).toThrow();
+
+    await app.cloneRepository(proxied);
+
+    expect(app.error).toBeNull();
+    expect(app.cloneOutcome?.result).toBe('succeeded');
+    expect(bridge.lastArgsOf('sessionCloneAndCreate')).toEqual([request]);
+  });
+
+  it('入力検証の違反（ok: false）だけはエラー帯に出し、結果は出さない', async () => {
     const { app, bridge } = await boot((b) => {
-      b.cloneError = { kind: 'git-failed', message: 'リポジトリが見つかりません。URL を確認してください。' };
+      b.cloneError = { kind: 'internal', message: '保存先フォルダが見つかりません。' };
     });
     app.openCloneDialog();
+    app.confirmClone(request);
 
-    await app.cloneRepository(request, () => app.closeCloneDialog());
+    await app.cloneRepository(request);
 
     expect(app.cloneDialogOpen).toBe(true);
-    expect(app.cloning).toBe(false);
-    expect(app.error?.message).toContain('リポジトリが見つかりません');
+    expect(app.cloneOutcome).toBeNull();
+    expect(app.error?.message).toContain('保存先フォルダ');
     expect(app.sessions).toHaveLength(2);
     expect(bridge.countOf('sessionLoad')).toBe(0);
   });
 
-  it('進捗行はクローン中の sessionId: null だけを映し、実行中は閉じられない', async () => {
+  it('クローンできなかった（failed）ときはエラー帯に出さず、ヒントを結果に持ち、入力へ戻れる', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.cloneOutcome = { ...b.cloneOutcome, result: 'failed', session: null, hints: [hint] };
+    });
+    app.openCloneDialog();
+    app.confirmClone(request);
+
+    await app.cloneRepository(request);
+
+    expect(app.error).toBeNull();
+    expect(app.cloneOutcome?.hints).toEqual([hint]);
+    expect(app.sessions).toHaveLength(2);
+    expect(bridge.countOf('sessionLoad')).toBe(0);
+
+    app.backToCloneForm();
+    expect(app.cloneConfirm).toBeNull();
+    expect(app.cloneOutcome).toBeNull();
+    expect(app.cloneDialogOpen).toBe(true);
+  });
+
+  it('途中で失敗しても（partial）タブは立つ。入力へは戻れず、閉じるだけ', async () => {
+    const { app } = await boot((b) => {
+      b.cloneOutcome = { ...b.cloneOutcome, result: 'partial', followUps: ['git fetch --unshallow'] };
+    });
+    app.openCloneDialog();
+    app.confirmClone(request);
+
+    await app.cloneRepository(request);
+
+    expect(app.sessions.map((s) => s.id)).toContain('s4');
+    app.backToCloneForm();
+    expect(app.cloneConfirm).toEqual(request);
+    expect(app.cloneOutcome?.result).toBe('partial');
+  });
+
+  it('段階表はクローン中だけ映し、実行中は閉じられない。キャンセルは main へ 1 回だけ届く', async () => {
     const { app, bridge } = await boot((b) => {
       b.holdClone = true;
     });
     app.openCloneDialog();
+    app.confirmClone(request);
+    const stages = [
+      {
+        id: 'clone-receive',
+        label: 'データの受信',
+        source: 'Receiving objects',
+        group: 'clone' as const,
+        step: 'clone',
+        state: 'running' as const,
+        percent: 45,
+        current: 45,
+        total: 100,
+        detail: null,
+        startedAt: 1,
+        endedAt: null,
+      },
+    ];
 
-    // 始まる前の行は拾わない
-    bridge.emitProgress({ sessionId: null, opId: 'clone:0', line: '古い行' });
-    expect(app.cloneProgress).toBeNull();
+    // 始まる前に届いたものは拾わない
+    bridge.emitCloneProgress({ opId: 'clone:0', stages });
+    expect(app.cloneStages).toBeNull();
 
-    const cloning = app.cloneRepository(request, () => app.closeCloneDialog());
+    const cloning = app.cloneRepository(request);
     await flush();
     expect(app.cloning).toBe(true);
 
-    bridge.emitProgress({ sessionId: null, opId: 'clone:1', line: 'Receiving objects:  45% (45/100)' });
-    bridge.emitProgress({ sessionId: 's1', opId: 's1:9', line: '別セッションの行' });
-    expect(app.cloneProgress).toBe('Receiving objects:  45% (45/100)');
+    bridge.emitCloneProgress({ opId: 'clone:1', stages });
+    expect(app.cloneStages).toEqual(stages);
 
     app.closeCloneDialog();
     expect(app.cloneDialogOpen).toBe(true);
 
+    await app.cancelClone();
+    await app.cancelClone();
+    expect(bridge.countOf('cloneCancel')).toBe(1);
+    expect(app.cancellingClone).toBe(true);
+
     bridge.releaseClone();
     await cloning;
-    expect(app.cloneDialogOpen).toBe(false);
+    expect(app.cancellingClone).toBe(false);
+    // 結果の段階表が空（fake）なら、届いていた表を残す
+    expect(app.cloneStages).toEqual(stages);
+    expect(app.cloneDialogOpen).toBe(true);
+  });
+
+  it('実行中でなければキャンセルは何もしない', async () => {
+    const { app, bridge } = await boot();
+    await app.cancelClone();
+    expect(bridge.countOf('cloneCancel')).toBe(0);
   });
 
   it('保存先の選択をキャンセルしたら null', async () => {
@@ -1243,22 +1408,22 @@ describe('リポジトリを開く口（ポップアップ）とクローン', (
     expect(app.cloneConfirm).toBeNull();
   });
 
-  it('実行中は確認から戻れない。成功すると入力と確認の両方が閉じる', async () => {
+  it('実行中は確認から戻れない。終わった後も確認（結果）は残る', async () => {
     const { app, bridge } = await boot((b) => {
       b.holdClone = true;
     });
     app.openCloneDialog();
     app.confirmClone(request);
 
-    const cloning = app.cloneRepository(request, () => app.closeCloneDialog());
+    const cloning = app.cloneRepository(request);
     await flush();
     app.backToCloneForm();
     expect(app.cloneConfirm).toEqual(request);
 
     bridge.releaseClone();
     await cloning;
-    expect(app.cloneConfirm).toBeNull();
-    expect(app.cloneDialogOpen).toBe(false);
+    expect(app.cloneConfirm).toEqual(request);
+    expect(app.cloneDialogOpen).toBe(true);
   });
 });
 

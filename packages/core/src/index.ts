@@ -28,7 +28,37 @@ export type { AppSettings, PaneWidths, ThemeName, UntrackedMode } from './settin
 export { RepositorySession, toMappedError } from './session/repositorySession.js';
 export type { CommandStart, SessionChange, SessionDeps } from './session/repositorySession.js';
 export { SessionManager, displayNameOf } from './session/sessionManager.js';
-export type { CloneTarget, SessionInfo } from './session/sessionManager.js';
+export type { CloneOutcome, CloneTarget, SessionInfo } from './session/sessionManager.js';
+
+// クローン（決定 9 / 対応表 #37〜#41）
+export { CloneProgressTracker, parseProgressLine, planStages } from './clone/cloneProgress.js';
+export type {
+  CloneMode,
+  CloneStage,
+  CloneStageGroup,
+  CloneStageState,
+  CloneStep,
+  FeedResult,
+  ParsedProgress,
+  StepOutcome,
+} from './clone/cloneProgress.js';
+export { cleanStderr, runClone } from './clone/cloneRunner.js';
+export type {
+  CloneProgressListener,
+  CloneResultKind,
+  CloneRunDeps,
+  CloneRunRequest,
+  CloneRunResult,
+} from './clone/cloneRunner.js';
+export {
+  MAX_HINTS,
+  cancelledHint,
+  cloneHints,
+  gitNotFoundHint,
+  lfsMissingHint,
+  sshEndpoint,
+} from './policy/cloneHints.js';
+export type { CloneHint, CloneHintContext, SshEndpoint } from './policy/cloneHints.js';
 export {
   MAX_EXPLICIT_PATHS,
   filterEntries,

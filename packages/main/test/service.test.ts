@@ -4,7 +4,8 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CommandLog, DEFAULT_SETTINGS, SessionManager, type AppSettings } from '@feathertree/core';
-import type { ProgressEvent } from '@feathertree/ipc';
+import { pathToFileURL } from 'node:url';
+import type { CloneProgressEvent } from '@feathertree/ipc';
 import { createService, type Service } from '../src/handlers/service.js';
 
 const TEST_ROOT = resolve(import.meta.dirname, '../../../.tmp/main-service-tests');
@@ -34,8 +35,10 @@ describe('Service (UI が通る経路の統合テスト)', () => {
   let launched: { exe: string; args: string[]; cwd: string }[] = [];
   /** locateTerminal の答えを差し替える。null なら「開けるものが無い」。 */
   let terminal: { exe: string; args: readonly string[] } | null = { exe: 'wt.exe', args: [] };
-  /** renderer へ送ったつもりの進捗行。 */
-  let progress: ProgressEvent[] = [];
+  /** renderer へ送ったつもりのクローンの進捗。 */
+  let progress: CloneProgressEvent[] = [];
+  /** 進捗を受け取るたびに呼ぶ（中止の検証用）。 */
+  let onProgress: (event: CloneProgressEvent) => void = () => undefined;
 
   beforeEach(async () => {
     dir = join(TEST_ROOT, randomBytes(8).toString('hex'));
@@ -53,6 +56,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     launched = [];
     terminal = { exe: 'wt.exe', args: [] };
     progress = [];
+    onProgress = () => undefined;
 
     const sessions = new SessionManager({
       gitPath: GIT_PATH,
@@ -81,8 +85,9 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       sessions: () => sessions,
       commandLog: () => commandLog,
       pickDirectory: () => Promise.resolve(pickResult),
-      notifyProgress: (event) => {
+      notifyCloneProgress: (event) => {
         progress.push(event);
+        onProgress(event);
       },
       openPath: (absolutePath: string) => {
         opened.push(absolutePath);
@@ -167,20 +172,47 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       return parentDir;
     }
 
-    it('クローンするとタブが立ち、設定に残り、進捗は sessionId: null で送られる', async () => {
+    it('クローンするとタブが立ち、設定に残り、段階表の進捗が送られる', async () => {
       const parentDir = await prepare();
 
-      const opened = await service.sessionCloneAndCreate({ url: dir, parentDir, name: 'copy', shallow: false });
+      const outcome = await service.sessionCloneAndCreate({ url: dir, parentDir, name: 'copy', mode: 'normal' });
 
-      expect(opened.displayName).toBe('copy');
-      expect(resolve(opened.root)).toBe(resolve(parentDir, 'copy'));
+      expect(outcome.result).toBe('succeeded');
+      const opened = outcome.session;
+      expect(opened?.displayName).toBe('copy');
+      expect(resolve(opened?.root ?? '')).toBe(resolve(parentDir, 'copy'));
       expect(settings.openRepositories.map((r) => resolve(r))).toContain(resolve(parentDir, 'copy'));
       // 一覧はまだ取らない（2 段目は sessionLoad）
-      expect(service.statusGetSummary(opened.id).hasSnapshot).toBe(false);
+      expect(service.statusGetSummary(opened?.id ?? '').hasSnapshot).toBe(false);
 
       expect(progress.length).toBeGreaterThan(0);
-      expect(progress.every((e) => e.sessionId === null && e.opId.startsWith('clone:'))).toBe(true);
+      expect(progress.every((e) => e.opId.startsWith('clone:') && e.stages.length === 7)).toBe(true);
+      expect(outcome.stages).toHaveLength(7);
       expect(commandLog.recent(20).some((e) => e.args[0] === 'clone' && e.exitCode === 0)).toBe(true);
+    });
+
+    it('実行中に二重には走らせず、中止すると残りの手順を止めてタブは立てる', async () => {
+      const parentDir = await prepare();
+      onProgress = (event) => {
+        // LFS の確認が始まったら中止する（クローン自体は済んでいる）
+        if (event.stages.some((s) => s.id === 'lfs-check' && s.state === 'running')) service.cloneCancel();
+      };
+
+      const first = service.sessionCloneAndCreate({ url: pathToFileURL(dir).href, parentDir, name: 'big', mode: 'large' });
+      await expect(
+        service.sessionCloneAndCreate({ url: dir, parentDir, name: 'other', mode: 'normal' }),
+      ).rejects.toMatchObject({ dto: { kind: 'internal' } });
+
+      const outcome = await first;
+      expect(outcome.result).toBe('partial');
+      expect(outcome.cancelled).toBe(true);
+      expect(outcome.session).not.toBeNull();
+      expect(outcome.followUps).toContain('git fetch --unshallow');
+
+      // 終わった後の中止は何もしない。次のクローンは走れる
+      expect(service.cloneCancel()).toBeNull();
+      const next = await service.sessionCloneAndCreate({ url: dir, parentDir, name: 'other', mode: 'normal' });
+      expect(next.result).toBe('succeeded');
     });
 
     it('保存先の選択はフォルダ選択をそのまま返す（git は動かない）', async () => {
@@ -192,7 +224,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
 
     it('renderer の入力を検証し、git を動かさずに拒否する', async () => {
       const parentDir = await prepare();
-      const base = { url: dir, parentDir, name: 'copy', shallow: false };
+      const base = { url: dir, parentDir, name: 'copy', mode: 'normal' as const };
       const bad = [
         { ...base, url: '   ' },
         { ...base, url: '--upload-pack=evil' },
@@ -214,14 +246,16 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       expect(service.sessionList().sessions).toHaveLength(0);
     });
 
-    it('空でない既存フォルダへのクローンは git が失敗し、タブは立たない', async () => {
+    it('空でない既存フォルダへのクローンは失敗の結果（ヒント付き）で返り、タブは立たない', async () => {
       const parentDir = await prepare();
       await mkdir(join(parentDir, 'occupied'), { recursive: true });
       await writeFile(join(parentDir, 'occupied', 'keep.txt'), 'x', 'utf8');
 
-      await expect(
-        service.sessionCloneAndCreate({ url: dir, parentDir, name: 'occupied', shallow: false }),
-      ).rejects.toMatchObject({ name: 'GitCommandError' });
+      const outcome = await service.sessionCloneAndCreate({ url: dir, parentDir, name: 'occupied', mode: 'normal' });
+      expect(outcome.result).toBe('failed');
+      expect(outcome.session).toBeNull();
+      expect(outcome.hints[0]?.id).toBe('destination-exists');
+      expect(outcome.log).toContain('$ git clone');
       expect(service.sessionList().sessions).toHaveLength(0);
       expect(commandLog.recent(20).some((e) => e.args[0] === 'clone' && e.exitCode !== 0)).toBe(true);
     });
@@ -641,7 +675,18 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     }
   });
 
-  it('git 未検出なら環境情報で案内する', () => {
+  it('実行ログの一覧は、どのタブの実行かを sessionId で返す（クローンは null）', async () => {
+    const id = await openDemo();
+    const parentDir = join(dir, 'clones');
+    await mkdir(parentDir, { recursive: true });
+    await service.sessionCloneAndCreate({ url: dir, parentDir, name: 'copy', mode: 'normal' });
+
+    const entries = service.commandLogRecent(50);
+    expect(entries.filter((e) => e.args[0] === 'status').every((e) => e.sessionId === id)).toBe(true);
+    expect(entries.find((e) => e.args[0] === 'clone')?.sessionId).toBeNull();
+  });
+
+  it('git 未検出なら環境情報で案内し、クローンは例外にせずヒント付きの失敗で返す', async () => {
     const noGit = createService({
       appInfo: () => ({
         appVersion: '0',
@@ -659,7 +704,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       sessions: () => null,
       commandLog: () => commandLog,
       pickDirectory: () => Promise.resolve(null),
-      notifyProgress: () => undefined,
+      notifyCloneProgress: () => undefined,
       openPath: () => Promise.resolve(''),
       showItemInFolder: () => undefined,
       resolveTerminal: () => Promise.resolve(null),
@@ -670,5 +715,9 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     expect(env.gitPath).toBeNull();
     expect(env.warning).toContain('Git for Windows');
     expect(noGit.sessionList()).toEqual({ sessions: [], activeId: null });
+
+    const outcome = await noGit.sessionCloneAndCreate({ url: 'git@github.com:o/r.git', parentDir: dir, name: 'r', mode: 'large' });
+    expect(outcome.result).toBe('failed');
+    expect(outcome.hints.map((h) => h.id)).toEqual(['git-not-found']);
   });
 });

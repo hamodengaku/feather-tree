@@ -290,6 +290,8 @@ export class RepositorySession {
         args,
         exitCode: 0,
         elapsedMs: Date.now() - startedAt,
+        // 実行ログをタブごとに見せるため、どのタブの実行かを残す
+        scope: this.id,
       });
       return result;
     } catch (err) {
@@ -300,6 +302,7 @@ export class RepositorySession {
         exitCode: mapped.exitCode ?? -1,
         elapsedMs: Date.now() - startedAt,
         ...(mapped.detail === undefined ? {} : { stderr: mapped.detail }),
+        scope: this.id,
       });
       throw err;
     } finally {

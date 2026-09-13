@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   CommandLog,
@@ -10,6 +11,7 @@ import {
   displayNameOf,
   locateGit,
   type AppSettings,
+  type CloneStage,
   type CommandStart,
 } from '../src/index.js';
 
@@ -77,6 +79,19 @@ describe('RepositorySession / SessionManager', () => {
     expect(session.remotes).toEqual([]);
   });
 
+  it('コマンドログにはどのタブの実行かが残り、記録のたびに通知される', async () => {
+    const notified: string[] = [];
+    const unsubscribe = commandLog.onAdd((entry) => notified.push(entry.args[0] ?? ''));
+
+    const session = await manager.open(dir);
+
+    expect(commandLog.recent(20).every((e) => e.scope === session.id)).toBe(true);
+    expect(notified.sort()).toEqual(['for-each-ref', 'remote', 'status']);
+    unsubscribe();
+    await manager.requestStatusRefresh(session.id);
+    expect(notified).toHaveLength(3);
+  });
+
   it('open は status / for-each-ref / remote だけを使う（許可された例外）', async () => {
     await manager.open(dir);
     const args = commandLog.recent(20).map((e) => e.args[0]);
@@ -84,45 +99,152 @@ describe('RepositorySession / SessionManager', () => {
   });
 
   /*
-   * クローン（対応表 #37 → #1）。セッションが立つ前なので track() を通らない。
-   * それでもコマンドログには必ず残す（決定 16 の透明性）。
+   * クローン（対応表 #37〜#41 → #1）。セッションが立つ前なので track() を通らない。
+   * それでもコマンドログには必ず残す（決定 16 の透明性）。git の失敗・中止は例外にせず結果で返る。
    */
-  it('clone はクローンしてルート解決だけ行い、コマンドログに残す', async () => {
-    await write('a.txt', 'x');
-    await git(dir, ['add', '-A']);
-    await git(dir, ['commit', '-m', 'init']);
-    const parentDir = join(dir, 'clones');
-    await mkdir(parentDir, { recursive: true });
-    const lines: string[] = [];
+  describe('clone', () => {
+    let parentDir: string;
+    /** 受け取った段階表のスナップショット。 */
+    let snapshots: CloneStage[][];
 
-    const session = await manager.clone({ url: dir, parentDir, name: 'copy', shallow: false }, (l) =>
-      lines.push(l),
-    );
+    beforeEach(async () => {
+      await write('a.txt', 'x');
+      await git(dir, ['add', '-A']);
+      await git(dir, ['commit', '-m', 'first']);
+      await write('b.txt', 'y');
+      await git(dir, ['add', '-A']);
+      await git(dir, ['commit', '-m', 'second']);
+      await git(dir, ['branch', 'feature']);
+      parentDir = join(dir, 'clones');
+      await mkdir(parentDir, { recursive: true });
+      snapshots = [];
+    });
 
-    expect(displayNameOf(session.root)).toBe('copy');
-    expect(manager.activeId).toBe(session.id);
-    expect(session.getStatusSummary().hasSnapshot).toBe(false);
-    const clones = commandLog.recent(20).filter((e) => e.args[0] === 'clone');
-    expect(clones).toHaveLength(1);
-    expect(clones[0]?.exitCode).toBe(0);
-    expect(clones[0]?.cwd).toBe(parentDir);
-    expect(lines.length).toBeGreaterThan(0);
-    // クローン自体はコマンドバーに映らない（セッションが無い）
-    expect(started.some((e) => e.args[0] === 'clone')).toBe(false);
-  });
+    const record = (stages: CloneStage[]): void => {
+      snapshots.push(stages);
+    };
+    const stateOf = (stages: readonly CloneStage[], id: string): string | undefined =>
+      stages.find((s) => s.id === id)?.state;
 
-  it('clone に失敗してもコマンドログに残り、タブは立たない', async () => {
-    const parentDir = join(dir, 'clones');
-    await mkdir(parentDir, { recursive: true });
+    it('クローンしてルート解決だけ行い、コマンドログに残す', async () => {
+      const outcome = await manager.clone({ url: pathToFileURL(dir).href, parentDir, name: 'copy', mode: 'normal' }, record);
 
-    await expect(
-      manager.clone({ url: join(dir, 'nowhere'), parentDir, name: 'copy', shallow: false }, () => undefined),
-    ).rejects.toThrow();
+      expect(outcome.result).toBe('succeeded');
+      const session = outcome.session;
+      expect(session).not.toBeNull();
+      expect(displayNameOf(session?.root ?? '')).toBe('copy');
+      expect(manager.activeId).toBe(session?.id);
+      expect(session?.getStatusSummary().hasSnapshot).toBe(false);
+      const clones = commandLog.recent(20).filter((e) => e.args[0] === 'clone');
+      expect(clones).toHaveLength(1);
+      expect(clones[0]?.exitCode).toBe(0);
+      expect(clones[0]?.cwd).toBe(parentDir);
+      // 実物の git の進捗行で、受信の段階が完了まで進む
+      expect(snapshots.length).toBeGreaterThan(1);
+      expect(stateOf(outcome.stages, 'clone-receive')).toBe('done');
+      expect(outcome.stages.every((s) => s.state !== 'pending' && s.state !== 'running')).toBe(true);
+      expect(outcome.log).toContain('$ git clone');
+      expect(outcome.followUps).toEqual([]);
+      // クローン自体はコマンドバーに映らない（セッションが無い）
+      expect(started.some((e) => e.args[0] === 'clone')).toBe(false);
+    });
 
-    const entry = commandLog.recent(20).find((e) => e.args[0] === 'clone');
-    expect(entry?.exitCode).not.toBe(0);
-    expect(entry?.stderr).toBeDefined();
-    expect(manager.list()).toHaveLength(0);
+    it('シャローで成功したら、後で打つ推奨コマンド 2 つを返す', async () => {
+      const outcome = await manager.clone({ url: pathToFileURL(dir).href, parentDir, name: 'copy', mode: 'shallow' }, record);
+
+      expect(outcome.result).toBe('succeeded');
+      expect(outcome.followUps).toHaveLength(2);
+      expect(outcome.followUps[1]).toBe('git fetch --unshallow');
+    });
+
+    it('失敗してもコマンドログに残り、タブは立たず、ヒントと生ログが返る', async () => {
+      const outcome = await manager.clone(
+        { url: join(dir, 'nowhere'), parentDir, name: 'copy', mode: 'normal' },
+        () => undefined,
+      );
+
+      expect(outcome.result).toBe('failed');
+      expect(outcome.session).toBeNull();
+      expect(outcome.hints.length).toBeGreaterThan(0);
+      expect(outcome.log).toContain('終了コード');
+      const entry = commandLog.recent(20).find((e) => e.args[0] === 'clone');
+      expect(entry?.exitCode).not.toBe(0);
+      expect(entry?.stderr).toBeDefined();
+      expect(manager.list()).toHaveLength(0);
+    });
+
+    it('大規模モードは shallow → lfs version →（lfs pull）→ config → unshallow の順で、全履歴と全ブランチがそろう', async () => {
+      const outcome = await manager.clone({ url: pathToFileURL(dir).href, parentDir, name: 'big', mode: 'large' }, record);
+
+      expect(outcome.result).toBe('succeeded');
+      const order = commandLog
+        .recent(20)
+        .reverse()
+        .map((e) => e.args.slice(0, 2).join(' '));
+      const lfsPulled = order.includes('lfs pull');
+      expect(order).toEqual([
+        'clone --depth',
+        'lfs version',
+        ...(lfsPulled ? ['lfs pull'] : []),
+        'config remote.origin.fetch',
+        'fetch --unshallow',
+      ]);
+      expect(stateOf(outcome.stages, 'lfs-check')).toBe('done');
+      expect(stateOf(outcome.stages, 'config')).toBe('done');
+      // 小さな fetch では git が受信の行を出さないことがある。段階が閉じていること（失敗していないこと）を見る
+      expect(
+        outcome.stages
+          .filter((s) => s.group === 'unshallow')
+          .every((s) => s.state === 'done' || s.state === 'skipped'),
+      ).toBe(true);
+      expect(commandLog.recent(20).find((e) => e.args[0] === 'fetch')?.exitCode).toBe(0);
+      await expect(stat(join(parentDir, 'big', '.git', 'shallow'))).rejects.toThrow();
+      expect(outcome.followUps).toEqual([]);
+    });
+
+    it('ローカルパスの URL では --depth が無視されるので、unshallow は打たずに省略にする', async () => {
+      const outcome = await manager.clone({ url: dir, parentDir, name: 'local', mode: 'large' }, record);
+
+      expect(outcome.result).toBe('succeeded');
+      expect(commandLog.recent(20).some((e) => e.args[0] === 'fetch')).toBe(false);
+      expect(outcome.stages.filter((s) => s.group === 'unshallow').every((s) => s.state === 'skipped')).toBe(true);
+    });
+
+    it('クローンの途中で中止すると failed（中止）で、タブは立たない', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const outcome = await manager.clone(
+        { url: pathToFileURL(dir).href, parentDir, name: 'stopped', mode: 'large' },
+        record,
+        controller.signal,
+      );
+
+      expect(outcome.result).toBe('failed');
+      expect(outcome.cancelled).toBe(true);
+      expect(outcome.session).toBeNull();
+      expect(outcome.hints[0]?.id).toBe('cancelled');
+      expect(outcome.stages.filter((s) => s.group === 'unshallow').every((s) => s.state === 'cancelled')).toBe(true);
+    });
+
+    it('クローンが済んだ後に中止すると partial（中止）で、タブは立ち、残りのコマンドを返す', async () => {
+      const controller = new AbortController();
+      const outcome = await manager.clone(
+        { url: pathToFileURL(dir).href, parentDir, name: 'half', mode: 'large' },
+        (stages) => {
+          // LFS の確認が始まった瞬間に中止する
+          if (stateOf(stages, 'lfs-check') === 'running') controller.abort();
+        },
+        controller.signal,
+      );
+
+      expect(outcome.result).toBe('partial');
+      expect(outcome.cancelled).toBe(true);
+      expect(outcome.session).not.toBeNull();
+      expect(outcome.followUps).toContain('git fetch --unshallow');
+      expect(stateOf(outcome.stages, 'clone-checkout')).not.toBe('cancelled');
+      expect(stateOf(outcome.stages, 'unshallow-receive')).toBe('cancelled');
+    });
   });
 
   /*

@@ -262,7 +262,7 @@
 
       <!-- 右: アプリ全体に効くもの（設定は縦帯の下端） -->
       <div class="toolbar-group">
-        <button onclick={() => (app.showCommandLog = !app.showCommandLog)}>ログ</button>
+        <button onclick={() => void app.toggleCommandLog()}>ログ</button>
       </div>
     </div>
   </header>

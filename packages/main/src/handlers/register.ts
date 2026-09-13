@@ -48,10 +48,10 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
       const picked = result.filePaths[0];
       return result.canceled || picked === undefined ? null : picked;
     },
-    notifyProgress: (event) => {
+    notifyCloneProgress: (event) => {
       const window = getWindow();
       if (window === null || window.isDestroyed()) return;
-      window.webContents.send(CHANNELS.eventProgress, event);
+      window.webContents.send(CHANNELS.eventCloneProgress, event);
     },
     openPath: (absolutePath) => shell.openPath(absolutePath),
     showItemInFolder: (absolutePath) => {
@@ -101,6 +101,7 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.sessionCloneAndCreate, (req: Parameters<Service['sessionCloneAndCreate']>[0]) =>
     service.sessionCloneAndCreate(req),
   );
+  bind(CHANNELS.cloneCancel, () => service.cloneCancel());
   bind(CHANNELS.sessionList, () => service.sessionList());
   bind(CHANNELS.sessionActivate, (id: string) => service.sessionActivate(id));
   bind(CHANNELS.sessionClose, (id: string) => service.sessionClose(id));

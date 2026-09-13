@@ -3,8 +3,11 @@ import type {
   FileDiffDto,
   HunkStageRequest,
   BranchDto,
+  CloneOutcomeDto,
+  CloneProgressEvent,
   CloneRequest,
   CommandEndEvent,
+  CommandLogEntryDto,
   CommandStartEvent,
   FtErrorDto,
   ProgressEvent,
@@ -157,14 +160,24 @@ export class FakeBridge {
 
   /** クローンの保存先選択の結果。null ならキャンセル。 */
   clonePickResult: string | null = 'D:/work';
-  /** sessionCloneAndCreate が立てるタブ。 */
-  cloneResult: SessionDto = { id: 's4', root: 'D:/work/cloned', displayName: 'cloned' };
-  /** null でなければ sessionCloneAndCreate はこのエラーで失敗する。 */
+  /** sessionCloneAndCreate の結果。session が null でなければタブが立つ（main と同じ）。 */
+  cloneOutcome: CloneOutcomeDto = {
+    result: 'succeeded',
+    cancelled: false,
+    session: { id: 's4', root: 'D:/work/cloned', displayName: 'cloned' },
+    target: 'D:\\work\\cloned',
+    stages: [],
+    hints: [],
+    followUps: [],
+    log: 'FeatherTree クローンログ',
+  };
+  /** null でなければ sessionCloneAndCreate はこのエラーで失敗する（入力検証の違反など）。 */
   cloneError: FtErrorDto | null = null;
   /** true の間、sessionCloneAndCreate は releaseClone() を呼ぶまで返らない（進捗の観察用）。 */
   holdClone = false;
   #releaseClone: (() => void) | null = null;
   progressListeners: ((e: ProgressEvent) => void)[] = [];
+  cloneProgressListeners: ((e: CloneProgressEvent) => void)[] = [];
 
   releaseClone(): void {
     const release = this.#releaseClone;
@@ -172,9 +185,9 @@ export class FakeBridge {
     release?.();
   }
 
-  /** main が git の進捗行を送ってきたことにする。 */
-  emitProgress(event: ProgressEvent): void {
-    for (const listener of this.progressListeners) listener(event);
+  /** main がクローンの段階表を送ってきたことにする。 */
+  emitCloneProgress(event: CloneProgressEvent): void {
+    for (const listener of this.cloneProgressListeners) listener(event);
   }
   /** detached HEAD などを再現できるようにテストから差し替える。 */
   head: HeadInfoDto = HEAD;
@@ -199,6 +212,15 @@ export class FakeBridge {
   focusPromptListeners: ((e: FocusRefreshPromptEvent) => void)[] = [];
   commandStartListeners: ((e: CommandStartEvent) => void)[] = [];
   commandEndListeners: ((e: CommandEndEvent) => void)[] = [];
+  commandLoggedListeners: ((e: CommandLogEntryDto) => void)[] = [];
+  /** main が保持しているコマンドログ（新しい順）。commandLogRecent が返す。 */
+  commandLogEntries: CommandLogEntryDto[] = [];
+
+  /** main がコマンドログに 1 件足して通知してきたことにする（保持分にも足す）。 */
+  emitCommandLogged(entry: CommandLogEntryDto): void {
+    this.commandLogEntries = [entry, ...this.commandLogEntries];
+    for (const listener of this.commandLoggedListeners) listener(entry);
+  }
 
   /** diffGet の応答を遅らせる（世代番号による競合排除の検証用）。 */
   diffDelayMs = 0;
@@ -350,13 +372,21 @@ export class FakeBridge {
         return Promise.resolve(ok(this.clonePickResult));
       },
       sessionCloneAndCreate: async (req: CloneRequest) => {
-        this.record('sessionCloneAndCreate', req);
+        // 本物の IPC と同じく structured clone を通す（$state の Proxy を渡すとここで投げる）
+        this.record('sessionCloneAndCreate', structuredClone(req));
         if (this.holdClone) await new Promise<void>((release) => (this.#releaseClone = release));
         if (this.cloneError !== null) return { ok: false, error: this.cloneError };
-        const created = this.cloneResult;
-        if (!this.sessions.some((s) => s.id === created.id)) this.sessions = [...this.sessions, created];
-        this.activeId = created.id;
-        return ok(created);
+        const outcome = this.cloneOutcome;
+        const created = outcome.session;
+        if (created !== null) {
+          if (!this.sessions.some((s) => s.id === created.id)) this.sessions = [...this.sessions, created];
+          this.activeId = created.id;
+        }
+        return ok(outcome);
+      },
+      cloneCancel: () => {
+        this.record('cloneCancel');
+        return Promise.resolve(ok(null));
       },
       sessionList: () => {
         this.record('sessionList');
@@ -522,7 +552,7 @@ export class FakeBridge {
       },
       commandLogRecent: (limit: number) => {
         this.record('commandLogRecent', limit);
-        return Promise.resolve(ok([]));
+        return Promise.resolve(ok(this.commandLogEntries.slice(0, limit)));
       },
       onSessionChanged: (listener) => {
         this.changedListeners.push(listener);
@@ -534,6 +564,12 @@ export class FakeBridge {
         this.progressListeners.push(listener);
         return () => {
           this.progressListeners = this.progressListeners.filter((l) => l !== listener);
+        };
+      },
+      onCloneProgress: (listener) => {
+        this.cloneProgressListeners.push(listener);
+        return () => {
+          this.cloneProgressListeners = this.cloneProgressListeners.filter((l) => l !== listener);
         };
       },
       onFocusRefreshPrompt: (listener) => {
@@ -552,6 +588,12 @@ export class FakeBridge {
         this.commandEndListeners.push(listener);
         return () => {
           this.commandEndListeners = this.commandEndListeners.filter((l) => l !== listener);
+        };
+      },
+      onCommandLogged: (listener) => {
+        this.commandLoggedListeners.push(listener);
+        return () => {
+          this.commandLoggedListeners = this.commandLoggedListeners.filter((l) => l !== listener);
         };
       },
     };

@@ -1,7 +1,9 @@
 import type { FeatherTreeBridge } from '@feathertree/ipc';
 import type {
   BranchDto,
+  CloneOutcomeDto,
   CloneRequest,
+  CloneStageDto,
   CommandLogEntryDto,
   CommandStartEvent,
   CommitFileChangeDto,
@@ -31,6 +33,9 @@ const EMPTY_EXPANDED: readonly string[] = [];
 
 /** 1 セクションが一度に取得する件数。仮想化しているので画面分 + 余裕で足りる。 */
 const PAGE_LIMIT = 200;
+
+/** 実行ログを renderer に持つ件数。main の CommandLog の保持数（500）に合わせる。 */
+const COMMAND_LOG_LIMIT = 500;
 
 /**
  * タブの読み込み帯の対象にしない実行（ラベルの先頭語）。
@@ -152,8 +157,22 @@ export class AppState {
   pendingConfirmation = $state<PendingConfirmation | null>(null);
   focusRefreshPrompt = $state<{ sessionId: string } | null>(null);
 
+  /** 実行ログ（全タブ分、新しい順）。main の追記通知（onCommandLogged）で増える。 */
   commandLog = $state<CommandLogEntryDto[]>([]);
   showCommandLog = $state(false);
+  /**
+   * 実行ログの表示範囲。tab はアクティブなタブの実行だけ、all はすべて
+   * （クローンのようにタブに属さない実行や、閉じたタブの実行も含む）。
+   */
+  commandLogScope = $state<'tab' | 'all'>('tab');
+
+  /** パネルに出す実行ログ。 */
+  get visibleCommandLog(): CommandLogEntryDto[] {
+    if (this.commandLogScope === 'all') return this.commandLog;
+    const id = this.activeId;
+    if (id === null) return [];
+    return this.commandLog.filter((e) => e.sessionId === id);
+  }
 
   /**
    * 「新しいブランチを作成」ダイアログの開閉。
@@ -183,10 +202,14 @@ export class AppState {
    * 実行とクローン中の進捗表示も確認ダイアログ（CloneConfirmDialog）が受け持つ。
    */
   cloneConfirm = $state<CloneRequest | null>(null);
-  /** クローン実行中。この間はダイアログを閉じさせない（キャンセルは未実装）。 */
+  /** クローン実行中。この間はダイアログを閉じさせない（止めるときは cancelClone）。 */
   cloning = $state(false);
-  /** クローンの最新の進捗行（git の stderr 1 行）。 */
-  cloneProgress = $state<string | null>(null);
+  /** 中止を要求して、main の応答を待っている。 */
+  cancellingClone = $state(false);
+  /** クローンの段階表。実行中は main から届いたもの、終わったら結果の最終形。null なら未実行。 */
+  cloneStages = $state<readonly CloneStageDto[] | null>(null);
+  /** クローンの結果。null なら実行前か実行中。完了してもダイアログは自動では閉じない（決定 9）。 */
+  cloneOutcome = $state<CloneOutcomeDto | null>(null);
 
   /** セッションごとの状態。タブ切替で一覧を取り直さないためのキャッシュ。 */
   readonly #cache = new SvelteMap<
@@ -316,12 +339,22 @@ export class AppState {
     });
 
     /*
-     * 進捗行（docs/01-architecture.md 6 章）。今の送り手はクローンだけで、sessionId は null。
+     * 実行ログの追記。取り直しを操作の後に頼ると、差分の表示・履歴の読み込み・タブが無いときの
+     * クローンなどが古いまま残るので、増えた分を main から受け取る。
+     * 一覧の取り直し（reloadCommandLog）と行き違っても seq で重複を捨てる。
+     */
+    this.#ft.onCommandLogged((entry) => {
+      if (this.commandLog.some((e) => e.seq === entry.seq)) return;
+      this.commandLog = [entry, ...this.commandLog].slice(0, COMMAND_LOG_LIMIT);
+    });
+
+    /*
+     * クローンの段階表（docs/01-architecture.md 6 章）。main で 200ms に間引かれて届く。
      * クローン中でなければ捨てる（終わった後に遅れて届いた行で表示を書き戻さない）。
      */
-    this.#ft.onProgress((event) => {
-      if (event.sessionId !== null || !this.cloning) return;
-      this.cloneProgress = event.line;
+    this.#ft.onCloneProgress((event) => {
+      if (!this.cloning) return;
+      this.cloneStages = event.stages;
     });
   }
 
@@ -361,8 +394,7 @@ export class AppState {
   }
 
   openCloneDialog(): void {
-    this.cloneProgress = null;
-    this.cloneConfirm = null;
+    this.#resetClone();
     this.cloneDialogOpen = true;
   }
 
@@ -372,7 +404,7 @@ export class AppState {
    */
   closeCloneDialog(): void {
     if (this.cloning) return;
-    this.cloneConfirm = null;
+    this.#resetClone();
     this.cloneDialogOpen = false;
   }
 
@@ -381,10 +413,22 @@ export class AppState {
     this.cloneConfirm = req;
   }
 
-  /** 確認から入力へ戻る（入力内容は入力ダイアログ側に残っている）。実行中は戻らない。 */
+  /**
+   * 確認から入力へ戻る（入力内容は入力ダイアログ側に残っている）。
+   * 実行中は戻らない。終わった後は、クローンできなかった（failed）ときだけ戻れる
+   * ——タブが立った後に入力を直して再実行すると、同じ場所へのクローンになって必ず失敗するため。
+   */
   backToCloneForm(): void {
     if (this.cloning) return;
+    if (this.cloneOutcome !== null && this.cloneOutcome.result !== 'failed') return;
+    this.#resetClone();
+  }
+
+  #resetClone(): void {
     this.cloneConfirm = null;
+    this.cloneStages = null;
+    this.cloneOutcome = null;
+    this.cancellingClone = false;
   }
 
   /** 保存先（親フォルダ）の選択。キャンセルなら null。 */
@@ -396,24 +440,48 @@ export class AppState {
 
   /**
    * クローンしてタブを立てる（対応表 #37 → #1、その後 #2 〜 #4 は openRepository と同じ 2 段目）。
-   * 成功時だけ onSuccess を呼ぶ。失敗したらダイアログを閉じず、エラー帯を見て入力を直させる。
+   *
+   * ダイアログは閉じない（完了表示・ヒント・生ログを読ませるため。決定 9）。
+   * git の失敗や中止は結果（cloneOutcome）で届き、エラー帯には出さない。エラー帯に出るのは
+   * 入力検証の違反（ok: false）だけ。クローン自体ができていれば、失敗・中止でもタブを立てる。
+   *
+   * `#run`（busy）は使わない。大規模クローンは数時間かかりうるので、その間アプリ全体を busy にしない
+   * （確認ダイアログがモーダルなので、他の操作はどのみち触れない）。
    */
-  async cloneRepository(req: CloneRequest, onSuccess?: () => void): Promise<void> {
+  async cloneRepository(req: CloneRequest): Promise<void> {
+    if (this.cloning) return;
     this.cloning = true;
-    this.cloneProgress = null;
-    let created: SessionDto | null = null;
+    this.cancellingClone = false;
+    this.cloneStages = null;
+    this.cloneOutcome = null;
+    let outcome: CloneOutcomeDto | null = null;
     try {
-      await this.#run(async () => {
-        const result = await this.#ft.sessionCloneAndCreate(req);
-        if (!this.#check(result)) return;
-        created = result.value;
-      });
+      /*
+       * 送る前に普通のオブジェクトへ組み直す。確認ダイアログは $state に入った cloneConfirm（Proxy）を
+       * そのまま渡してくるが、Proxy は IPC の structured clone を通らず
+       * 「An object could not be cloned.」で git を起動する前に落ちる。
+       */
+      const plain: CloneRequest = { url: req.url, parentDir: req.parentDir, name: req.name, mode: req.mode };
+      const result = await this.#ft.sessionCloneAndCreate(plain);
+      if (!this.#check(result)) return;
+      outcome = result.value;
+      this.cloneOutcome = outcome;
+      // 結果の段階表が最終形。git を走らせなかった場合（既存タブ・git 未導入）は空なので、届いていた表を残す
+      if (outcome.stages.length > 0) this.cloneStages = outcome.stages;
+    } catch (err) {
+      this.error = { kind: 'internal', message: err instanceof Error ? err.message : '不明なエラー' };
     } finally {
       this.cloning = false;
+      this.cancellingClone = false;
     }
-    if (created === null) return;
-    onSuccess?.();
-    await this.#addOpenedTab(created);
+    if (outcome !== null && outcome.session !== null) await this.#addOpenedTab(outcome.session);
+  }
+
+  /** 実行中のクローンを中止する。結果は cloneRepository の戻り（cancelled）で届く。 */
+  async cancelClone(): Promise<void> {
+    if (!this.cloning || this.cancellingClone) return;
+    this.cancellingClone = true;
+    this.#check(await this.#ft.cloneCancel());
   }
 
   /**
@@ -601,7 +669,6 @@ export class AppState {
     } else if (this.selected !== null) {
       await this.loadDiff(this.selected);
     }
-    await this.reloadCommandLog();
   }
 
   /** 仮想リストのスクロールに応じて追加のページを取る。 */
@@ -650,9 +717,20 @@ export class AppState {
     this.diff = null;
   }
 
+  /** 実行ログを main の保持分（最大 500 件）から取り直す。パネルを開いたときに呼ぶ。 */
   async reloadCommandLog(): Promise<void> {
-    const result = await this.#ft.commandLogRecent(200);
+    const result = await this.#ft.commandLogRecent(COMMAND_LOG_LIMIT);
     if (result.ok) this.commandLog = [...result.value];
+  }
+
+  /** 実行ログパネルの開閉。開くときは、通知を受け取る前の分も含めて取り直す。 */
+  async toggleCommandLog(): Promise<void> {
+    this.showCommandLog = !this.showCommandLog;
+    if (this.showCommandLog) await this.reloadCommandLog();
+  }
+
+  setCommandLogScope(scope: 'tab' | 'all'): void {
+    this.commandLogScope = scope;
   }
 
   // ---------------------------------------------------------------- コミットログモード（決定 27）

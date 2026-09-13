@@ -12,6 +12,11 @@ export interface GitCommand {
    */
   readonly args: readonly string[];
   readonly timeoutMs?: number;
+  /**
+   * このコマンドにだけ足す環境変数（docs/02-git-command-map.md 共通オプション）。
+   * 共通の固定値（GIT_TERMINAL_PROMPT 等）は上書きできない。
+   */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export interface GitExit {
@@ -47,7 +52,7 @@ async function run(cmd: GitCommand, signal: AbortSignal | undefined, hooks: RunH
     shell: false,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: buildGitEnv(process.env),
+    env: buildGitEnv(process.env, cmd.env),
   });
 
   let stderrText = '';

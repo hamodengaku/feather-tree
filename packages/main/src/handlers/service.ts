@@ -3,7 +3,9 @@ import {
   canBuildPatch,
   describeAction,
   displayNameOf,
+  gitNotFoundHint,
   type AppSettings,
+  type CloneStage,
   type CommandLog,
   type DestructiveAction,
   type GitLocation,
@@ -15,8 +17,9 @@ import {
 } from '@feathertree/core';
 import type {
   AppInfoDto,
+  CloneOutcomeDto,
+  CloneProgressEvent,
   CloneRequest,
-  ProgressEvent,
   BranchCreateRequest,
   BranchMergeResultDto,
   HunkStageRequest,
@@ -47,9 +50,14 @@ import { stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { assertInsideRoot } from '@feathertree/base-core';
 import { HandlerError } from '../errors.js';
+import { toCommandLogEntryDto } from './commandLogDto.js';
+import { createProgressThrottle } from './progressThrottle.js';
 
 /** ページで一度に返す最大件数。renderer が巨大な要求を投げても抑える。 */
 const MAX_PAGE_LIMIT = 1000;
+
+/** クローンの進捗を renderer へ送る間隔（docs/01-architecture.md 6 章）。 */
+const CLONE_PROGRESS_INTERVAL_MS = 200;
 
 /** 制御文字（改行・NUL など）を含むか。正規表現に書くと no-control-regex に掛かるので文字コードで見る。 */
 function hasControlChar(text: string): boolean {
@@ -77,8 +85,8 @@ export interface ServiceDeps {
   readonly commandLog: () => CommandLog;
   /** フォルダ選択。キャンセルなら null。 */
   readonly pickDirectory: () => Promise<string | null>;
-  /** git の進捗行を renderer へ送る（今の送り手はクローンだけ）。 */
-  readonly notifyProgress: (event: ProgressEvent) => void;
+  /** クローンの段階表を renderer へ送る（間引きはサービス側で済ませてから呼ぶ）。 */
+  readonly notifyCloneProgress: (event: CloneProgressEvent) => void;
   /** OS 既定のアプリでファイル／フォルダを開く。失敗時はエラー文字列を返す（throw しない）。 */
   readonly openPath: (absolutePath: string) => Promise<string>;
   /** エクスプローラでそのファイルを選択した状態で開く。 */
@@ -105,7 +113,8 @@ export interface Service {
   sessionLoad(id: string): Promise<null>;
   sessionOpen(root: string): Promise<SessionDto>;
   clonePickDirectory(): Promise<string | null>;
-  sessionCloneAndCreate(req: CloneRequest): Promise<SessionDto>;
+  sessionCloneAndCreate(req: CloneRequest): Promise<CloneOutcomeDto>;
+  cloneCancel(): null;
   sessionList(): SessionListDto;
   sessionActivate(id: string): Promise<null>;
   sessionClose(id: string): Promise<null>;
@@ -282,8 +291,10 @@ export function createService(deps: ServiceDeps): Service {
     return rememberOpened(sessions, session);
   };
 
-  /** 進捗行の opId の連番。クローンは同時に 1 つしか走らない想定だが、行の出所は区別しておく。 */
+  /** 進捗の opId の連番。クローンは同時に 1 本だけだが、遅れて届いた通知の出所は区別しておく。 */
   let cloneSeq = 0;
+  /** 実行中のクローンの中止口。null なら実行中でない（同時に 1 本だけ）。 */
+  let cloneAbort: AbortController | null = null;
 
   /**
    * クローンの入力検証（対応表 #37）。knownRemote と同じ趣旨で、renderer の値を git へ素通しにしない。
@@ -310,7 +321,8 @@ export function createService(deps: ServiceDeps): Service {
     const info = await stat(parentDir).catch(() => null);
     if (info === null || !info.isDirectory()) reject('保存先フォルダが見つかりません。');
 
-    return { url, parentDir, name, shallow: req.shallow === true };
+    const mode = req.mode === 'shallow' || req.mode === 'large' ? req.mode : 'normal';
+    return { url, parentDir, name, mode };
   };
 
   return {
@@ -354,14 +366,60 @@ export function createService(deps: ServiceDeps): Service {
 
     clonePickDirectory: () => deps.pickDirectory(),
 
+    /*
+     * クローン（決定 9 / 対応表 #37〜#41 → #1）。
+     * git の失敗・中止・git が無いことは例外にせず、結果（ヒント・生ログ）で返す。
+     * 例外になるのは入力検証の違反と、二重の実行だけ（どちらも renderer の不具合でしか起きない）。
+     */
     sessionCloneAndCreate: async (req) => {
-      const sessions = requireSessions();
       const valid = await guardClone(req);
+      if (cloneAbort !== null) throw new HandlerError({ kind: 'internal', message: 'クローンを実行中です。' });
+
+      const sessions = deps.sessions();
+      if (sessions === null) {
+        return {
+          result: 'failed',
+          cancelled: false,
+          session: null,
+          target: join(valid.parentDir, valid.name),
+          stages: [],
+          hints: [gitNotFoundHint()],
+          followUps: [],
+          log: '',
+        };
+      }
+
       cloneSeq += 1;
       const opId = 'clone:' + String(cloneSeq);
-      // セッションが立つ前なので sessionId は null（renderer はクローン中の null だけを拾う）
-      const session = await sessions.clone(valid, (line) => deps.notifyProgress({ sessionId: null, opId, line }));
-      return rememberOpened(sessions, session);
+      const controller = new AbortController();
+      cloneAbort = controller;
+      const throttle = createProgressThrottle<CloneStage[]>(
+        (stages) => deps.notifyCloneProgress({ opId, stages }),
+        CLONE_PROGRESS_INTERVAL_MS,
+      );
+      try {
+        const outcome = await sessions.clone(valid, (stages, urgent) => throttle.push(stages, urgent), controller.signal);
+        const session = outcome.session === null ? null : await rememberOpened(sessions, outcome.session);
+        return {
+          result: outcome.result,
+          cancelled: outcome.cancelled,
+          session,
+          target: outcome.target,
+          stages: outcome.stages,
+          hints: outcome.hints,
+          followUps: outcome.followUps,
+          log: outcome.log,
+        };
+      } finally {
+        // 結果に最終の段階表が載るので、溜まった途中の値は捨てる
+        throttle.dispose();
+        cloneAbort = null;
+      }
+    },
+
+    cloneCancel: () => {
+      cloneAbort?.abort();
+      return null;
     },
 
     sessionList: () => {
@@ -557,6 +615,10 @@ export function createService(deps: ServiceDeps): Service {
       deps.showItemInFolder(resolveInsideRoot(id, path));
     },
 
-    commandLogRecent: (limit) => deps.commandLog().recent(Math.min(Math.max(1, limit), 500)),
+    commandLogRecent: (limit) =>
+      deps
+        .commandLog()
+        .recent(Math.min(Math.max(1, limit), 500))
+        .map(toCommandLogEntryDto),
   };
 }

@@ -28,10 +28,17 @@ export const RECORD_SEPARATOR = 0x00;
  *
  * `GIT_TERMINAL_PROMPT=0` で認証待ちの無限ハングを防ぐ。
  * `GIT_ASKPASS` / `SSH_ASKPASS` は触らない（OS の資格情報機構に委譲する）。
+ *
+ * extra はコマンドごとに足す環境変数（クローンの `GIT_LFS_SKIP_SMUDGE` 等）。
+ * **固定値より前に合成する**ので、extra で `GIT_TERMINAL_PROMPT` を上書きすることはできない。
  */
-export function buildGitEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function buildGitEnv(
+  base: NodeJS.ProcessEnv,
+  extra?: Readonly<Record<string, string>>,
+): NodeJS.ProcessEnv {
   return {
     ...base,
+    ...extra,
     GIT_TERMINAL_PROMPT: '0',
     // 進捗表示を必ず有効にする（stderr へ出る）
     GIT_FLUSH: '1',
