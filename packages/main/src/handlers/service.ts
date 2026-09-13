@@ -15,6 +15,8 @@ import {
 } from '@feathertree/core';
 import type {
   AppInfoDto,
+  CloneRequest,
+  ProgressEvent,
   BranchCreateRequest,
   BranchMergeResultDto,
   HunkStageRequest,
@@ -41,12 +43,22 @@ import type {
   StatusPageRequest,
   StatusSummaryDto,
 } from '@feathertree/ipc';
-import { join } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import { assertInsideRoot } from '@feathertree/base-core';
 import { HandlerError } from '../errors.js';
 
 /** ページで一度に返す最大件数。renderer が巨大な要求を投げても抑える。 */
 const MAX_PAGE_LIMIT = 1000;
+
+/** 制御文字（改行・NUL など）を含むか。正規表現に書くと no-control-regex に掛かるので文字コードで見る。 */
+function hasControlChar(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
 
 /**
  * サービスが必要とするもの。
@@ -65,6 +77,8 @@ export interface ServiceDeps {
   readonly commandLog: () => CommandLog;
   /** フォルダ選択。キャンセルなら null。 */
   readonly pickDirectory: () => Promise<string | null>;
+  /** git の進捗行を renderer へ送る（今の送り手はクローンだけ）。 */
+  readonly notifyProgress: (event: ProgressEvent) => void;
   /** OS 既定のアプリでファイル／フォルダを開く。失敗時はエラー文字列を返す（throw しない）。 */
   readonly openPath: (absolutePath: string) => Promise<string>;
   /** エクスプローラでそのファイルを選択した状態で開く。 */
@@ -87,8 +101,11 @@ export interface Service {
   appGetEnvironment(): EnvironmentDto;
   settingsGet(): SettingsDto;
   settingsUpdate(patch: Partial<SettingsDto>): Promise<SettingsDto>;
-  sessionPickAndOpen(): Promise<SessionDto | null>;
+  sessionPickAndCreate(): Promise<SessionDto | null>;
+  sessionLoad(id: string): Promise<null>;
   sessionOpen(root: string): Promise<SessionDto>;
+  clonePickDirectory(): Promise<string | null>;
+  sessionCloneAndCreate(req: CloneRequest): Promise<SessionDto>;
   sessionList(): SessionListDto;
   sessionActivate(id: string): Promise<null>;
   sessionClose(id: string): Promise<null>;
@@ -243,11 +260,57 @@ export function createService(deps: ServiceDeps): Service {
     counts: session.getStatusSummary().counts,
   });
 
-  const openSession = async (root: string): Promise<SessionDto> => {
-    const sessions = requireSessions();
-    const session = await sessions.open(root);
+  /**
+   * タブを 1 つ立てる。
+   *
+   * `load` が false なら対応表 #1（ルート解決）だけで返る。UI はこちらを使い、
+   * 一覧の取得は別の呼び出し（sessionLoad）に分ける。**タブが立って
+   * アクティブになってから git が走らないと、実行中の表示がどのタブのものか
+   * 決まらず、コマンドバーに何も出ないまま固まって見えるため**（決定 26）。
+   *
+   * どちらの入口でも、開いたリポジトリは設定に残す（次回起動で復元される）。
+   */
+  /** 開いたリポジトリを設定に残し（次回起動で復元される）、DTO にして返す。 */
+  const rememberOpened = async (sessions: SessionManager, session: RepositorySession): Promise<SessionDto> => {
     await deps.updateSettings({ openRepositories: sessions.list().map((s) => s.root) });
     return { id: session.id, root: session.root, displayName: displayNameOf(session.root) };
+  };
+
+  const addSession = async (root: string, load: boolean): Promise<SessionDto> => {
+    const sessions = requireSessions();
+    const session = load ? await sessions.open(root) : await sessions.create(root);
+    return rememberOpened(sessions, session);
+  };
+
+  /** 進捗行の opId の連番。クローンは同時に 1 つしか走らない想定だが、行の出所は区別しておく。 */
+  let cloneSeq = 0;
+
+  /**
+   * クローンの入力検証（対応表 #37）。knownRemote と同じ趣旨で、renderer の値を git へ素通しにしない。
+   *
+   * URL は git に `--` の後ろで渡すのでオプションにはならないが、`-` 始まりはここでも弾いて二重に塞ぐ。
+   * フォルダ名は 1 階層に限る（区切りを許すと保存先の外へ作れてしまう）。
+   * 保存先が空かどうかは見ない。それは git 自身が判定してエラーにする（アプリ都合の事前チェックを挟まない）。
+   */
+  const guardClone = async (req: CloneRequest): Promise<CloneRequest> => {
+    const reject = (message: string): never => {
+      throw new HandlerError({ kind: 'internal', message });
+    };
+    const url = req.url.trim();
+    const parentDir = req.parentDir.trim();
+    const name = req.name.trim();
+
+    if (url.length === 0) reject('URL を入力してください。');
+    if (url.startsWith('-') || hasControlChar(url)) reject('URL が正しくありません。');
+    if (name.length === 0) reject('フォルダ名を入力してください。');
+    if (name === '.' || name === '..' || /[\\/:*?"<>|]/.test(name) || hasControlChar(name) || /[. ]$/.test(name)) {
+      reject('フォルダ名に使えない文字が含まれています。');
+    }
+    if (!isAbsolute(parentDir)) reject('保存先フォルダは絶対パスで指定してください。');
+    const info = await stat(parentDir).catch(() => null);
+    if (info === null || !info.isDirectory()) reject('保存先フォルダが見つかりません。');
+
+    return { url, parentDir, name, shallow: req.shallow === true };
   };
 
   return {
@@ -276,13 +339,30 @@ export function createService(deps: ServiceDeps): Service {
       return updated;
     },
 
-    sessionPickAndOpen: async () => {
+    sessionPickAndCreate: async () => {
       const picked = await deps.pickDirectory();
       if (picked === null) return null;
-      return openSession(picked);
+      return addSession(picked, false);
     },
 
-    sessionOpen: (root) => openSession(root),
+    sessionLoad: async (id) => {
+      await requireSessions().load(id);
+      return null;
+    },
+
+    sessionOpen: (root) => addSession(root, true),
+
+    clonePickDirectory: () => deps.pickDirectory(),
+
+    sessionCloneAndCreate: async (req) => {
+      const sessions = requireSessions();
+      const valid = await guardClone(req);
+      cloneSeq += 1;
+      const opId = 'clone:' + String(cloneSeq);
+      // セッションが立つ前なので sessionId は null（renderer はクローン中の null だけを拾う）
+      const session = await sessions.clone(valid, (line) => deps.notifyProgress({ sessionId: null, opId, line }));
+      return rememberOpened(sessions, session);
+    },
 
     sessionList: () => {
       const sessions = deps.sessions();

@@ -39,15 +39,21 @@
 </div>
 
 <style>
+  /*
+   * no-drag: タブ段（ウィンドウのドラッグ領域）の上に重なったとき、
+   * そこを押すと OS のウィンドウ移動に吸われて閉じられなくなるのを防ぐ。
+   */
   .menu-backdrop {
     position: fixed;
     inset: 0;
     z-index: var(--app-layer-menu-backdrop);
+    -webkit-app-region: no-drag;
   }
 
   .menu {
     position: fixed;
     z-index: var(--app-layer-menu);
+    -webkit-app-region: no-drag;
     display: flex;
     flex-direction: column;
     gap: 2px;

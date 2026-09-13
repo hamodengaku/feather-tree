@@ -23,8 +23,11 @@ export const CHANNELS = {
   settingsGet: 'settings:get',
   settingsUpdate: 'settings:update',
 
-  sessionPickAndOpen: 'session:pickAndOpen',
+  sessionPickAndCreate: 'session:pickAndCreate',
+  sessionLoad: 'session:load',
   sessionOpen: 'session:open',
+  clonePickDirectory: 'clone:pickDirectory',
+  sessionCloneAndCreate: 'session:cloneAndCreate',
   sessionList: 'session:list',
   sessionActivate: 'session:activate',
   sessionClose: 'session:close',
@@ -364,6 +367,21 @@ export interface PushRequest {
   readonly setUpstream: boolean;
 }
 
+/**
+ * クローン（対応表 #37）の入力。
+ * main は parentDir が存在するディレクトリであること、name が 1 階層のフォルダ名であること、
+ * url が `-` で始まらないことを検証してから git に渡す。
+ */
+export interface CloneRequest {
+  readonly url: string;
+  /** 保存先の親フォルダ（絶対パス）。 */
+  readonly parentDir: string;
+  /** 作成するフォルダ名。区切り文字を含まない。 */
+  readonly name: string;
+  /** 真なら `--depth 1`。 */
+  readonly shallow: boolean;
+}
+
 // ---------------------------------------------------------------- 診断と通知
 
 export interface CommandLogEntryDto {
@@ -382,9 +400,13 @@ export interface SessionChangedEvent {
   readonly statusSeq: number;
 }
 
-/** 進捗の行。**未実装**（送り手がいない）。docs/01-architecture.md 6 章。 */
+/**
+ * 進捗の行（git の stderr を CR / LF で切ったもの）。docs/01-architecture.md 6 章。
+ * 今の送り手はクローン（対応表 #37）だけ。
+ */
 export interface ProgressEvent {
-  readonly sessionId: string;
+  /** セッションが立つ前の操作（クローン）では null。 */
+  readonly sessionId: string | null;
   readonly opId: string;
   readonly line: string;
 }
@@ -420,8 +442,30 @@ export interface FeatherTreeBridge {
   settingsGet(): Promise<Result<SettingsDto>>;
   settingsUpdate(patch: Partial<SettingsDto>): Promise<Result<SettingsDto>>;
 
-  sessionPickAndOpen(): Promise<Result<SessionDto | null>>;
+  /**
+   * リポジトリを開く 2 段階のうちの 1 段目。
+   * フォルダ選択 → 対応表 #1（ルート解決）だけを行い、タブを立てて返す。
+   * 一覧（#2 〜 #4）は取らないので、巨大リポジトリでもすぐ返る。
+   * キャンセルされたら null。
+   */
+  sessionPickAndCreate(): Promise<Result<SessionDto | null>>;
+  /**
+   * 2 段目。対応表 #2 → #3 → #4 を実行する。時間がかかるのはこちら。
+   * renderer は 1 段目でタブを立ててアクティブにしてから呼ぶ
+   * （そうしないと実行中の git がコマンドバーに映らない）。
+   * 既に読み込み済みなら git を 1 度も実行しない。
+   */
+  sessionLoad(id: string): Promise<Result<null>>;
+  /** 1 段目と 2 段目をまとめて行う。UI からは使わない（テストと将来の CLI 用）。 */
   sessionOpen(root: string): Promise<Result<SessionDto>>;
+  /** クローンの保存先（親フォルダ）を選ぶ。キャンセルされたら null。git は動かない。 */
+  clonePickDirectory(): Promise<Result<string | null>>;
+  /**
+   * クローンしてタブを立てる。対応表 #37 → #1 で、sessionPickAndCreate と同じ「1 段目」。
+   * 実行中は event:progress（sessionId: null）で進捗行が届く。
+   * 一覧（#2 〜 #4）は取らないので、renderer はタブを立ててから sessionLoad を呼ぶ。
+   */
+  sessionCloneAndCreate(req: CloneRequest): Promise<Result<SessionDto>>;
   sessionList(): Promise<Result<SessionListDto>>;
   sessionActivate(id: string): Promise<Result<null>>;
   sessionClose(id: string): Promise<Result<null>>;

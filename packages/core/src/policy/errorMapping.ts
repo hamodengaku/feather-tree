@@ -65,6 +65,14 @@ const RULES: readonly Rule[] = [
     test: /not a valid (branch|ref|object) name|invalid reference|is not a commit/i,
     message: 'ブランチ元またはブランチ名が正しくありません。',
   },
+  {
+    test: /destination path .* already exists and is not an empty directory/i,
+    message: '保存先に同名のフォルダがあり、空ではありません。フォルダ名を変えてください。',
+  },
+  {
+    test: /Repository not found|does not appear to be a git repository|Could not resolve host/i,
+    message: 'リポジトリが見つかりません。URL を確認してください。',
+  },
 ];
 
 export function mapGitStderr(stderr: string, exitCode: number): MappedError {

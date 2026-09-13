@@ -34,6 +34,8 @@ export { getStatus } from './commands/status.js';
 export type { StatusOptions } from './commands/status.js';
 export { createBranch, listBranches, mergeBranch, switchBranch } from './commands/branches.js';
 export { fetchRemote, pullCurrent, pushBranch } from './commands/remote.js';
+export { cloneRepository } from './commands/clone.js';
+export type { CloneOptions } from './commands/clone.js';
 export { getCommitFileDiff, getCommitFiles, getLog } from './commands/history.js';
 export type { LogOptions } from './commands/history.js';
 export { getFileDiff, getUntrackedFileDiff } from './commands/diff.js';

@@ -9,6 +9,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   CHANNELS,
   type BranchCreateRequest,
+  type CloneRequest,
   type CommandEndEvent,
   type CommandStartEvent,
   type HunkStageRequest,
@@ -37,8 +38,11 @@ const bridge: FeatherTreeBridge = {
   settingsGet: () => ipcRenderer.invoke(CHANNELS.settingsGet),
   settingsUpdate: (patch: Partial<SettingsDto>) => ipcRenderer.invoke(CHANNELS.settingsUpdate, patch),
 
-  sessionPickAndOpen: () => ipcRenderer.invoke(CHANNELS.sessionPickAndOpen),
+  sessionPickAndCreate: () => ipcRenderer.invoke(CHANNELS.sessionPickAndCreate),
+  sessionLoad: (id: string) => ipcRenderer.invoke(CHANNELS.sessionLoad, id),
   sessionOpen: (root: string) => ipcRenderer.invoke(CHANNELS.sessionOpen, root),
+  clonePickDirectory: () => ipcRenderer.invoke(CHANNELS.clonePickDirectory),
+  sessionCloneAndCreate: (req: CloneRequest) => ipcRenderer.invoke(CHANNELS.sessionCloneAndCreate, req),
   sessionList: () => ipcRenderer.invoke(CHANNELS.sessionList),
   sessionActivate: (id: string) => ipcRenderer.invoke(CHANNELS.sessionActivate, id),
   sessionClose: (id: string) => ipcRenderer.invoke(CHANNELS.sessionClose, id),

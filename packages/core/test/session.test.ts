@@ -83,6 +83,97 @@ describe('RepositorySession / SessionManager', () => {
     expect(args.sort()).toEqual(['for-each-ref', 'remote', 'status']);
   });
 
+  /*
+   * クローン（対応表 #37 → #1）。セッションが立つ前なので track() を通らない。
+   * それでもコマンドログには必ず残す（決定 16 の透明性）。
+   */
+  it('clone はクローンしてルート解決だけ行い、コマンドログに残す', async () => {
+    await write('a.txt', 'x');
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', 'init']);
+    const parentDir = join(dir, 'clones');
+    await mkdir(parentDir, { recursive: true });
+    const lines: string[] = [];
+
+    const session = await manager.clone({ url: dir, parentDir, name: 'copy', shallow: false }, (l) =>
+      lines.push(l),
+    );
+
+    expect(displayNameOf(session.root)).toBe('copy');
+    expect(manager.activeId).toBe(session.id);
+    expect(session.getStatusSummary().hasSnapshot).toBe(false);
+    const clones = commandLog.recent(20).filter((e) => e.args[0] === 'clone');
+    expect(clones).toHaveLength(1);
+    expect(clones[0]?.exitCode).toBe(0);
+    expect(clones[0]?.cwd).toBe(parentDir);
+    expect(lines.length).toBeGreaterThan(0);
+    // クローン自体はコマンドバーに映らない（セッションが無い）
+    expect(started.some((e) => e.args[0] === 'clone')).toBe(false);
+  });
+
+  it('clone に失敗してもコマンドログに残り、タブは立たない', async () => {
+    const parentDir = join(dir, 'clones');
+    await mkdir(parentDir, { recursive: true });
+
+    await expect(
+      manager.clone({ url: join(dir, 'nowhere'), parentDir, name: 'copy', shallow: false }, () => undefined),
+    ).rejects.toThrow();
+
+    const entry = commandLog.recent(20).find((e) => e.args[0] === 'clone');
+    expect(entry?.exitCode).not.toBe(0);
+    expect(entry?.stderr).toBeDefined();
+    expect(manager.list()).toHaveLength(0);
+  });
+
+  /*
+   * タブを立てる 2 段階（create → load）。
+   * 1 段目で git を走らせてしまうと、UI 側はタブを先に見せられない。
+   */
+  it('create はルート解決だけで返る（一覧は取らない）', async () => {
+    await write('a.txt', 'x');
+    const session = await manager.create(dir);
+
+    expect(session.gitDir).toContain('.git');
+    expect(session.loaded).toBe(false);
+    expect(manager.list()).toHaveLength(1);
+    expect(manager.activeId).toBe(session.id);
+    // ルート解決（対応表 #1）は track() を通らないのでコマンドログにも残らない
+    expect(commandLog.size).toBe(0);
+  });
+
+  it('load で status / for-each-ref / remote が走り、二度目は走らない', async () => {
+    const session = await manager.create(dir);
+
+    await manager.load(session.id);
+    expect(session.loaded).toBe(true);
+    expect(commandLog.recent(20).map((e) => e.args[0]).sort()).toEqual([
+      'for-each-ref',
+      'remote',
+      'status',
+    ]);
+
+    const before = commandLog.size;
+    await manager.load(session.id);
+    expect(commandLog.size).toBe(before);
+  });
+
+  it('load 中の実行はそのセッションの id で通知される（コマンドバーの絞り込みに使う）', async () => {
+    const session = await manager.create(dir);
+    await manager.load(session.id);
+
+    expect(started.length).toBeGreaterThan(0);
+    expect(started.every((e) => e.sessionId === session.id)).toBe(true);
+    expect(ended).toHaveLength(started.length);
+  });
+
+  it('読み込み中に閉じられたタブの load は黙って終わる', async () => {
+    const session = await manager.create(dir);
+    manager.close(session.id);
+
+    await expect(manager.load(session.id)).resolves.toBeUndefined();
+    expect(commandLog.size).toBe(0);
+  });
+
   it('同じリポジトリを二重に開かない', async () => {
     const a = await manager.open(dir);
     const b = await manager.open(dir);

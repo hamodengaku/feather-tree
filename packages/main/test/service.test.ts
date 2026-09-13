@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CommandLog, DEFAULT_SETTINGS, SessionManager, type AppSettings } from '@feathertree/core';
+import type { ProgressEvent } from '@feathertree/ipc';
 import { createService, type Service } from '../src/handlers/service.js';
 
 const TEST_ROOT = resolve(import.meta.dirname, '../../../.tmp/main-service-tests');
@@ -33,6 +34,8 @@ describe('Service (UI が通る経路の統合テスト)', () => {
   let launched: { exe: string; args: string[]; cwd: string }[] = [];
   /** locateTerminal の答えを差し替える。null なら「開けるものが無い」。 */
   let terminal: { exe: string; args: readonly string[] } | null = { exe: 'wt.exe', args: [] };
+  /** renderer へ送ったつもりの進捗行。 */
+  let progress: ProgressEvent[] = [];
 
   beforeEach(async () => {
     dir = join(TEST_ROOT, randomBytes(8).toString('hex'));
@@ -49,6 +52,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     openPathFailure = '';
     launched = [];
     terminal = { exe: 'wt.exe', args: [] };
+    progress = [];
 
     const sessions = new SessionManager({
       gitPath: GIT_PATH,
@@ -77,6 +81,9 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       sessions: () => sessions,
       commandLog: () => commandLog,
       pickDirectory: () => Promise.resolve(pickResult),
+      notifyProgress: (event) => {
+        progress.push(event);
+      },
       openPath: (absolutePath: string) => {
         opened.push(absolutePath);
         return Promise.resolve(openPathFailure);
@@ -113,19 +120,111 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     return session.id;
   }
 
-  it('フォルダ選択からリポジトリを開ける', async () => {
-    const opened = await service.sessionPickAndOpen();
+  it('フォルダ選択でタブが立つ。一覧の取得はこの時点ではまだ行わない', async () => {
+    const opened = await service.sessionPickAndCreate();
     expect(opened).not.toBeNull();
     expect(opened?.displayName.length).toBeGreaterThan(0);
     expect(service.sessionList().sessions).toHaveLength(1);
     // 開いたリポジトリが設定に残る（次回起動で復元される）
     expect(settings.openRepositories).toHaveLength(1);
+
+    /*
+     * タブは立っているが中身はまだ無い。renderer はこの状態のタブを先に見せ、
+     * 続く sessionLoad の間だけ回転印を出す（決定 26 / コマンドバー）。
+     */
+    expect(service.statusGetSummary(opened?.id ?? '').hasSnapshot).toBe(false);
+  });
+
+  it('sessionLoad で一覧が入る。二度目は git を実行しない', async () => {
+    const opened = await service.sessionPickAndCreate();
+    const id = opened?.id ?? '';
+
+    await service.sessionLoad(id);
+    expect(service.statusGetSummary(id).hasSnapshot).toBe(true);
+
+    const before = commandLog.size;
+    await service.sessionLoad(id);
+    expect(commandLog.size).toBe(before);
   });
 
   it('選択がキャンセルされたら null を返す', async () => {
     pickResult = null;
-    expect(await service.sessionPickAndOpen()).toBeNull();
+    expect(await service.sessionPickAndCreate()).toBeNull();
     expect(service.sessionList().sessions).toHaveLength(0);
+  });
+
+  /*
+   * クローン（対応表 #37 → #1）。クローン元はテスト用リポジトリそのもの（ネットワーク不要）。
+   * 保存先は dir の中に作るので、後始末は dir ごと消える。
+   */
+  describe('クローン', () => {
+    async function prepare(): Promise<string> {
+      await write('README.md', 'v1');
+      await git(dir, ['add', '-A']);
+      await git(dir, ['commit', '-m', 'init']);
+      const parentDir = join(dir, 'clones');
+      await mkdir(parentDir, { recursive: true });
+      return parentDir;
+    }
+
+    it('クローンするとタブが立ち、設定に残り、進捗は sessionId: null で送られる', async () => {
+      const parentDir = await prepare();
+
+      const opened = await service.sessionCloneAndCreate({ url: dir, parentDir, name: 'copy', shallow: false });
+
+      expect(opened.displayName).toBe('copy');
+      expect(resolve(opened.root)).toBe(resolve(parentDir, 'copy'));
+      expect(settings.openRepositories.map((r) => resolve(r))).toContain(resolve(parentDir, 'copy'));
+      // 一覧はまだ取らない（2 段目は sessionLoad）
+      expect(service.statusGetSummary(opened.id).hasSnapshot).toBe(false);
+
+      expect(progress.length).toBeGreaterThan(0);
+      expect(progress.every((e) => e.sessionId === null && e.opId.startsWith('clone:'))).toBe(true);
+      expect(commandLog.recent(20).some((e) => e.args[0] === 'clone' && e.exitCode === 0)).toBe(true);
+    });
+
+    it('保存先の選択はフォルダ選択をそのまま返す（git は動かない）', async () => {
+      pickResult = 'D:/somewhere';
+      const before = commandLog.size;
+      expect(await service.clonePickDirectory()).toBe('D:/somewhere');
+      expect(commandLog.size).toBe(before);
+    });
+
+    it('renderer の入力を検証し、git を動かさずに拒否する', async () => {
+      const parentDir = await prepare();
+      const base = { url: dir, parentDir, name: 'copy', shallow: false };
+      const bad = [
+        { ...base, url: '   ' },
+        { ...base, url: '--upload-pack=evil' },
+        { ...base, url: dir + '\nx' },
+        { ...base, name: '' },
+        { ...base, name: 'a/b' },
+        { ...base, name: 'a\\b' },
+        { ...base, name: '..' },
+        { ...base, name: 'trailing.' },
+        { ...base, parentDir: 'relative/dir' },
+        { ...base, parentDir: join(dir, 'missing') },
+      ];
+
+      const before = commandLog.size;
+      for (const req of bad) {
+        await expect(service.sessionCloneAndCreate(req)).rejects.toMatchObject({ dto: { kind: 'internal' } });
+      }
+      expect(commandLog.size).toBe(before);
+      expect(service.sessionList().sessions).toHaveLength(0);
+    });
+
+    it('空でない既存フォルダへのクローンは git が失敗し、タブは立たない', async () => {
+      const parentDir = await prepare();
+      await mkdir(join(parentDir, 'occupied'), { recursive: true });
+      await writeFile(join(parentDir, 'occupied', 'keep.txt'), 'x', 'utf8');
+
+      await expect(
+        service.sessionCloneAndCreate({ url: dir, parentDir, name: 'occupied', shallow: false }),
+      ).rejects.toMatchObject({ name: 'GitCommandError' });
+      expect(service.sessionList().sessions).toHaveLength(0);
+      expect(commandLog.recent(20).some((e) => e.args[0] === 'clone' && e.exitCode !== 0)).toBe(true);
+    });
   });
 
   it('変更一覧をグループごとにページングで取得できる', async () => {
@@ -173,8 +272,8 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     /*
      * 6. ブランチ一覧の件名も新しくなっている
      *    （対応表の例外「コミット後の反映: #10 → #2 → #3」）。
-     *    #3 を取り直さないと、ブランチペインの「現在の位置」とリポジトリタブに
-     *    1 つ前の件名が残る。#2 は件名を持たないので、ここが唯一の出所。
+     *    #3 を取り直さないと、リポジトリタブに 1 つ前の件名が残る。
+     *    #2 は件名を持たないので、ここが唯一の出所。
      */
     const head = service.branchList(id).find((b) => b.isHead);
     expect(head?.subject).toBe('日本語のコミット');
@@ -560,6 +659,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       sessions: () => null,
       commandLog: () => commandLog,
       pickDirectory: () => Promise.resolve(null),
+      notifyProgress: () => undefined,
       openPath: () => Promise.resolve(''),
       showItemInFolder: () => undefined,
       resolveTerminal: () => Promise.resolve(null),

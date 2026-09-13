@@ -18,6 +18,9 @@
   import PushDialog from './components/PushDialog.svelte';
   import FocusRefreshDialog from './components/FocusRefreshDialog.svelte';
   import MottoDialog from './components/MottoDialog.svelte';
+  import OpenRepositoryMenu from './components/OpenRepositoryMenu.svelte';
+  import CloneDialog from './components/CloneDialog.svelte';
+  import CloneConfirmDialog from './components/CloneConfirmDialog.svelte';
 
   void app.initialize();
 
@@ -165,6 +168,15 @@
     return lines.join('\n');
   }
 
+  /**
+   * 「リポジトリを開く」のポップアップ（ローカル／クローン）をボタンの真下に出す。
+   * 初期画面のボタンとタブ段の「＋」が共用する。メニュー本体は下の OpenRepositoryMenu。
+   */
+  function showOpenMenu(event: MouseEvent): void {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    app.showOpenRepositoryMenu(Math.round(rect.left), Math.round(rect.bottom + 2));
+  }
+
   let optionsOpen = $state(false);
   /** ようこそ画面の銘を押したときに出る、出典を見せるだけのダイアログ。 */
   let mottoOpen = $state(false);
@@ -196,9 +208,17 @@
               class="tab-label"
               role="tab"
               aria-selected={session.id === app.activeId}
+              aria-busy={app.isLoading(session.id)}
               title={session.id === app.activeId ? tabTitle(session.root) : session.root}
               onclick={() => void app.activate(session.id)}
             >
+              <!--
+                読み込み中の回転印。タブは #1（ルート解決）だけで先に立つので、
+                #2 〜 #4 が走っている間はここだけが動く。
+              -->
+              {#if app.isLoading(session.id)}
+                <span class="tab-spinner" aria-hidden="true"></span>
+              {/if}
               <span class="tab-repo">{session.displayName}</span>
               <!--
                 現在情報はアクティブなタブだけ（他のタブの状態は手元に無い）。
@@ -216,7 +236,7 @@
             <button class="tab-close" title="閉じる" onclick={() => void app.closeTab(session.id)}>×</button>
           </div>
         {/each}
-        <button class="tab-add" title="リポジトリを開く" onclick={() => void app.openRepository()}>＋</button>
+        <button class="tab-add" title="リポジトリを開く" aria-haspopup="menu" onclick={showOpenMenu}>＋</button>
       </div>
 
       <!--
@@ -273,7 +293,7 @@
             <button class="motto" lang="la" title="出典を見る" onclick={() => (mottoOpen = true)}>
               nani gigantum humeris insidentes
             </button>
-            <button onclick={() => void app.openRepository()}>リポジトリを開く</button>
+            <button aria-haspopup="menu" onclick={showOpenMenu}>リポジトリを開く</button>
           </div>
         </div>
       {:else if logMode}
@@ -360,6 +380,9 @@
 <ConfirmDialog />
 <CreateBranchDialog />
 <PushDialog />
+<CloneDialog />
+<CloneConfirmDialog />
+<OpenRepositoryMenu />
 <OptionsDialog open={optionsOpen} onclose={() => (optionsOpen = false)} />
 <MottoDialog open={mottoOpen} onclose={() => (mottoOpen = false)} />
 <FocusRefreshDialog />
@@ -470,6 +493,39 @@
 
   .tab-repo {
     flex: 0 0 auto;
+  }
+
+  /*
+   * 読み込み中の回転印。寸法はブランチ名の丸（line-height: 15px）に収まる 10px。
+   * 主役はリポジトリ名なので、輪は控えめな線色にして先頭だけをアクセント色にする。
+   */
+  .tab-spinner {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--app-border-subtle);
+    border-top-color: var(--app-accent);
+    border-radius: 50%;
+    animation: tab-spin 700ms linear infinite;
+  }
+
+  @keyframes tab-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* 動きを抑える設定では回さない。止まっていないことは明滅で示す。 */
+  @media (prefers-reduced-motion: reduce) {
+    .tab-spinner {
+      animation: tab-spinner-pulse 1.2s ease-in-out infinite;
+    }
+  }
+
+  @keyframes tab-spinner-pulse {
+    50% {
+      opacity: 0.25;
+    }
   }
 
   /*

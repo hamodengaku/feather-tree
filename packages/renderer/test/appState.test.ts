@@ -268,7 +268,7 @@ describe('ステージングとコミット', () => {
 
   /*
    * 件名の出所は #3（for-each-ref）しかなく、#2 は件名を持たない。
-   * 取り直さないと「現在の位置」とリポジトリタブに 1 つ前の件名が残る
+   * 取り直さないとリポジトリタブに 1 つ前の件名が残る
    * （対応表の例外「コミット後の反映: #10 → #2 → #3」）。
    */
   it('コミット成功後はブランチ一覧も取り直す（件名を新鮮に保つため）', async () => {
@@ -919,6 +919,214 @@ describe('実行中の git コマンド (決定 26)', () => {
   });
 });
 
+/*
+ * リポジトリを開く経路（決定 26 の見え方に直結する）。
+ *
+ * 巨大リポジトリでは #2 が終わるまで数十秒かかる。その間タブが現れないと、
+ * 実行中の git はアクティブでないセッションのものになりコマンドバーに映らず、
+ * 画面は前のタブのまま動かない——つまり固まったようにしか見えない。
+ * だから「タブを先に立てて、アクティブにしてから読み込む」順序を守る。
+ */
+describe('リポジトリを開く（タブを先に立てる）', () => {
+  /** 保留中の IPC を挟んだ状態で、溜まったマイクロタスクを流し切る。 */
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('読み込みが終わる前にタブが立ち、アクティブになり、回転印が出る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.holdLoad = true;
+    });
+
+    const opening = app.openRepository();
+    await flush();
+
+    // まだ sessionLoad は返っていない
+    expect(app.sessions.map((s) => s.id)).toEqual(['s1', 's2', 's3']);
+    expect(app.activeId).toBe('s3');
+    expect(app.isLoading('s3')).toBe(true);
+    expect(app.isLoading('s1')).toBe(false);
+
+    bridge.releaseLoad();
+    await opening;
+
+    expect(app.isLoading('s3')).toBe(false);
+  });
+
+  it('タブを立ててから読み込む順序で呼ぶ', async () => {
+    const { app, bridge } = await boot();
+
+    await app.openRepository();
+
+    const names = bridge.calls.map((c) => c.name);
+    const created = names.indexOf('sessionPickAndCreate');
+    const loaded = names.indexOf('sessionLoad');
+    expect(created).toBeGreaterThanOrEqual(0);
+    expect(loaded).toBeGreaterThan(created);
+    expect(bridge.lastArgsOf('sessionLoad')).toEqual(['s3']);
+  });
+
+  it('読み込み中に走る git はアクティブなタブのものとしてコマンドバーに映る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.holdLoad = true;
+    });
+
+    const opening = app.openRepository();
+    await flush();
+    // main は新しいセッションの id で実行中を通知してくる
+    bridge.emitCommandStart({ sessionId: 's3', opId: 's3:1', args: ['status'] });
+
+    expect(app.runningCommand?.args).toEqual(['status']);
+
+    bridge.emitCommandEnd('s3:1');
+    bridge.releaseLoad();
+    await opening;
+  });
+
+  it('キャンセルされたらタブは増えない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.pickResult = null;
+    });
+
+    await app.openRepository();
+
+    expect(app.sessions).toHaveLength(2);
+    expect(app.activeId).toBe('s1');
+    expect(bridge.countOf('sessionLoad')).toBe(0);
+  });
+
+  it('既に開いているリポジトリを選んだらタブを増やさず切り替える', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.pickResult = { id: 's2', root: 'D:/repo-two', displayName: 'repo-two' };
+    });
+
+    await app.openRepository();
+
+    expect(app.sessions).toHaveLength(2);
+    expect(app.activeId).toBe('s2');
+    expect(bridge.countOf('sessionActivate')).toBe(1);
+  });
+});
+
+/*
+ * 「リポジトリを開く」のポップアップとクローン（対応表 #37）。
+ * クローン後のタブの立ち方はローカルを開くときと同じ 2 段階（#37 → #1、その後 #2 〜 #4）。
+ */
+describe('リポジトリを開く口（ポップアップ）とクローン', () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  const request = { url: 'https://example.com/owner/cloned.git', parentDir: 'D:/work', name: 'cloned', shallow: false };
+
+  it('ポップアップは位置を持って開き、閉じると null に戻る', async () => {
+    const { app } = await boot();
+
+    app.showOpenRepositoryMenu(12, 34);
+    expect(app.openRepoMenu).toEqual({ x: 12, y: 34 });
+
+    app.closeOpenRepositoryMenu();
+    expect(app.openRepoMenu).toBeNull();
+  });
+
+  it('クローンに成功するとダイアログを閉じ、タブを立ててから読み込む', async () => {
+    const { app, bridge } = await boot();
+    app.openCloneDialog();
+
+    await app.cloneRepository(request, () => app.closeCloneDialog());
+
+    expect(app.cloneDialogOpen).toBe(false);
+    expect(app.cloning).toBe(false);
+    expect(app.sessions.map((s) => s.id)).toEqual(['s1', 's2', 's4']);
+    expect(app.activeId).toBe('s4');
+    expect(bridge.lastArgsOf('sessionCloneAndCreate')).toEqual([request]);
+    const names = bridge.calls.map((c) => c.name);
+    expect(names.indexOf('sessionLoad')).toBeGreaterThan(names.indexOf('sessionCloneAndCreate'));
+    expect(bridge.lastArgsOf('sessionLoad')).toEqual(['s4']);
+  });
+
+  it('失敗したらダイアログは開いたままで、エラーを出し、タブは増えない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.cloneError = { kind: 'git-failed', message: 'リポジトリが見つかりません。URL を確認してください。' };
+    });
+    app.openCloneDialog();
+
+    await app.cloneRepository(request, () => app.closeCloneDialog());
+
+    expect(app.cloneDialogOpen).toBe(true);
+    expect(app.cloning).toBe(false);
+    expect(app.error?.message).toContain('リポジトリが見つかりません');
+    expect(app.sessions).toHaveLength(2);
+    expect(bridge.countOf('sessionLoad')).toBe(0);
+  });
+
+  it('進捗行はクローン中の sessionId: null だけを映し、実行中は閉じられない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.holdClone = true;
+    });
+    app.openCloneDialog();
+
+    // 始まる前の行は拾わない
+    bridge.emitProgress({ sessionId: null, opId: 'clone:0', line: '古い行' });
+    expect(app.cloneProgress).toBeNull();
+
+    const cloning = app.cloneRepository(request, () => app.closeCloneDialog());
+    await flush();
+    expect(app.cloning).toBe(true);
+
+    bridge.emitProgress({ sessionId: null, opId: 'clone:1', line: 'Receiving objects:  45% (45/100)' });
+    bridge.emitProgress({ sessionId: 's1', opId: 's1:9', line: '別セッションの行' });
+    expect(app.cloneProgress).toBe('Receiving objects:  45% (45/100)');
+
+    app.closeCloneDialog();
+    expect(app.cloneDialogOpen).toBe(true);
+
+    bridge.releaseClone();
+    await cloning;
+    expect(app.cloneDialogOpen).toBe(false);
+  });
+
+  it('保存先の選択をキャンセルしたら null', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.clonePickResult = null;
+    });
+
+    expect(await app.pickCloneDirectory()).toBeNull();
+    expect(bridge.countOf('clonePickDirectory')).toBe(1);
+  });
+
+  it('決定で確認に進み（git は動かない）、戻ると入力に戻る。閉じると確認も消える', async () => {
+    const { app, bridge } = await boot();
+    app.openCloneDialog();
+
+    app.confirmClone(request);
+    expect(app.cloneConfirm).toEqual(request);
+    expect(bridge.countOf('sessionCloneAndCreate')).toBe(0);
+
+    app.backToCloneForm();
+    expect(app.cloneConfirm).toBeNull();
+    expect(app.cloneDialogOpen).toBe(true);
+
+    app.confirmClone(request);
+    app.closeCloneDialog();
+    expect(app.cloneDialogOpen).toBe(false);
+    expect(app.cloneConfirm).toBeNull();
+  });
+
+  it('実行中は確認から戻れない。成功すると入力と確認の両方が閉じる', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.holdClone = true;
+    });
+    app.openCloneDialog();
+    app.confirmClone(request);
+
+    const cloning = app.cloneRepository(request, () => app.closeCloneDialog());
+    await flush();
+    app.backToCloneForm();
+    expect(app.cloneConfirm).toEqual(request);
+
+    bridge.releaseClone();
+    await cloning;
+    expect(app.cloneConfirm).toBeNull();
+    expect(app.cloneDialogOpen).toBe(false);
+  });
+});
+
 describe('コミットログモード（決定 27）', () => {
   it('モードを切り替えると設定に永続化される', async () => {
     const { app, bridge } = await boot();
@@ -1062,7 +1270,7 @@ describe('コミットログモード（決定 27）', () => {
   });
 });
 
-describe('HEAD の件名（「現在の位置」とリポジトリタブが共有する）', () => {
+describe('HEAD の件名（リポジトリタブに出す）', () => {
   it('status 由来のブランチ名で一覧を引き、件名を返す', async () => {
     const { app } = await boot((b) => {
       b.branches = [
@@ -1101,7 +1309,7 @@ describe('HEAD の件名（「現在の位置」とリポジトリタブが共�
     expect(app.headSubject).toBe('その位置の件名');
   });
 
-  it('どのブランチの先端でもない位置なら null（タブと「現在の位置」は出さない）', async () => {
+  it('どのブランチの先端でもない位置なら null（タブには件名を出さない）', async () => {
     const { app } = await boot((b) => {
       b.branches = [branch('main', { oid: 'aaa', subject: 'main の件名' })];
       b.head = { oid: 'zzz', branch: null, detached: true, upstream: null, ahead: 0, behind: 0 };

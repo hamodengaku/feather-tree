@@ -3,8 +3,11 @@ import type {
   FileDiffDto,
   HunkStageRequest,
   BranchDto,
+  CloneRequest,
   CommandEndEvent,
   CommandStartEvent,
+  FtErrorDto,
+  ProgressEvent,
   CommitFileChangeDto,
   CommitRequest,
   CommitSummaryDto,
@@ -17,6 +20,7 @@ import type {
   RefreshScope,
   Result,
   SessionChangedEvent,
+  SessionDto,
   SettingsDto,
   StatusPageRequest,
 } from '@feathertree/ipc';
@@ -107,11 +111,48 @@ export class FakeBridge {
   readonly calls: Call[] = [];
   staged: FileEntryDto[] = [];
   changes: FileEntryDto[] = [];
-  sessions = [
+  sessions: SessionDto[] = [
     { id: 's1', root: 'D:/repo-one', displayName: 'repo-one' },
     { id: 's2', root: 'D:/repo-two', displayName: 'repo-two' },
   ];
   activeId: string | null = 's1';
+  /** フォルダ選択の結果。null ならユーザーがキャンセルした場合。 */
+  pickResult: SessionDto | null = { id: 's3', root: 'D:/repo-three', displayName: 'repo-three' };
+  /**
+   * true の間、sessionLoad は releaseLoad() を呼ぶまで返らない。
+   * 「読み込み中」の見え方（タブの回転印）を観察するために使う。
+   */
+  holdLoad = false;
+  #releaseLoad: (() => void) | null = null;
+
+  /** 保留している sessionLoad を返させる。 */
+  releaseLoad(): void {
+    const release = this.#releaseLoad;
+    this.#releaseLoad = null;
+    release?.();
+  }
+
+  /** クローンの保存先選択の結果。null ならキャンセル。 */
+  clonePickResult: string | null = 'D:/work';
+  /** sessionCloneAndCreate が立てるタブ。 */
+  cloneResult: SessionDto = { id: 's4', root: 'D:/work/cloned', displayName: 'cloned' };
+  /** null でなければ sessionCloneAndCreate はこのエラーで失敗する。 */
+  cloneError: FtErrorDto | null = null;
+  /** true の間、sessionCloneAndCreate は releaseClone() を呼ぶまで返らない（進捗の観察用）。 */
+  holdClone = false;
+  #releaseClone: (() => void) | null = null;
+  progressListeners: ((e: ProgressEvent) => void)[] = [];
+
+  releaseClone(): void {
+    const release = this.#releaseClone;
+    this.#releaseClone = null;
+    release?.();
+  }
+
+  /** main が git の進捗行を送ってきたことにする。 */
+  emitProgress(event: ProgressEvent): void {
+    for (const listener of this.progressListeners) listener(event);
+  }
   /** detached HEAD などを再現できるようにテストから差し替える。 */
   head: HeadInfoDto = HEAD;
   /** main が保持しているブランチ一覧。外部での変更を再現するときに差し替える。 */
@@ -263,13 +304,36 @@ export class FakeBridge {
         this.settings = { ...this.settings, ...patch };
         return Promise.resolve(ok(this.settings));
       },
-      sessionPickAndOpen: () => {
-        this.record('sessionPickAndOpen');
-        return Promise.resolve(ok(this.sessions[0] ?? null));
+      sessionPickAndCreate: () => {
+        this.record('sessionPickAndCreate');
+        const picked = this.pickResult;
+        if (picked === null) return Promise.resolve(ok(null));
+        // main 側と同じく、この時点でタブは立ちアクティブになる（一覧はまだ取らない）
+        if (!this.sessions.some((s) => s.id === picked.id)) this.sessions = [...this.sessions, picked];
+        this.activeId = picked.id;
+        return Promise.resolve(ok(picked));
+      },
+      sessionLoad: async (id: string) => {
+        this.record('sessionLoad', id);
+        if (this.holdLoad) await new Promise<void>((release) => (this.#releaseLoad = release));
+        return ok(null);
       },
       sessionOpen: (root: string) => {
         this.record('sessionOpen', root);
         return Promise.resolve(ok(this.sessions[0] ?? { id: 's1', root, displayName: root }));
+      },
+      clonePickDirectory: () => {
+        this.record('clonePickDirectory');
+        return Promise.resolve(ok(this.clonePickResult));
+      },
+      sessionCloneAndCreate: async (req: CloneRequest) => {
+        this.record('sessionCloneAndCreate', req);
+        if (this.holdClone) await new Promise<void>((release) => (this.#releaseClone = release));
+        if (this.cloneError !== null) return { ok: false, error: this.cloneError };
+        const created = this.cloneResult;
+        if (!this.sessions.some((s) => s.id === created.id)) this.sessions = [...this.sessions, created];
+        this.activeId = created.id;
+        return ok(created);
       },
       sessionList: () => {
         this.record('sessionList');
@@ -441,7 +505,12 @@ export class FakeBridge {
           this.changedListeners = this.changedListeners.filter((l) => l !== listener);
         };
       },
-      onProgress: () => () => undefined,
+      onProgress: (listener) => {
+        this.progressListeners.push(listener);
+        return () => {
+          this.progressListeners = this.progressListeners.filter((l) => l !== listener);
+        };
+      },
       onFocusRefreshPrompt: (listener) => {
         this.focusPromptListeners.push(listener);
         return () => {

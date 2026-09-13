@@ -1,6 +1,7 @@
 import type { FeatherTreeBridge } from '@feathertree/ipc';
 import type {
   BranchDto,
+  CloneRequest,
   CommandLogEntryDto,
   CommandStartEvent,
   CommitFileChangeDto,
@@ -18,7 +19,7 @@ import type {
   StatusGroupDto,
   StatusSummaryDto,
 } from '@feathertree/ipc';
-import { SvelteMap } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { ft } from '../bridge.js';
 import { applyTheme } from './theme.js';
 import { nextSelectionAfterRemoval } from './selection.js';
@@ -90,6 +91,15 @@ export class AppState {
    */
   runningCommands = $state<readonly CommandStartEvent[]>([]);
 
+  /**
+   * 一覧を読み込んでいる最中のタブ。
+   *
+   * リポジトリを開くときはタブを先に立てるので（openRepository）、
+   * 中身が空のタブが先に現れる。その間タブに回転印を出して、止まっていない
+   * ことを示す。複数タブを並行して読み込むことがあるので集合で持つ。
+   */
+  readonly loadingSessions = new SvelteSet<string>();
+
   selected = $state<SelectedFile | null>(null);
   diff = $state<FileDiffDto | null>(null);
   diffLoading = $state(false);
@@ -151,6 +161,25 @@ export class AppState {
    */
   pushDialogOpen = $state(false);
 
+  /**
+   * 「リポジトリを開く」のポップアップ（ローカル／クローンを選ばせる）の表示位置。null なら出していない。
+   * 押す口は 2 つ（初期画面のボタンとタブ段の「＋」）あるが、メニューは App.svelte の最上位に 1 つだけ置く
+   * （タブ段はドラッグ領域かつ横スクロールの器なので、その中に出すとクリックが吸われたり切れたりする）。
+   */
+  openRepoMenu = $state<{ x: number; y: number } | null>(null);
+
+  /** クローンのダイアログ。置き場所は createBranchOpen と同じ理由で App.svelte の最上位。 */
+  cloneDialogOpen = $state(false);
+  /**
+   * 最終確認中のクローン要求。null なら確認を出していない（入力ダイアログを出している）。
+   * 実行とクローン中の進捗表示も確認ダイアログ（CloneConfirmDialog）が受け持つ。
+   */
+  cloneConfirm = $state<CloneRequest | null>(null);
+  /** クローン実行中。この間はダイアログを閉じさせない（キャンセルは未実装）。 */
+  cloning = $state(false);
+  /** クローンの最新の進捗行（git の stderr 1 行）。 */
+  cloneProgress = $state<string | null>(null);
+
   /** セッションごとの状態。タブ切替で一覧を取り直さないためのキャッシュ。 */
   readonly #cache = new SvelteMap<
     string,
@@ -200,7 +229,7 @@ export class AppState {
   /**
    * HEAD が指しているコミットの件名。無ければ null。
    *
-   * ブランチペインの「現在の位置」とリポジトリタブ（決定 24）が同じものを出すための 1 箇所。
+   * 出すのはリポジトリタブ（決定 24）だけ。
    *
    * 出所は取得済みのブランチ一覧（対応表 #3 の `%(contents:subject)`）なので git は増えない。
    * **どのブランチかは一覧の `isHead` ではなく status 由来の `currentBranch` で決める。**
@@ -272,20 +301,133 @@ export class AppState {
     this.#ft.onCommandEnd((event) => {
       this.runningCommands = this.runningCommands.filter((c) => c.opId !== event.opId);
     });
+
+    /*
+     * 進捗行（docs/01-architecture.md 6 章）。今の送り手はクローンだけで、sessionId は null。
+     * クローン中でなければ捨てる（終わった後に遅れて届いた行で表示を書き戻さない）。
+     */
+    this.#ft.onProgress((event) => {
+      if (event.sessionId !== null || !this.cloning) return;
+      this.cloneProgress = event.line;
+    });
   }
 
+  /** タブが読み込み中か。回転印を出すのはこのタブだけ。 */
+  isLoading(id: string): boolean {
+    return this.loadingSessions.has(id);
+  }
+
+  /**
+   * リポジトリを開く。**タブを先に立ててから読み込む**（2 段階）。
+   *
+   * 1 段目 sessionPickAndCreate は対応表 #1 だけなのですぐ返る。そこでタブを足して
+   * アクティブにしてから、2 段目 sessionLoad（#2 → #3 → #4）を投げる。
+   *
+   * 順序を逆にしてはいけない。読み込みが終わるまでタブが現れないと、
+   * 巨大リポジトリでは数十秒のあいだ画面が前のタブのまま動かず、
+   * コマンドバーも（実行中のセッションがアクティブでないため）何も映さない。
+   * アプリが固まったようにしか見えなくなる。
+   */
   async openRepository(): Promise<void> {
-    await this.#run(async () => {
-      const result = await this.#ft.sessionPickAndOpen();
-      if (!this.#check(result) || result.value === null) return;
-      const list = await this.#ft.sessionList();
-      if (list.ok) {
-        this.sessions = [...list.value.sessions];
-        this.activeId = result.value.id;
-      }
-      this.#clearActive();
-      await this.reloadAll();
-    });
+    const picked = await this.#ft.sessionPickAndCreate();
+    if (!this.#check(picked) || picked.value === null) return;
+    await this.#addOpenedTab(picked.value);
+  }
+
+  /* ---------------------------------------------------------------- 開く口のポップアップとクローン */
+
+  showOpenRepositoryMenu(x: number, y: number): void {
+    this.openRepoMenu = { x, y };
+  }
+
+  closeOpenRepositoryMenu(): void {
+    this.openRepoMenu = null;
+  }
+
+  openCloneDialog(): void {
+    this.cloneProgress = null;
+    this.cloneConfirm = null;
+    this.cloneDialogOpen = true;
+  }
+
+  /**
+   * クローンの入力と確認をまとめて閉じる。
+   * クローン中は閉じさせない。閉じても git は止まらず、終わったタブだけが突然現れることになるため。
+   */
+  closeCloneDialog(): void {
+    if (this.cloning) return;
+    this.cloneConfirm = null;
+    this.cloneDialogOpen = false;
+  }
+
+  /** 入力ダイアログの「決定」。git はまだ動かさず、最終確認を出す。 */
+  confirmClone(req: CloneRequest): void {
+    this.cloneConfirm = req;
+  }
+
+  /** 確認から入力へ戻る（入力内容は入力ダイアログ側に残っている）。実行中は戻らない。 */
+  backToCloneForm(): void {
+    if (this.cloning) return;
+    this.cloneConfirm = null;
+  }
+
+  /** 保存先（親フォルダ）の選択。キャンセルなら null。 */
+  async pickCloneDirectory(): Promise<string | null> {
+    const picked = await this.#ft.clonePickDirectory();
+    if (!this.#check(picked)) return null;
+    return picked.value;
+  }
+
+  /**
+   * クローンしてタブを立てる（対応表 #37 → #1、その後 #2 〜 #4 は openRepository と同じ 2 段目）。
+   * 成功時だけ onSuccess を呼ぶ。失敗したらダイアログを閉じず、エラー帯を見て入力を直させる。
+   */
+  async cloneRepository(req: CloneRequest, onSuccess?: () => void): Promise<void> {
+    this.cloning = true;
+    this.cloneProgress = null;
+    let created: SessionDto | null = null;
+    try {
+      await this.#run(async () => {
+        const result = await this.#ft.sessionCloneAndCreate(req);
+        if (!this.#check(result)) return;
+        created = result.value;
+      });
+    } finally {
+      this.cloning = false;
+    }
+    if (created === null) return;
+    onSuccess?.();
+    await this.#addOpenedTab(created);
+  }
+
+  /**
+   * 1 段目で立ったセッションをタブとして見せ、2 段目（sessionLoad）を投げる。
+   * ローカルを開く経路とクローンの経路で共用する。
+   */
+  async #addOpenedTab(opened: SessionDto): Promise<void> {
+    // 既に開いているリポジトリを選んだときはタブを増やさず、そのタブへ切り替える
+    if (this.sessions.some((s) => s.id === opened.id)) {
+      await this.activate(opened.id);
+      return;
+    }
+
+    this.#saveCache();
+    this.sessions = [...this.sessions, opened];
+    this.activeId = opened.id;
+    this.#clearActive();
+    this.loadingSessions.add(opened.id);
+
+    try {
+      await this.#run(async () => {
+        const loaded = await this.#ft.sessionLoad(opened.id);
+        if (!this.#check(loaded)) return;
+        // 読み込み中に別のタブへ移られていたら、そちらの表示を上書きしない
+        if (this.activeId !== opened.id) return;
+        await this.reloadAll();
+      });
+    } finally {
+      this.loadingSessions.delete(opened.id);
+    }
   }
 
   /** タブ切替。一覧の取り直しはせず、キャッシュから復元する。 */
@@ -795,7 +937,7 @@ export class AppState {
    *
    * 成功したときだけブランチ一覧も取り直す（例外「コミット後の反映: #10 → #2 → #3」）。
    * ahead が進むうえ、**HEAD の件名の出所が #3 しかない**ので、取り直さないと
-   * ブランチペインの「現在の位置」とリポジトリタブに 1 つ前の件名が残る。
+   * リポジトリタブに 1 つ前の件名が残る。
    * 読むのは main のスナップショットなので、ここで git は増えない（#3 は main が済ませている）。
    */
   async commit(): Promise<void> {

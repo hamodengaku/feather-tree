@@ -40,15 +40,6 @@
   // 削除・名前変更は Phase 6 の残り。
   const locals = $derived(app.branches.filter((b) => !b.isRemote));
   const remotes = $derived(app.branches.filter((b) => b.isRemote));
-  const head = $derived(app.summary?.head ?? null);
-
-  /**
-   * 「現在の位置」に出すコミットの件名。ハッシュの代わり。
-   *
-   * 8 桁の 16 進数より「何をしたコミットの上に居るか」のほうが手がかりになる。
-   * 導出はリポジトリタブ（決定 24）と共通（appState.headSubject）。
-   */
-  const headSubject = $derived(app.headSubject);
 
   /** 展開中のフォルダ（リポジトリごとに保存されている。既定は全折りたたみ）。 */
   const expanded = $derived(toExpandedSet(app.branchExpanded));
@@ -197,37 +188,12 @@
 {#snippet remoteRow(row: BranchTreeRow)}{@render branchRow(row, 'remote')}{/snippet}
 {#snippet localRow(row: BranchTreeRow)}{@render branchRow(row, 'local')}{/snippet}
 
+<!--
+  リモートとローカルの 2 セクションだけ。
+  今どのブランチに居るかは一覧の中で印と太字で示す（isCurrent）ので、
+  同じ情報を固定ヘッダで二重に持たない。
+-->
 <div class="pane">
-  <section class="head-section">
-    <h2>現在の位置</h2>
-    {#if head === null}
-      <p class="empty">リポジトリを開いてください。</p>
-    {:else}
-      <div class="head">
-        <div class="branch-name">{head.detached ? 'detached HEAD' : (head.branch ?? '(不明)')}</div>
-        {#if head.oid === null}
-          <div class="sub">コミットがまだありません</div>
-        {:else if headSubject !== null}
-          <div class="sub subject" title={headSubject}>{headSubject}</div>
-        {:else}
-          <!--
-            どのブランチの先端でもない位置に居る（detached でコミットを直接見ている）。
-            件名が手元に無いので、ここだけはハッシュに落とす。
-            「detached HEAD」だけでは今どこに居るのか分からないため。
-          -->
-          <div class="sub mono">{head.oid.slice(0, 8)}</div>
-        {/if}
-        {#if head.upstream !== null}
-          <div class="sub">
-            {head.upstream}
-            {#if head.ahead > 0}<span class="head-ahead">↑{head.ahead}</span>{/if}
-            {#if head.behind > 0}<span class="head-behind">↓{head.behind}</span>{/if}
-          </div>
-        {/if}
-      </div>
-    {/if}
-  </section>
-
   <div class="lists" style:grid-template-rows="1fr 6px {localHeight}px" bind:clientHeight={listsHeight}>
     <section class="list">
       <div class="list-header">
@@ -296,16 +262,6 @@
     flex-direction: column;
     min-height: 0;
     border-bottom: 1px solid var(--app-border-subtle);
-  }
-
-  /*
-   * 「現在の位置」は縮ませない。
-   * section { min-height: 0 } で最小高の保護を外しているため、これが無いと
-   * ブランチが増えたときに 0px まで潰され、中の文字がリモート一覧の上に重なって描画される。
-   */
-  .head-section {
-    flex: 0 0 auto;
-    overflow: hidden;
   }
 
   /*
@@ -378,36 +334,6 @@
     color: var(--app-text-muted);
     font-family: var(--app-font-mono);
     font-size: var(--app-font-size-mono);
-  }
-
-  .head {
-    padding: 8px;
-  }
-
-  .branch-name {
-    font-weight: 600;
-  }
-
-  .sub {
-    margin-top: 2px;
-    color: var(--app-text-secondary);
-    font-size: var(--app-font-size-mono);
-  }
-
-  .mono {
-    font-family: var(--app-font-mono);
-  }
-
-  /*
-   * コミットの件名。長さは git 任せ（人が書いた文）なので、必ず 1 行で打ち切る。
-   * 折り返させると「現在の位置」の高さが件名次第で変わり、下の一覧がずれる
-   * （.head-section は flex: 0 0 auto で中身の高さをそのまま取る）。
-   * 全文は title 属性で読める。
-   */
-  .subject {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   li {
@@ -504,26 +430,10 @@
     color: var(--app-text-modified);
   }
 
-  .head-ahead {
-    color: var(--app-text-added);
-    font-family: var(--app-font-mono);
-    font-size: var(--app-font-size-mono);
-  }
-
-  .head-behind {
-    color: var(--app-text-modified);
-    font-family: var(--app-font-mono);
-    font-size: var(--app-font-size-mono);
-  }
-
   .gone {
     flex: 0 0 auto;
     color: var(--app-text-danger);
     font-size: var(--app-font-size-mono);
   }
 
-  .empty {
-    margin: 8px;
-    color: var(--app-text-muted);
-  }
 </style>

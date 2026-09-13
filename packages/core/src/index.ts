@@ -28,7 +28,7 @@ export type { AppSettings, PaneWidths, ThemeName, UntrackedMode } from './settin
 export { RepositorySession, toMappedError } from './session/repositorySession.js';
 export type { CommandStart, SessionChange, SessionDeps } from './session/repositorySession.js';
 export { SessionManager, displayNameOf } from './session/sessionManager.js';
-export type { SessionInfo } from './session/sessionManager.js';
+export type { CloneTarget, SessionInfo } from './session/sessionManager.js';
 export {
   MAX_EXPLICIT_PATHS,
   filterEntries,

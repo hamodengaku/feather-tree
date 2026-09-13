@@ -43,6 +43,10 @@ describe('エラーメッセージのマッピング', () => {
     ['error: external filter git-lfs smudge filter lfs failed', 'Git LFS の処理に失敗しました'],
     ["fatal: a branch named 'feature' already exists", '同名のブランチが既に存在します'],
     ["fatal: 'origin/does-not-exist' is not a valid branch name", 'ブランチ元またはブランチ名が正しくありません'],
+    ["fatal: destination path 'repo' already exists and is not an empty directory.", '保存先に同名のフォルダがあり'],
+    ['remote: Repository not found.\nfatal: repository \'https://github.com/o/r.git/\' not found', 'リポジトリが見つかりません'],
+    ["fatal: 'nowhere' does not appear to be a git repository", 'リポジトリが見つかりません'],
+    ["fatal: unable to access 'https://nohost/r.git/': Could not resolve host: nohost", 'リポジトリが見つかりません'],
   ];
 
   it.each(cases)('%s を日本語へ写す', (stderr, expected) => {
