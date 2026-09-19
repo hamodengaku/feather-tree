@@ -381,6 +381,54 @@ describe('ステージングとコミット', () => {
     expect(app.selected?.path).toBe('a.txt');
     expect(bridge.lastArgsOf('diffGet')).toEqual(['s1', 'a.txt', false]);
   });
+
+  it('すでに出しているファイルを選び直しても取り直さない（スクロール位置を飛ばさない）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+    const before = bridge.countOf('diffGet');
+
+    await app.select({ path: 'a.txt', staged: false });
+
+    expect(bridge.countOf('diffGet')).toBe(before);
+  });
+
+  it('同じパスでもステージの側が違えば取り直す（中身が別物）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+    const before = bridge.countOf('diffGet');
+
+    await app.select({ path: 'a.txt', staged: true });
+
+    expect(bridge.countOf('diffGet')).toBe(before + 1);
+    expect(bridge.lastArgsOf('diffGet')).toEqual(['s1', 'a.txt', true]);
+  });
+
+  it('取得に失敗したファイルは選び直すと再度取りにいく（押し直しで再試行できる）', async () => {
+    const bridge = new FakeBridge();
+    bridge.changes = [entry('a.txt')];
+    let attempts = 0;
+    const app = await load({
+      ...bridge.build(),
+      diffGet: () => {
+        attempts += 1;
+        return Promise.resolve({
+          ok: false as const,
+          error: { kind: 'git-failed' as const, message: '読めません' },
+        });
+      },
+    });
+    await app.select({ path: 'a.txt', staged: false });
+    expect(attempts).toBe(1);
+
+    await app.select({ path: 'a.txt', staged: false });
+
+    expect(attempts).toBe(2);
+  });
 });
 
 describe('更新（リロード）の対象', () => {
@@ -533,6 +581,26 @@ describe('ステージ切替と、そのあとの選択位置', () => {
     expect(app.selected).toEqual({ path: 'c.txt', staged: false });
   });
 
+  it('選択が移るのはステージが済んだあと（git を投げる時点ではまだ元の行）', async () => {
+    const bridge = new FakeBridge();
+    bridge.changes = [entry('a.txt'), entry('b.txt')];
+    const base = bridge.build();
+    let selectedWhenStaging: unknown = null;
+    const app = await load({
+      ...base,
+      stage: (id, target) => {
+        selectedWhenStaging = app.selected;
+        return base.stage(id, target);
+      },
+    });
+    await app.select({ path: 'a.txt', staged: false });
+
+    await app.toggleStage({ path: 'a.txt', staged: false });
+
+    expect(selectedWhenStaging).toEqual({ path: 'a.txt', staged: false });
+    expect(app.selected).toEqual({ path: 'b.txt', staged: false });
+  });
+
   it('一番下をステージすると 1 行上へ移る', async () => {
     const { app } = await boot((b) => {
       b.changes = [entry('a.txt'), entry('b.txt'), entry('c.txt')];
@@ -590,7 +658,7 @@ describe('ステージ切替と、そのあとの選択位置', () => {
     expect(app.selected).toEqual({ path: 'z.txt', staged: true });
   });
 
-  it('失敗しても移動先の選択は元に戻さない（一覧は変わっていないので選び直せる）', async () => {
+  it('失敗したときは選択を動かさない（ステージできていないので、そのファイルに留まる）', async () => {
     const bridge = new FakeBridge();
     bridge.changes = [entry('a.txt'), entry('b.txt')];
     const app = await load({
@@ -605,7 +673,7 @@ describe('ステージ切替と、そのあとの選択位置', () => {
 
     await app.toggleStage({ path: 'a.txt', staged: false });
 
-    expect(app.selected).toEqual({ path: 'b.txt', staged: false });
+    expect(app.selected).toEqual({ path: 'a.txt', staged: false });
     expect(app.error?.message).toBe('失敗しました');
   });
 });

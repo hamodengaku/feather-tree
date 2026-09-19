@@ -51,6 +51,11 @@ const COMMAND_LOG_LIMIT = 500;
  */
 const VIEW_ONLY_COMMANDS: ReadonlySet<string> = new Set(['diff', 'read-untracked', 'show', 'log']);
 
+/** 選択を動かさない（操作の対象が選択中のファイルと関係ないとき）。#selectionPastTarget が返す。 */
+const KEEP_SELECTION = (): void => {
+  /* 何もしない */
+};
+
 export interface SelectedFile {
   readonly path: string;
   readonly staged: boolean;
@@ -733,9 +738,29 @@ export class AppState {
     else this.changes = next;
   }
 
+  /**
+   * ファイル一覧で行を選ぶ。**既に差分ペインに出ているファイルなら取り直さない。**
+   * 同じ内容で置き換えるとスクロール位置が先頭に戻り、ちらついて見えるため。
+   *
+   * 内容が変わりうるのは git を動かしたときだけで、そちらは reloadActive が読み直す。
+   */
   async select(file: SelectedFile): Promise<void> {
+    if (this.#showingDiffOf(file)) {
+      this.selected = file;
+      return;
+    }
     this.selected = file;
     await this.loadDiff(file);
+  }
+
+  /** そのファイルの差分を今まさに出している（あるいは読んでいる最中）か。 */
+  #showingDiffOf(file: SelectedFile): boolean {
+    const current = this.selected;
+    if (current === null || current.path !== file.path || current.staged !== file.staged) {
+      return false;
+    }
+    // 読み込み中なら、その要求は選択中のファイル（＝この file）のもの
+    return this.diffLoading || this.diff?.path === file.path;
   }
 
   async loadDiff(file: SelectedFile): Promise<void> {
@@ -1171,38 +1196,46 @@ export class AppState {
   // ---------------------------------------------------------------- 書き込み操作
 
   stage(target: OperationTargetDto): Promise<void> {
-    this.#moveSelectionPastTarget(target, false);
-    return this.#operate(() => this.#ft.stage(this.#id(), target));
+    const move = this.#selectionPastTarget(target, false);
+    return this.#operate(() => this.#ft.stage(this.#id(), target), undefined, move);
   }
 
   unstage(target: OperationTargetDto): Promise<void> {
-    this.#moveSelectionPastTarget(target, true);
-    return this.#operate(() => this.#ft.unstage(this.#id(), target));
+    const move = this.#selectionPastTarget(target, true);
+    return this.#operate(() => this.#ft.unstage(this.#id(), target), undefined, move);
   }
 
   /**
    * ステージ／アンステージしたファイルは一覧から消えるので、その 1 行下
    * （無ければ 1 行上）へ選択を移す。連続して処理するときに手が止まらないようにする。
    *
-   * 一覧が変わる**前**に次の行を決めておく必要があるので、操作を投げる直前に呼ぶ。
+   * 移動先を決められるのは一覧が変わる**前**だけなので、ここで決めておき、
+   * 実際に動かすのは操作が成功してから（`#operate` の onSuccess）。先に動かすと
+   * まだ古い内容のままの次のファイルを読みに行ってしまうし、失敗したときに
+   * カーソルだけが進む。移動後の差分の読み込みは、続けて走る reloadActive が行う。
+   *
    * 全件操作（すべてステージ／すべて戻す）は移動先が無いので選択を解除する。
    *
    * @param staged 操作元がステージ済み側か。
+   * @returns 操作が成功したあとに呼ぶ、選択を移す関数。
    */
-  #moveSelectionPastTarget(target: OperationTargetDto, staged: boolean): void {
-    if (this.selected === null || this.selected.staged !== staged) return;
+  #selectionPastTarget(target: OperationTargetDto, staged: boolean): () => void {
+    if (this.selected === null || this.selected.staged !== staged) return KEEP_SELECTION;
 
     if (target.kind !== 'paths') {
       // 範囲指定はセクションごと空になりうる。素直に選択を解除する
-      this.selected = null;
-      this.#invalidateDiff();
-      return;
+      return () => {
+        this.selected = null;
+        this.#invalidateDiff();
+      };
     }
 
     const section = staged ? this.staged : this.changes;
     const next = nextSelectionAfterRemoval(section.entries, target.paths);
-    this.selected = next === null ? null : { path: next, staged };
-    if (next === null) this.#invalidateDiff();
+    return () => {
+      this.selected = next === null ? null : { path: next, staged };
+      if (next === null) this.#invalidateDiff();
+    };
   }
 
   /**
