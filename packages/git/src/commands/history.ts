@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { DIFF_EXTRA, READ_PREFIX } from '../execution/gitEnvironment.js';
 import { DIFF_TIMEOUT_MS, runGitText } from '../execution/spawnGit.js';
@@ -37,7 +38,7 @@ export async function getLog(ctx: GitContext, options: LogOptions = {}): Promise
   const { exit, stdout } = await runGitText(
     // --max-count で打ち切っているので本来は短い。
     // 壊れた object DB を引いたときに履歴タブが無反応にならないよう上限を置く。
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args, timeoutMs: DIFF_TIMEOUT_MS },
+    commandFor(ctx, args, { timeoutMs: DIFF_TIMEOUT_MS }),
     ctx.signal,
   );
 
@@ -55,12 +56,11 @@ export async function getLog(ctx: GitContext, options: LogOptions = {}): Promise
 /** 対応表 #21: コミットの変更ファイル一覧。 */
 export async function getCommitFiles(ctx: GitContext, oid: string): Promise<CommitFileChange[]> {
   const { exit, stdout } = await runGitText(
-    {
-      gitPath: ctx.gitPath,
-      cwd: ctx.cwd,
-      args: [...READ_PREFIX, 'show', ...DIFF_EXTRA, '--name-status', '-z', '--format=', oid],
-      timeoutMs: DIFF_TIMEOUT_MS,
-    },
+    commandFor(
+      ctx,
+      [...READ_PREFIX, 'show', ...DIFF_EXTRA, '--name-status', '-z', '--format=', oid],
+      { timeoutMs: DIFF_TIMEOUT_MS },
+    ),
     ctx.signal,
   );
 
@@ -95,7 +95,7 @@ export async function getCommitFileDiff(
   ];
 
   const { exit, stdout } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args, timeoutMs: DIFF_TIMEOUT_MS },
+    commandFor(ctx, args, { timeoutMs: DIFF_TIMEOUT_MS }),
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['show'], exit.code, exit.stderr);

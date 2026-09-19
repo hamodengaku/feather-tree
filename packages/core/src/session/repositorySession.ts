@@ -10,15 +10,19 @@ import {
   getUntrackedFileDiff,
   listBranches,
   listRemotes,
+  readUserIdentity,
   resolveRepository,
+  setLocalUserIdentity,
   type BranchRef,
   type CommitFileChange,
   type CommitSummary,
   type FileDiff,
   type GitContext,
   type StatusSnapshot,
+  type UserIdentity,
 } from '@feathertree/git';
 import type { CommandLog } from '@feathertree/base-core';
+import { gitSshEnv } from '../env/sshCommand.js';
 import { mapGitStderr, type MappedError } from '../policy/errorMapping.js';
 import { redactUrl } from '../policy/redactUrl.js';
 import type { AppSettings } from '../settings/schema.js';
@@ -262,12 +266,51 @@ export class RepositorySession {
     );
   }
 
-  /** 書き込み操作（SessionOperations）からも使うので公開する。 */
+  /**
+   * 対応表 #42（→ 必要なら #43）: コミット情報を読む。
+   *
+   * 読むだけでリポジトリの状態は変わらないので、スナップショット（status / branches）にも
+   * 世代番号にも触れない。SessionOperations ではなくこちら側に置いているのはそのため。
+   */
+  async getCommitIdentity(signal?: AbortSignal): Promise<UserIdentity> {
+    return this.track(['config', 'user.name'], () => readUserIdentity(this.context(signal)));
+  }
+
+  /**
+   * 対応表 #44: コミット情報を**このリポジトリの .git/config** に書く。
+   *
+   * 変えるキーだけを渡す（null は「変えない」）。`git config` は 1 回に 1 キーしか
+   * 設定できないので、両方変えれば git は 2 回動く（例外表に記載）。
+   * 値の検証は呼び出し側（main）が済ませている前提。
+   * 保存後に読み直さない——書いた値がそのままローカル値になるのは確実なので、
+   * プロセスを増やす意味が無い。
+   */
+  async setLocalCommitIdentity(
+    patch: { readonly name?: string; readonly email?: string },
+    signal?: AbortSignal,
+  ): Promise<void> {
+    for (const key of ['name', 'email'] as const) {
+      const value = patch[key];
+      if (value === undefined) continue;
+      await this.track(['config', 'user.' + key], () =>
+        setLocalUserIdentity(this.context(signal), key, value),
+      );
+    }
+  }
+
+  /**
+   * 書き込み操作（SessionOperations）からも使うので公開する。
+   *
+   * env は毎回 settings から作り直す。文脈はコマンドごとに組み立てられるので、
+   * **SSH 鍵の設定を変えたら次の git から効く**（アプリの再起動もセッションの張り直しも要らない）。
+   */
   context(signal?: AbortSignal): GitContext {
+    const env = gitSshEnv(this.#deps.settings());
     return {
       gitPath: this.#deps.gitPath,
       cwd: this.#root,
       tempDir: this.#deps.tempDir,
+      ...(Object.keys(env).length === 0 ? {} : { env }),
       ...(signal === undefined ? {} : { signal }),
     };
   }

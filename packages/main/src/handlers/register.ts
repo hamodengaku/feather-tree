@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import { CHANNELS } from '@feathertree/ipc';
 import { applyTitleBarOverlay } from '@feathertree/base-electron';
@@ -42,6 +42,35 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     pickDirectory: async () => {
       const window = getWindow();
       const options = { properties: ['openDirectory' as const] };
+      const result =
+        window === null
+          ? await dialog.showOpenDialog(options)
+          : await dialog.showOpenDialog(window, options);
+      const picked = result.filePaths[0];
+      return result.canceled || picked === undefined ? null : picked;
+    },
+    /*
+     * 設定画面のファイル選択（決定 7 の git.exe 指定、決定 13 追記の SSH 鍵指定）。
+     *
+     * renderer からはフィルタも初期フォルダも受け取らず、用途だけで main が決める
+     * （pickDirectory が openDirectory を固定しているのと同じ思想）。
+     * 秘密鍵は拡張子を持たない（id_ed25519）のでフィルタを掛けず、代わりに
+     * 隠しファイルを見せる——macOS / Linux の ~/.ssh は showHiddenFiles が無いと辿れない。
+     */
+    pickFile: async (kind) => {
+      const window = getWindow();
+      const options =
+        kind === 'git-executable'
+          ? {
+              title: 'git.exe を選択',
+              properties: ['openFile' as const],
+              filters: [{ name: 'git', extensions: ['exe'] }],
+            }
+          : {
+              title: 'SSH 秘密鍵を選択',
+              defaultPath: join(app.getPath('home'), '.ssh'),
+              properties: ['openFile' as const, 'showHiddenFiles' as const],
+            };
       const result =
         window === null
           ? await dialog.showOpenDialog(options)
@@ -99,6 +128,13 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.settingsGet, () => service.settingsGet());
   bind(CHANNELS.settingsUpdate, (patch: Parameters<Service['settingsUpdate']>[0]) =>
     service.settingsUpdate(patch),
+  );
+  bind(CHANNELS.dialogPickFile, (kind: Parameters<Service['dialogPickFile']>[0]) =>
+    service.dialogPickFile(kind),
+  );
+  bind(CHANNELS.gitConfigGetIdentity, (id: string) => service.gitConfigGetIdentity(id));
+  bind(CHANNELS.gitConfigSetIdentity, (id: string, req: Parameters<Service['gitConfigSetIdentity']>[1]) =>
+    service.gitConfigSetIdentity(id, req),
   );
 
   bind(CHANNELS.sessionPickAndCreate, () => service.sessionPickAndCreate());

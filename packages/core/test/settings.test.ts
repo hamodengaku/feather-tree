@@ -22,6 +22,41 @@ afterEach(async () => {
   }
 });
 
+describe('SSH 鍵のパス（決定 13 の追記）', () => {
+  it('既定は null（何も注入しない＝OS の機構に委譲）', () => {
+    expect(DEFAULT_SETTINGS.sshKeyPath).toBeNull();
+    expect(normalizeSettings({}).sshKeyPath).toBeNull();
+  });
+
+  it('絶対パスはそのまま保つ', () => {
+    const win = normalizeSettings({ sshKeyPath: 'C:\\Users\\me\\.ssh\\id_ed25519' });
+    expect(win.sshKeyPath).toBe('C:\\Users\\me\\.ssh\\id_ed25519');
+  });
+
+  it('相対パス・bare 名は null に落とす（spawn / ssh の引数になるため）', () => {
+    expect(normalizeSettings({ sshKeyPath: 'id_ed25519' }).sshKeyPath).toBeNull();
+    expect(normalizeSettings({ sshKeyPath: '.ssh/id_ed25519' }).sshKeyPath).toBeNull();
+  });
+
+  it('制御文字・空文字・文字列以外は null に落とす', () => {
+    expect(normalizeSettings({ sshKeyPath: 'C:\\a\nb' }).sshKeyPath).toBeNull();
+    expect(normalizeSettings({ sshKeyPath: '' }).sshKeyPath).toBeNull();
+    expect(normalizeSettings({ sshKeyPath: 42 }).sshKeyPath).toBeNull();
+  });
+
+  it('長すぎるパスは null に落とす', () => {
+    expect(normalizeSettings({ sshKeyPath: 'C:\\' + 'a'.repeat(5000) }).sshKeyPath).toBeNull();
+  });
+
+  /*
+   * gitPath は「絶対パス必須」にしない（既に相対パスを書いている利用者の設定を、
+   * 更新しただけで黙って自動探索へ戻さないため）。新しい値の検証は main 側が行う。
+   */
+  it('gitPath は相対パスでも保つ（後方互換。検証は settingsUpdate 側）', () => {
+    expect(normalizeSettings({ gitPath: 'git.exe' }).gitPath).toBe('git.exe');
+  });
+});
+
 describe('設定の正規化', () => {
   it('未知・不正な値は既定値で埋める（起動を止めない）', () => {
     const s = normalizeSettings({

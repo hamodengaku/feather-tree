@@ -5,6 +5,7 @@ export { locateGit } from './env/gitLocator.js';
 export type { GitLocation, GitLocatorDeps, GitSource } from './env/gitLocator.js';
 export { locateTerminal } from './env/terminalLocator.js';
 export type { TerminalLaunch, TerminalLocatorDeps } from './env/terminalLocator.js';
+export { buildSshCommand, gitSshEnv } from './env/sshCommand.js';
 export { checkGitVersion, MIN_GIT_MAJOR, MIN_GIT_MINOR } from './env/gitVersion.js';
 export type { GitVersionCheck } from './env/gitVersion.js';
 
@@ -21,6 +22,12 @@ export {
 } from './policy/destructiveActions.js';
 export type { ConfirmationSpec, DestructiveAction } from './policy/destructiveActions.js';
 export { OPEN_EXECUTABLE_CONFIRMATION, isExecutableFileName } from './policy/executableFile.js';
+export {
+  MAX_IDENTITY_LENGTH,
+  describeIdentityRejection,
+  validateIdentityValue,
+} from './policy/gitIdentity.js';
+export type { IdentityRejection } from './policy/gitIdentity.js';
 
 export { DEFAULT_SETTINGS, normalizeSettings } from './settings/schema.js';
 export { AppSettingsStore } from './settings/settingsStore.js';

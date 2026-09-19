@@ -1,7 +1,9 @@
 <script lang="ts">
   import { app } from '../lib/appState.svelte.js';
-  import { THEME_OPTIONS } from '../lib/theme.js';
-  import type { SettingsDto } from '@feathertree/ipc';
+  import OptionsEnvironmentTab from './OptionsEnvironmentTab.svelte';
+  import OptionsGitTab from './OptionsGitTab.svelte';
+  import OptionsSshTab from './OptionsSshTab.svelte';
+  import OptionsFeatherTreeTab from './OptionsFeatherTreeTab.svelte';
 
   interface Props {
     open: boolean;
@@ -10,101 +12,113 @@
 
   const { open, onclose }: Props = $props();
 
-  function onThemeChange(e: Event): void {
-    void app.setTheme((e.currentTarget as HTMLSelectElement).value as SettingsDto['theme']);
-  }
+  type OptionsTab = 'env' | 'git' | 'ssh' | 'app';
 
-  function onRefocusModeChange(e: Event): void {
-    void app.setRefocusUpdateMode(
-      (e.currentTarget as HTMLSelectElement).value as SettingsDto['refocusUpdateMode'],
-    );
+  const TABS: readonly { id: OptionsTab; label: string }[] = [
+    { id: 'env', label: '環境' },
+    { id: 'git', label: 'Git' },
+    { id: 'ssh', label: 'ssh通信' },
+    { id: 'app', label: 'FeatherTree' },
+  ];
+
+  /*
+   * 選択中のタブ。設定には保存しない。
+   * {#if open} が包むのはマークアップだけなので、閉じて開き直すと前回のタブに戻る
+   * （設定を続けて直す使い方が多いので、毎回「環境」に戻るより手数が少ない）。
+   */
+  let tab = $state<OptionsTab>('env');
+
+  let tabButtons = $state<HTMLButtonElement[]>([]);
+
+  /** 押されたキーが移動先の位置を指すなら、その位置。関係ないキーなら null。 */
+  function targetIndex(key: string, index: number): number | null {
+    const last = TABS.length - 1;
+    if (key === 'ArrowRight') return index === last ? 0 : index + 1;
+    if (key === 'ArrowLeft') return index === 0 ? last : index - 1;
+    if (key === 'Home') return 0;
+    if (key === 'End') return last;
+    return null;
   }
 
   /*
-   * 更新確認の結果文言（決定 29）。
-   * 確認中は結果欄を空にする（「今すぐ確認」ボタン側の文字で分かるので二重に出さない）。
+   * tablist の作法（roving tabindex）。選択中のタブだけが Tab キーの止まり場になり、
+   * 左右キーでタブを移る。ダイアログはキーボードの逃げ場が無いので、
+   * CommitDetailPane のタブ段より一段丁寧にしてある。
+   *
+   * 待ち受けるのは tablist ではなくタブ自身。焦点は必ずタブの上にあるので用は足り、
+   * 「interactive role を持つ要素には tabindex が要る」を器側で背負わずに済む。
    */
-  const updateResultText = $derived.by((): string => {
-    if (app.checkingUpdate) return '';
-    if (app.updateState.outcome === 'new-version') {
-      return `新しいバージョン ${app.updateState.version ?? ''} があります`;
-    }
-    if (app.updateState.outcome === 'up-to-date') return '最新です';
-    if (app.updateState.outcome === 'failed') return '確認できませんでした';
-    return ''; // 'unknown'（まだ 1 度も確認していない）
-  });
+  function onTabKeydown(e: KeyboardEvent, index: number): void {
+    const next = targetIndex(e.key, index);
+    if (next === null) return;
+    const target = TABS[next];
+    if (target === undefined) return;
+
+    e.preventDefault();
+    tab = target.id;
+    tabButtons[next]?.focus();
+  }
 </script>
 
 <!--
   「不透明な板」= このダイアログ本体（.dialog、background: var(--app-bg-surface) で不透明）。
   半透明なのは背後の .backdrop だけ。ConfirmDialog.svelte と同じ作り。
-  各設定は選択した時点で即時反映する（保存ボタンは無い。既存の setTheme と同じUX）。
+
+  設定は選んだ時点で即時反映する（保存ボタンは無い）。
+  **唯一の例外が Git タブのコミット情報**で、あれはユーザーの .git/config を書き換えるため
+  明示の保存ボタンを置いてある（決定 13 の追記、「やらないこと」の明示ボタン例外）。
 -->
 {#if open}
   <div class="backdrop" role="presentation" onclick={onclose}></div>
   <div class="dialog" role="dialog" aria-labelledby="options-title">
     <h2 id="options-title">設定</h2>
 
-    <label class="field">
-      <span>テーマ</span>
-      <select value={app.settings?.theme} onchange={onThemeChange}>
-        {#each THEME_OPTIONS as option (option.value)}
-          <option value={option.value}>{option.label}</option>
-        {/each}
-      </select>
-    </label>
-
-    <label class="field">
-      <span>ウィンドウ復帰時の更新</span>
-      <select value={app.settings?.refocusUpdateMode} onchange={onRefocusModeChange}>
-        <option value="auto">自動更新</option>
-        <option value="modal">確認する</option>
-        <option value="none">更新しない</option>
-      </select>
-    </label>
+    <div class="tabs" role="tablist" aria-label="設定の分類">
+      {#each TABS as t, i (t.id)}
+        <button
+          bind:this={tabButtons[i]}
+          role="tab"
+          id={'options-tab-' + t.id}
+          aria-controls={'options-panel-' + t.id}
+          aria-selected={tab === t.id}
+          tabindex={tab === t.id ? 0 : -1}
+          class:active={tab === t.id}
+          title={t.id === 'app' && app.hasUpdateAvailable ? '新しいバージョンがあります' : undefined}
+          onclick={() => (tab = t.id)}
+          onkeydown={(e) => onTabKeydown(e, i)}
+        >
+          {t.label}
+          <!--
+            更新の通知（決定 29）が FeatherTree タブの奥に入るので、縦帯のバッジから
+            ここまで辿れるようにする。ActivityBar のバッジと同じく装飾に留め、
+            確定情報は title とタブの中に置く。
+          -->
+          {#if t.id === 'app' && app.hasUpdateAvailable}
+            <span class="badge" aria-hidden="true"></span>
+          {/if}
+        </button>
+      {/each}
+    </div>
 
     <!--
-      チェックボックスは label ごと押せるように input を中に入れる（for/id を振らない）。
-      即時反映なので、押した瞬間にタブ段の見え方が変わる。
+      パネルは高さ固定の .dialog の中で唯一伸び縮みする要素。
+      tabindex="0" はキーボードだけで中身をスクロールできるようにするため。
     -->
-    <label class="check">
-      <input
-        type="checkbox"
-        checked={app.settings?.tabShowCurrentInfo ?? true}
-        onchange={(e) => void app.setTabShowCurrentInfo(e.currentTarget.checked)}
-      />
-      <span>レポジトリタブに現在情報を記載</span>
-    </label>
-    <p class="note">アクティブなタブに、ブランチ名と今のコミットの件名を並べます。</p>
-
-    <!-- 更新（決定 29）。自動確認はしないが、新版の存在は通知する。ダウンロード・インストールはしない。 -->
-    <div class="section">
-      <h3 class="section-title">更新</h3>
-      <p class="note version">現在のバージョン: {app.appInfo?.appVersion ?? '不明'}</p>
-
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={app.settings?.checkForUpdates ?? true}
-          onchange={(e) => void app.setCheckForUpdates(e.currentTarget.checked)}
-        />
-        <span>起動時に自動で確認する（24 時間に 1 回）</span>
-      </label>
-
-      <div class="update-row">
-        <button onclick={() => void app.checkForUpdatesNow()} disabled={app.checkingUpdate}>
-          {app.checkingUpdate ? '確認中…' : '今すぐ確認'}
-        </button>
-        {#if updateResultText.length > 0}
-          <span class="update-result">{updateResultText}</span>
-        {/if}
-      </div>
-
-      {#if app.hasUpdateAvailable}
-        <div class="update-row">
-          <button onclick={() => void app.openUpdateReleasePage()}>ダウンロードページを開く</button>
-          <button onclick={() => void app.dismissUpdate()}>この版は通知しない</button>
-        </div>
+    <div
+      class="panel"
+      role="tabpanel"
+      id={'options-panel-' + tab}
+      aria-labelledby={'options-tab-' + tab}
+      tabindex="0"
+    >
+      {#if tab === 'env'}
+        <OptionsEnvironmentTab />
+      {:else if tab === 'git'}
+        <OptionsGitTab />
+      {:else if tab === 'ssh'}
+        <OptionsSshTab />
+      {:else}
+        <OptionsFeatherTreeTab />
       {/if}
     </div>
 
@@ -122,13 +136,20 @@
     background: rgb(0 0 0 / 45%);
   }
 
+  /*
+    高さは max-height ではなく height で固定する。
+    タブごとに中身の量が違うので、伸縮を許すと切り替えるたびに枠が跳ねて読みにくい。
+  */
   .dialog {
     position: fixed;
     z-index: var(--app-layer-modal);
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: min(360px, 90vw);
+    display: flex;
+    flex-direction: column;
+    width: min(720px, 92vw);
+    height: min(760px, 88vh);
     padding: 18px 20px;
     background: var(--app-bg-surface);
     border: 1px solid var(--app-border-strong);
@@ -137,74 +158,64 @@
   }
 
   h2 {
-    margin: 0 0 14px;
+    flex: 0 0 auto;
+    margin: 0 0 12px;
     font-size: 15px;
   }
 
-  .field {
+  /* タブ段は中央寄せ。CommitDetailPane のタブ段と同じ見た目にする。 */
+  .tabs {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-bottom: 14px;
-    color: var(--app-text-secondary);
-  }
-
-  /* チェックボックスは横並び（.field の縦並びとは別物）。 */
-  .check {
-    display: flex;
+    justify-content: center;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 4px;
-    color: var(--app-text-secondary);
-  }
-
-  .check input {
+    gap: 2px;
     flex: 0 0 auto;
-    margin: 0;
+    border-bottom: 1px solid var(--app-border-subtle);
   }
 
-  /* 設定の効きを 1 行で補う。項目名より一段引いた見た目にする。 */
-  .note {
-    margin: 0 0 14px 22px;
-    color: var(--app-text-muted);
-    font-size: var(--app-font-size-mono);
-  }
-
-  /* 節の区切り（更新）。上に区切り線を敷いて、テーマ系の設定と混ざらないようにする。 */
-  .section {
-    margin-top: 4px;
-    padding-top: 12px;
-    border-top: 1px solid var(--app-border-subtle);
-  }
-
-  .section-title {
-    margin: 0 0 10px;
-    font-size: var(--app-font-size-ui);
-    font-weight: 600;
+  .tabs button {
+    background: none;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: var(--app-metric-radius) var(--app-metric-radius) 0 0;
+    padding: 4px 18px;
     color: var(--app-text-secondary);
   }
 
-  /* バージョン表示は note と同じ引き方だが、チェックボックスの上に来るので左マージンは付けない。 */
-  .note.version {
-    margin-left: 0;
+  .tabs button:hover:not(.active) {
+    background: var(--app-bg-hover);
   }
 
-  .update-row {
-    display: flex;
-    align-items: center;
-    gap: var(--app-metric-gap);
-    margin: 8px 0;
+  .tabs button.active {
+    background: var(--app-bg-app);
+    border-color: var(--app-border-subtle);
+    color: var(--app-text-primary);
+    font-weight: 600;
   }
 
-  .update-result {
-    color: var(--app-text-muted);
-    font-size: var(--app-font-size-mono);
+  .badge {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 5px;
+    vertical-align: middle;
+    border-radius: 50%;
+    background: var(--app-accent);
+  }
+
+  /* min-height: 0 が無いと flex の子が縮まず、はみ出してもスクロールバーが出ない。 */
+  .panel {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px 2px 0;
   }
 
   .actions {
     display: flex;
+    flex: 0 0 auto;
     justify-content: flex-end;
     gap: var(--app-metric-gap);
-    margin-top: 6px;
+    padding-top: 12px;
   }
 </style>

@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { WRITE_PREFIX } from '../execution/gitEnvironment.js';
 import { runGitText } from '../execution/spawnGit.js';
@@ -25,7 +26,7 @@ import type { GitContext } from './context.js';
  */
 export async function fetchRemote(ctx: GitContext, remote: string): Promise<void> {
   const { exit } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'fetch', '--progress', '--', remote] },
+    commandFor(ctx, [...WRITE_PREFIX, 'fetch', '--progress', '--', remote]),
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['fetch'], exit.code, exit.stderr);
@@ -39,7 +40,7 @@ export async function fetchRemote(ctx: GitContext, remote: string): Promise<void
  */
 export async function pullCurrent(ctx: GitContext): Promise<void> {
   const { exit } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'pull', '--progress'] },
+    commandFor(ctx, [...WRITE_PREFIX, 'pull', '--progress']),
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['pull'], exit.code, exit.stderr);
@@ -66,6 +67,6 @@ export async function pushBranch(
     ? [...WRITE_PREFIX, 'push', '--progress', '--set-upstream', '--', remote, branch]
     : [...WRITE_PREFIX, 'push', '--progress', '--', remote, branch];
 
-  const { exit } = await runGitText({ gitPath: ctx.gitPath, cwd: ctx.cwd, args }, ctx.signal);
+  const { exit } = await runGitText(commandFor(ctx, args), ctx.signal);
   if (exit.code !== 0) throw new GitCommandError(['push'], exit.code, exit.stderr);
 }

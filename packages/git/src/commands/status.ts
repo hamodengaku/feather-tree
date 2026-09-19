@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { READ_PREFIX } from '../execution/gitEnvironment.js';
 import { STATUS_TIMEOUT_MS, runGitStream } from '../execution/spawnGit.js';
@@ -36,7 +37,7 @@ export async function getStatus(ctx: GitContext, options: StatusOptions = {}): P
   const { exit, result } = await runGitStream(
     // 巨大リポジトリ（決定 10）でも誤爆しない余裕を取った上で、
     // 何かに引っ掛かって返らなくなったときは必ず打ち切る。
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args, timeoutMs: STATUS_TIMEOUT_MS },
+    commandFor(ctx, args, { timeoutMs: STATUS_TIMEOUT_MS }),
     parser,
     ctx.signal,
   );

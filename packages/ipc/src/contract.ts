@@ -22,6 +22,9 @@ export const CHANNELS = {
   appGetEnvironment: 'app:getEnvironment',
   settingsGet: 'settings:get',
   settingsUpdate: 'settings:update',
+  dialogPickFile: 'dialog:pickFile',
+  gitConfigGetIdentity: 'gitConfig:getIdentity',
+  gitConfigSetIdentity: 'gitConfig:setIdentity',
 
   sessionPickAndCreate: 'session:pickAndCreate',
   sessionLoad: 'session:load',
@@ -126,8 +129,50 @@ export interface EnvironmentDto {
   readonly warning: string | null;
 }
 
+/**
+ * ファイル選択ダイアログの用途。
+ *
+ * renderer は「何を選ばせたいか」だけを送り、フィルタも初期フォルダも main が決める
+ * （clonePickDirectory が openDirectory を main 側で固定しているのと同じ思想）。
+ */
+export type PickFileKindDto = 'git-executable' | 'ssh-private-key';
+
+/* ------------------------------------------------ コミット情報（対応表 #42〜#44） */
+
+/**
+ * その値がどこから来ているか。
+ * 'inherited' は「このリポジトリには無く、全体設定（global / system）の値が使われている」。
+ * 設定画面はこのときだけ警告を出す。
+ */
+export type GitIdentityScopeDto = 'local' | 'inherited' | 'unset';
+
+export interface GitIdentityFieldDto {
+  readonly value: string | null;
+  readonly scope: GitIdentityScopeDto;
+}
+
+export interface GitIdentityDto {
+  readonly name: GitIdentityFieldDto;
+  readonly email: GitIdentityFieldDto;
+}
+
+/**
+ * 保存する値。**null は「このキーは変更しない」**（消す指示ではない）。
+ * 空文字は main が拒否する——ローカルの設定を消すと全体設定の値に黙って戻るため、
+ * 削除はアプリからは行わない（決定 13 の追記）。
+ */
+export interface GitIdentityRequest {
+  readonly name: string | null;
+  readonly email: string | null;
+}
+
 export interface SettingsDto {
   readonly gitPath: string | null;
+  /**
+   * SSH 秘密鍵のパス（決定 13 の追記）。このアプリが実行する git にだけ
+   * GIT_SSH_COMMAND として渡る。null なら何も注入しない。
+   */
+  readonly sshKeyPath: string | null;
   readonly theme: 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
   readonly noRenames: boolean;
   readonly untrackedFiles: 'normal' | 'all';
@@ -548,6 +593,25 @@ export interface FeatherTreeBridge {
 
   settingsGet(): Promise<Result<SettingsDto>>;
   settingsUpdate(patch: Partial<SettingsDto>): Promise<Result<SettingsDto>>;
+  /**
+   * 設定画面のファイル選択（git.exe / SSH 秘密鍵）。キャンセルなら null。git は動かない。
+   * 選んだだけでは保存しない——保存は settingsUpdate で行う。
+   */
+  dialogPickFile(kind: PickFileKindDto): Promise<Result<string | null>>;
+
+  /**
+   * 対応表 #42（→ 必要なら #43）: そのリポジトリのコミット情報を読む。
+   * ローカルに無い項目は全体設定の値と 'inherited' が返る（設定画面が警告を出す）。
+   */
+  gitConfigGetIdentity(id: string): Promise<Result<GitIdentityDto>>;
+  /**
+   * 対応表 #44: コミット情報を**そのリポジトリの .git/config** に保存する。
+   * 変えるキーだけを送る（null は変更しない）。global / system は書き換えない。
+   *
+   * 保存後に読み直さないので応答は null。書いたキーがローカル値になるのは確実なので、
+   * renderer は手元の状態を進めればよい（git のプロセスを 1 本増やす意味が無い）。
+   */
+  gitConfigSetIdentity(id: string, req: GitIdentityRequest): Promise<Result<null>>;
 
   /**
    * リポジトリを開く 2 段階のうちの 1 段目。

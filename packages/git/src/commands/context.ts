@@ -9,5 +9,11 @@ export interface GitContext {
   readonly cwd: string;
   /** 一時ファイルの置き場。os.tmpdir() を直接使わず注入する。 */
   readonly tempDir: string;
+  /**
+   * この文脈で実行する git すべてに足す環境変数（設定 sshKeyPath 由来の
+   * `GIT_SSH_COMMAND` 等）。**呼び出し側が決めた値だけ**がここに入る。
+   * 共通の固定値（`GIT_TERMINAL_PROMPT` 等）は上書きできない（buildGitEnv が最後に被せる）。
+   */
+  readonly env?: Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
 }

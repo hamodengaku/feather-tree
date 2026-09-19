@@ -18,7 +18,9 @@ import {
   type CommitRequest,
   type FeatherTreeBridge,
   type FocusRefreshPromptEvent,
+  type GitIdentityRequest,
   type OperationTargetDto,
+  type PickFileKindDto,
   type ProgressEvent,
   type PushRequest,
   type RefreshScope,
@@ -40,6 +42,10 @@ const bridge: FeatherTreeBridge = {
 
   settingsGet: () => ipcRenderer.invoke(CHANNELS.settingsGet),
   settingsUpdate: (patch: Partial<SettingsDto>) => ipcRenderer.invoke(CHANNELS.settingsUpdate, patch),
+  dialogPickFile: (kind: PickFileKindDto) => ipcRenderer.invoke(CHANNELS.dialogPickFile, kind),
+  gitConfigGetIdentity: (id: string) => ipcRenderer.invoke(CHANNELS.gitConfigGetIdentity, id),
+  gitConfigSetIdentity: (id: string, req: GitIdentityRequest) =>
+    ipcRenderer.invoke(CHANNELS.gitConfigSetIdentity, id, req),
 
   sessionPickAndCreate: () => ipcRenderer.invoke(CHANNELS.sessionPickAndCreate),
   sessionLoad: (id: string) => ipcRenderer.invoke(CHANNELS.sessionLoad, id),

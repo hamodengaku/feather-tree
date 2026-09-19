@@ -29,6 +29,8 @@ describe('Service (UI が通る経路の統合テスト)', () => {
   let commandLog: CommandLog;
   let settings: AppSettings;
   let pickResult: string | null;
+  /** ファイル選択ダイアログの答え（設定画面の git.exe / SSH 鍵）。 */
+  let pickFileResult: string | null;
   let opened: string[] = [];
   let shownInFolder: string[] = [];
   let openPathFailure = '';
@@ -50,6 +52,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     commandLog = new CommandLog();
     settings = DEFAULT_SETTINGS;
     pickResult = dir;
+    pickFileResult = null;
     opened = [];
     shownInFolder = [];
     openPathFailure = '';
@@ -85,6 +88,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       sessions: () => sessions,
       commandLog: () => commandLog,
       pickDirectory: () => Promise.resolve(pickResult),
+      pickFile: () => Promise.resolve(pickFileResult),
       notifyCloneProgress: (event) => {
         progress.push(event);
         onProgress(event);
@@ -644,6 +648,94 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     expect(page.entries.length).toBeLessThanOrEqual(1000);
   });
 
+  /*
+   * コミット情報（対応表 #42〜#44）。
+   *
+   * 値の検証は **main が実質の唯一の防壁**（git config の値は位置引数で、
+   * fetch / push のような `--` による守りが効かない）。拒否したときに
+   * **git を 1 本も起動していない**ことまで確かめる。
+   */
+  describe('コミット情報 (対応表 #42〜#44)', () => {
+    it('ローカルの設定を読む（fixture は local に設定済み）', async () => {
+      const id = await openDemo();
+      const identity = await service.gitConfigGetIdentity(id);
+      expect(identity.name).toEqual({ value: 'T', scope: 'local' });
+      expect(identity.email).toEqual({ value: 't@example.invalid', scope: 'local' });
+    });
+
+    it('保存するとローカルに書かれ、読み直すと反映されている', async () => {
+      const id = await openDemo();
+      await service.gitConfigSetIdentity(id, { name: '新しい名前', email: 'new@example.invalid' });
+
+      const identity = await service.gitConfigGetIdentity(id);
+      expect(identity.name).toEqual({ value: '新しい名前', scope: 'local' });
+      expect(identity.email).toEqual({ value: 'new@example.invalid', scope: 'local' });
+    });
+
+    it('変えるキーだけを送れる（null は変更しない）', async () => {
+      const id = await openDemo();
+      await service.gitConfigSetIdentity(id, { name: '名前だけ', email: null });
+
+      const identity = await service.gitConfigGetIdentity(id);
+      expect(identity.name.value).toBe('名前だけ');
+      expect(identity.email.value).toBe('t@example.invalid');
+    });
+
+    it('前後の空白は落として保存する', async () => {
+      const id = await openDemo();
+      await service.gitConfigSetIdentity(id, { name: '  詰めた  ', email: null });
+      expect((await service.gitConfigGetIdentity(id)).name.value).toBe('詰めた');
+    });
+
+    it('空・先頭が -・制御文字・長すぎる値は拒否し、git を 1 本も起動しない', async () => {
+      const id = await openDemo();
+
+      for (const bad of ['', '   ', '-weird', 'a\nb', 'x'.repeat(256)]) {
+        const before = service.commandLogRecent(500).length;
+        await expect(service.gitConfigSetIdentity(id, { name: bad, email: null })).rejects.toThrow();
+        expect(service.commandLogRecent(500).length).toBe(before);
+      }
+
+      // 元の値が残っていること
+      expect((await service.gitConfigGetIdentity(id)).name.value).toBe('T');
+    });
+
+    it('タブが無ければ no-session（git を動かさない）', async () => {
+      await expect(service.gitConfigGetIdentity('no-such-id')).rejects.toThrow();
+      await expect(
+        service.gitConfigSetIdentity('no-such-id', { name: 'x', email: null }),
+      ).rejects.toThrow();
+    });
+
+    it('読み書きが実行ログに残る（透明性の担保）', async () => {
+      const id = await openDemo();
+      await service.gitConfigGetIdentity(id);
+      await service.gitConfigSetIdentity(id, { name: '記録される', email: null });
+
+      const args = service.commandLogRecent(50).map((e) => e.args.join(' '));
+      expect(args).toContain('config user.name');
+    });
+  });
+
+  describe('設定のパス検証', () => {
+    it('絶対パスでない git.exe / SSH 鍵は拒否する', async () => {
+      await expect(service.settingsUpdate({ gitPath: 'git.exe' })).rejects.toThrow();
+      await expect(service.settingsUpdate({ sshKeyPath: '.ssh/id_ed25519' })).rejects.toThrow();
+    });
+
+    it('null（自動探索に戻す／鍵を使わない）は通す', async () => {
+      await expect(service.settingsUpdate({ gitPath: null })).resolves.toBeDefined();
+      await expect(service.settingsUpdate({ sshKeyPath: null })).resolves.toBeDefined();
+    });
+
+    it('ファイル選択は用途をそのまま deps へ渡す', async () => {
+      pickFileResult = 'C:/Users/me/.ssh/id_ed25519';
+      expect(await service.dialogPickFile('ssh-private-key')).toBe('C:/Users/me/.ssh/id_ed25519');
+      pickFileResult = null;
+      expect(await service.dialogPickFile('git-executable')).toBeNull();
+    });
+  });
+
   it('実行ログに操作が記録される（透明性の担保）', async () => {
     const id = await openDemo();
     await service.stage(id, { kind: 'all' });
@@ -814,6 +906,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       sessions: () => null,
       commandLog: () => commandLog,
       pickDirectory: () => Promise.resolve(null),
+      pickFile: () => Promise.resolve(null),
       notifyCloneProgress: () => undefined,
       openPath: () => Promise.resolve(''),
       showItemInFolder: () => undefined,

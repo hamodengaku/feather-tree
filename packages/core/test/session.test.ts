@@ -478,6 +478,31 @@ describe('RepositorySession / SessionManager', () => {
     expect(entry?.stderr).not.toContain('TOKEN');
     expect(entry?.stderr).toContain('https://***@host/repo.git/');
   });
+
+  /*
+   * SSH 鍵の設定（決定 13 の追記）。
+   *
+   * 文脈はコマンドごとに組み立て直されるので、設定を変えたら**次の git から効く**。
+   * セッションを張り直したりアプリを再起動したりする必要は無い。
+   */
+  describe('SSH 鍵の注入', () => {
+    it('鍵が未設定なら env を持たない（ユーザーの ssh 設定に任せる）', async () => {
+      const session = await manager.create(dir);
+      expect(session.context().env).toBeUndefined();
+    });
+
+    it('鍵を設定すると GIT_SSH_COMMAND が文脈に載り、変更が次の実行から効く', async () => {
+      const session = await manager.create(dir);
+
+      settings = { ...DEFAULT_SETTINGS, sshKeyPath: 'C:\\keys\\id_ed25519' };
+      expect(session.context().env).toEqual({
+        GIT_SSH_COMMAND: "ssh -i 'C:/keys/id_ed25519' -o IdentitiesOnly=yes",
+      });
+
+      settings = DEFAULT_SETTINGS;
+      expect(session.context().env).toBeUndefined();
+    });
+  });
 });
 
 describe('補助関数', () => {

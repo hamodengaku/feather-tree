@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { READ_PREFIX, WRITE_PREFIX } from '../execution/gitEnvironment.js';
 import { REF_LIST_TIMEOUT_MS, runGitText } from '../execution/spawnGit.js';
@@ -18,13 +19,12 @@ const FORMAT = [
 /** 対応表 #3: ローカル・リモートのブランチ一覧。 */
 export async function listBranches(ctx: GitContext): Promise<BranchRef[]> {
   const { exit, stdout } = await runGitText(
-    {
-      gitPath: ctx.gitPath,
-      cwd: ctx.cwd,
-      args: [...READ_PREFIX, 'for-each-ref', `--format=${FORMAT}`, 'refs/heads', 'refs/remotes'],
+    commandFor(
+      ctx,
+      [...READ_PREFIX, 'for-each-ref', `--format=${FORMAT}`, 'refs/heads', 'refs/remotes'],
       // 所要時間は ref 数だけで決まる。数千 ref でも数秒なので、60 秒に達したら異常。
-      timeoutMs: REF_LIST_TIMEOUT_MS,
-    },
+      { timeoutMs: REF_LIST_TIMEOUT_MS },
+    ),
     ctx.signal,
   );
 
@@ -50,7 +50,7 @@ export async function listBranches(ctx: GitContext): Promise<BranchRef[]> {
  */
 export async function switchBranch(ctx: GitContext, branchName: string): Promise<void> {
   const { exit } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'switch', '--', branchName] },
+    commandFor(ctx, [...WRITE_PREFIX, 'switch', '--', branchName]),
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['switch'], exit.code, exit.stderr);
@@ -67,7 +67,7 @@ export async function switchBranch(ctx: GitContext, branchName: string): Promise
  */
 export async function createBranch(ctx: GitContext, name: string, startPoint: string): Promise<void> {
   const { exit } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'switch', '-c', name, '--', startPoint] },
+    commandFor(ctx, [...WRITE_PREFIX, 'switch', '-c', name, '--', startPoint]),
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['switch', '-c'], exit.code, exit.stderr);
@@ -85,7 +85,7 @@ export async function createBranch(ctx: GitContext, name: string, startPoint: st
  */
 export async function mergeBranch(ctx: GitContext, branchName: string): Promise<void> {
   const { exit } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'merge', '--', branchName] },
+    commandFor(ctx, [...WRITE_PREFIX, 'merge', '--', branchName]),
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['merge'], exit.code, exit.stderr);

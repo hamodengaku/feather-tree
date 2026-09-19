@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCancelledError, GitCommandError } from '../execution/errors.js';
 import { DIFF_EXTRA, READ_PREFIX } from '../execution/gitEnvironment.js';
 import { DIFF_TIMEOUT_MS, runGitText } from '../execution/spawnGit.js';
@@ -36,7 +37,7 @@ export async function getFileDiff(
   const { exit, stdout } = await runGitText(
     // 1 ファイル分の diff なので本来は一瞬。LFS の smudge フィルタが絡むと
     // 孫プロセス待ちで返らなくなることがあるため上限を置く。
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args, timeoutMs: DIFF_TIMEOUT_MS },
+    commandFor(ctx, args, { timeoutMs: DIFF_TIMEOUT_MS }),
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['diff'], exit.code, exit.stderr);

@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { WRITE_PREFIX } from '../execution/gitEnvironment.js';
 import { withPatchFile } from '../execution/pathspecFile.js';
@@ -39,7 +40,7 @@ export async function applyHunks(
 
   await withPatchFile(ctx.tempDir, patch, async (file) => {
     const { exit } = await runGitText(
-      { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...args, file] },
+      commandFor(ctx, [...args, file]),
       ctx.signal,
     );
     if (exit.code !== 0) throw new GitCommandError(['apply', '--cached'], exit.code, exit.stderr);

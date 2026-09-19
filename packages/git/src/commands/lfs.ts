@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { WRITE_PREFIX } from '../execution/gitEnvironment.js';
 import { runGitText, runGitWithProgress, type GitExit } from '../execution/spawnGit.js';
@@ -23,7 +24,7 @@ export interface LfsVersion {
  */
 export async function getLfsVersion(ctx: GitContext): Promise<LfsVersion> {
   const { exit, stdout } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'lfs', 'version'] },
+    commandFor(ctx, [...WRITE_PREFIX, 'lfs', 'version']),
     ctx.signal,
   );
   const line = stdout.trim().split(/\r?\n/)[0] ?? '';
@@ -38,12 +39,7 @@ export async function getLfsVersion(ctx: GitContext): Promise<LfsVersion> {
  */
 export async function lfsPull(ctx: GitContext, onProgress: (line: string) => void): Promise<GitExit> {
   const exit = await runGitWithProgress(
-    {
-      gitPath: ctx.gitPath,
-      cwd: ctx.cwd,
-      args: [...WRITE_PREFIX, 'lfs', 'pull'],
-      env: { GIT_LFS_FORCE_PROGRESS: '1' },
-    },
+    commandFor(ctx, [...WRITE_PREFIX, 'lfs', 'pull'], { env: { GIT_LFS_FORCE_PROGRESS: '1' } }),
     onProgress,
     ctx.signal,
   );
