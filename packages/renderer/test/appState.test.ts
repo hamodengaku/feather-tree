@@ -493,24 +493,54 @@ describe('更新（リロード）の対象', () => {
 
 describe('ブランチ操作', () => {
   it('ブランチ切替は確認なしで即実行し、一覧を更新する', async () => {
-    const { app, bridge } = await boot();
+    const { app, bridge } = await boot((b) => {
+      b.branches = [branch('main', { isHead: true }), branch('feature')];
+    });
     const pagesBefore = bridge.countOf('statusGetSummary');
+    const branchesBefore = bridge.countOf('branchList');
 
     await app.switchBranch('feature');
 
     expect(bridge.lastArgsOf('branchSwitch')).toEqual(['s1', 'feature']);
     expect(bridge.countOf('statusGetSummary')).toBeGreaterThan(pagesBefore);
+    // ローカル同士の切替では顔ぶれが変わらないのでブランチ一覧は読み直さない
+    expect(bridge.countOf('branchList')).toBe(branchesBefore);
     expect(app.error).toBeNull();
   });
 
-  it('ブランチ作成に成功するとダイアログを閉じる', async () => {
-    const { app, bridge } = await boot();
-    app.openCreateBranch();
+  it('リモートブランチへの切替はブランチ一覧も読み直す（新しいローカル枝が増えるため）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.branches = [branch('main', { isHead: true })];
+    });
+    const branchesBefore = bridge.countOf('branchList');
+    // main が #45 を打って一覧を取り直した状態（新しいローカル枝が載っている）
+    bridge.branches = [
+      branch('main'),
+      branch('feature/x', { isHead: true, upstream: 'origin/feature/x' }),
+    ];
 
+    await app.switchBranch('origin/feature/x');
+
+    expect(bridge.lastArgsOf('branchSwitch')).toEqual(['s1', 'origin/feature/x']);
+    expect(bridge.countOf('branchList')).toBeGreaterThan(branchesBefore);
+    expect(app.branches.map((b) => b.shortName)).toContain('feature/x');
+  });
+
+  it('ブランチ作成に成功するとダイアログを閉じ、一覧に作った枝が出る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.branches = [branch('main', { isHead: true })];
+    });
+    const branchesBefore = bridge.countOf('branchList');
+    // main は #14 のあとに #3 を済ませている状態
+    bridge.branches = [branch('main'), branch('obana/topic', { isHead: true })];
+
+    app.openCreateBranch();
     await app.createBranch('obana/topic', 'main', () => app.closeCreateBranch());
 
     expect(bridge.lastArgsOf('branchCreate')).toEqual(['s1', { name: 'obana/topic', startPoint: 'main' }]);
     expect(app.createBranchOpen).toBe(false);
+    expect(bridge.countOf('branchList')).toBeGreaterThan(branchesBefore);
+    expect(app.branches.map((b) => b.shortName)).toContain('obana/topic');
   });
 
   it('ブランチ作成が失敗したらダイアログを閉じずエラーを保持する', async () => {
@@ -1134,10 +1164,23 @@ describe('ブランチのマージ (対応表 #35)', () => {
 
     expect(app.pendingConfirmation?.confirmation.action).toBe('merge-branch');
 
+    const branchesBefore = bridge.countOf('branchList');
     await app.acceptConfirmation();
 
     expect(bridge.confirmedCalls).toEqual(['branchMerge']);
     expect(app.pendingConfirmation).toBeNull();
+    // main は #35 のあとに #3 を打っているので、その結果を読み直す（ahead/behind が変わる）
+    expect(bridge.countOf('branchList')).toBe(branchesBefore + 1);
+  });
+
+  it('確認が不要な構成でもブランチ一覧を取り直す', async () => {
+    const { app, bridge } = await boot();
+    const branchesBefore = bridge.countOf('branchList');
+
+    await app.mergeBranch('topic');
+
+    expect(app.pendingConfirmation).toBeNull();
+    expect(bridge.countOf('branchList')).toBe(branchesBefore + 1);
   });
 
   it('キャンセルすると再送しない', async () => {

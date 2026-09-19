@@ -1309,9 +1309,17 @@ export class AppState {
     );
   }
 
-  /** ブランチのダブルクリックによる切替。確認不要（決定: ブランチ移動は無確認）。 */
+  /**
+   * ブランチのダブルクリックによる切替。確認不要（決定: ブランチ移動は無確認）。
+   *
+   * リモートブランチを渡すと git の DWIM がローカル追跡ブランチを作って切り替える。
+   * そのときだけ main がブランチ一覧も取り直すので（`branchesRefreshed`）、
+   * こちらもブランチペインを読み直して新しいローカル枝を出す。
+   */
   switchBranch(branchName: string): Promise<void> {
-    return this.#operate(() => this.#ft.branchSwitch(this.#id(), branchName));
+    return this.#operate(() => this.#ft.branchSwitch(this.#id(), branchName), undefined, undefined, {
+      branches: (result) => result.branchesRefreshed,
+    });
   }
 
   openCreateBranch(): void {
@@ -1326,23 +1334,36 @@ export class AppState {
   /**
    * ブランチの新規作成(起点から分岐して切替まで)。確認不要・push はしない。
    * 成功時だけ onSuccess を呼ぶ(呼び出し元はこれでダイアログを閉じるかどうかを判断する)。
+   *
+   * ローカル枝が 1 本増えるので一覧も読み直す（main は #14 のあとに #3 を済ませている。
+   * 読み直さないと、作った枝が「更新」を押すまでブランチペインに出てこない）。
    */
   createBranch(name: string, startPoint: string, onSuccess?: () => void): Promise<void> {
     return this.#operate(
       () => this.#ft.branchCreate(this.#id(), { name, startPoint }),
       undefined,
       onSuccess,
+      { branches: true },
     );
   }
 
   /**
    * 現在のブランチへ branchName を取り込む。確認が必要（決定 16）。
    * 確認の判定は main が行うので、ここは needs-confirmation を受けて再送するだけ。
+   *
+   * 取り込むと HEAD が進んで ahead/behind が変わる。main は #35 のあとに #3 を
+   * 済ませているので、こちらも一覧を読み直す（読まないと、打った #3 の結果が捨てられ、
+   * ブランチペインの数字が古いまま残る）。
    */
   mergeBranch(branchName: string): Promise<void> {
     return this.#operate(
       (confirmed) => this.#ft.branchMerge(this.#id(), branchName, confirmed),
-      () => this.#operate(() => this.#ft.branchMerge(this.#id(), branchName, true)),
+      () =>
+        this.#operate(() => this.#ft.branchMerge(this.#id(), branchName, true), undefined, undefined, {
+          branches: true,
+        }),
+      undefined,
+      { branches: true },
     );
   }
 
@@ -1470,12 +1491,14 @@ export class AppState {
    * ここで抜けるので、ダイアログを出している間は帯を出さない。
    *
    * @param options.branches 成功したらブランチ一覧も取り直す（コミット・リモート操作）。
+   *   main が取り直したかどうかで決まる操作（ブランチ切替）は、真偽値の代わりに
+   *   結果を見る関数を渡す。
    */
   async #operate<T>(
     call: (confirmed?: boolean) => Promise<Result<T>>,
     retry?: () => Promise<void>,
     onSuccess?: () => void,
-    options: { readonly branches?: boolean } = {},
+    options: { readonly branches?: boolean | ((value: T) => boolean) } = {},
   ): Promise<void> {
     const id = this.activeId;
     const body = async (): Promise<void> => {
@@ -1494,9 +1517,11 @@ export class AppState {
       }
       onSuccess?.();
       if (id === null) return;
+      const branches =
+        typeof options.branches === 'function' ? options.branches(result.value) : options.branches === true;
       await this.#reflect(id, async () => {
         await this.reloadActive();
-        if (options.branches === true && this.activeId === id) await this.reloadBranches();
+        if (branches && this.activeId === id) await this.reloadBranches();
       });
     };
     // タブが無いときは call の中の #id() が投げ、#run がエラー帯に出す

@@ -7,6 +7,7 @@ import {
   mergeBranch,
   resolveRepository,
   switchBranch,
+  switchToRemoteBranch,
 } from '../src/index.js';
 import { commitAll, createFixture, type Fixture } from './fixture.js';
 
@@ -100,6 +101,53 @@ describe('ブランチ切替 (対応表 #12)', () => {
     const branches = await listBranches(fx.ctx);
     const feature = branches.find((b) => b.shortName === 'feature');
     expect(feature?.isHead).toBe(true);
+  });
+
+  it('リモートブランチを取り出すと上流つきのローカル枝ができる（対応表 #45）', async () => {
+    const upstream = await createFixture();
+    try {
+      await upstream.write('u.txt', 'x');
+      await commitAll(upstream, 'upstream init');
+      await upstream.run('switch', '-c', 'feature/x');
+      await upstream.write('f.txt', 'from feature');
+      await commitAll(upstream, 'feature work');
+      await upstream.run('switch', 'main');
+
+      await fx.run('remote', 'add', 'origin', upstream.dir);
+      await fx.run('fetch', 'origin');
+
+      await switchToRemoteBranch(fx.ctx, 'origin/feature/x');
+
+      const branches = await listBranches(fx.ctx);
+      const local = branches.find((b) => b.shortName === 'feature/x' && !b.isRemote);
+      expect(local?.isHead).toBe(true);
+      // リモート名を除いた名前が付き、上流もそこへ張られる
+      expect(local?.upstream).toBe('origin/feature/x');
+    } finally {
+      await upstream.cleanup();
+    }
+  });
+
+  it('同名のローカルブランチが既にあると取り出しは失敗する（main が #12 に振り分ける根拠）', async () => {
+    const upstream = await createFixture();
+    try {
+      await upstream.write('u.txt', 'x');
+      await commitAll(upstream, 'upstream init');
+      await upstream.run('switch', '-c', 'feature/x');
+      await upstream.write('f.txt', 'from feature');
+      await commitAll(upstream, 'feature work');
+      await upstream.run('switch', 'main');
+
+      await fx.run('remote', 'add', 'origin', upstream.dir);
+      await fx.run('fetch', 'origin');
+      await fx.run('branch', 'feature/x');
+
+      await expect(switchToRemoteBranch(fx.ctx, 'origin/feature/x')).rejects.toBeInstanceOf(
+        GitCommandError,
+      );
+    } finally {
+      await upstream.cleanup();
+    }
   });
 
   it('作業ツリーの変更が上書きされる場合は失敗する', async () => {

@@ -293,28 +293,39 @@ export function createService(deps: ServiceDeps): Service {
   };
 
   /**
-   * `branchSwitch` 専用の照合。
+   * `branchSwitch` の対象を決める。renderer は**一覧に出ている名前そのまま**を渡す
+   * （ローカルなら `feature/x`、リモートなら `origin/feature/x`）。
    *
-   * renderer（BranchPane.svelte の switchArg）はリモートブランチをダブルクリックしたとき、
-   * リモート名を除いた名前を渡す（git の DWIM に「ローカル追跡ブランチを新規作成して切替」を
-   * 任せるため）。そのため switch の対象はローカルブランチの shortName だけでなく、
-   * 「いずれかのリモートブランチの shortName からリモート名を除いた名前」も正当な入力になる。
-   * knownLocalBranch のように「ローカル一覧にある名前だけ」に絞ると DWIM チェックアウトが
-   * 全滅するので、ここだけ別の照合にする。
+   * リモートを渡されたときの行き先は 2 通りある:
+   *  - 同じ名前（リモート名を除いた部分）のローカル枝が既にある → #12 でそこへ切り替える。
+   *    `switch --track` は `a branch named '<name>' already exists` で失敗するため（実測）。
+   *    **上流の内容は取り込まない**。取り込みたければプル（#23）かマージ（#35）を使う
+   *  - 無い → #45 で取り出す。新しいローカル枝ができるので、呼び出し側は一覧も取り直す
+   *
+   * 照合は knownLocalBranch と同じく**一覧との突き合わせ**（3-B）。DWIM 任せ
+   * （リモート名を落とした名前を `switch` に渡す）をやめたので、同名のブランチを持つ
+   * リモートが 2 つあっても曖昧にならない。
    */
-  const knownSwitchTarget = (id: string, branch: string): string => {
+  const planSwitch = (
+    id: string,
+    branch: string,
+  ): { readonly kind: 'local'; readonly name: string } | { readonly kind: 'track'; readonly name: string } => {
     rejectLeadingDash('ブランチ名', branch);
     const session = requireSession(id);
-    const found = session.branches.some((b) => {
-      if (!b.isRemote) return b.shortName === branch;
-      const slash = b.shortName.indexOf('/');
-      const deprefixed = slash === -1 ? b.shortName : b.shortName.slice(slash + 1);
-      return deprefixed === branch;
-    });
-    if (!found) {
-      throw new HandlerError({ kind: 'internal', message: 'ブランチ「' + branch + '」がありません。' });
+    const isLocal = (name: string): boolean =>
+      session.branches.some((b) => !b.isRemote && b.shortName === name);
+
+    if (isLocal(branch)) return { kind: 'local', name: branch };
+
+    const remote = session.branches.find((b) => b.isRemote && b.shortName === branch);
+    if (remote !== undefined) {
+      // git が --track で付ける名前と同じ決め方（リモート名を 1 段だけ落とす）
+      const slash = branch.indexOf('/');
+      const localName = slash === -1 ? branch : branch.slice(slash + 1);
+      return isLocal(localName) ? { kind: 'local', name: localName } : { kind: 'track', name: branch };
     }
-    return branch;
+
+    throw new HandlerError({ kind: 'internal', message: 'ブランチ「' + branch + '」がありません。' });
   };
 
   /**
@@ -727,7 +738,11 @@ export function createService(deps: ServiceDeps): Service {
 
     branchList: (id) => requireSession(id).branches,
 
-    branchSwitch: async (id, branchName) => opsFor(id).switchBranch(knownSwitchTarget(id, branchName)),
+    branchSwitch: async (id, branchName) => {
+      const plan = planSwitch(id, branchName);
+      const ops = opsFor(id);
+      return plan.kind === 'track' ? ops.switchToRemoteBranch(plan.name) : ops.switchBranch(plan.name);
+    },
 
     branchCreate: async (id, req) => {
       const name = req.name.trim();

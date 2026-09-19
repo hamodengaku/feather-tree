@@ -12,6 +12,7 @@ import {
   removeUntracked,
   stagePaths,
   switchBranch as gitSwitchBranch,
+  switchToRemoteBranch as gitSwitchToRemoteBranch,
   unstagePaths,
   PatchBuildError,
   type PatchDirection,
@@ -235,15 +236,42 @@ export class SessionOperations {
    * 未コミットの変更で上書きが発生する場合は git 自身が失敗させる（エラーメッセージで案内）。
    * 切替後は status のみ再取得する（docs/02-git-command-map.md「切替後の反映」）。
    */
-  async switchBranch(branchName: string, signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
+  async switchBranch(
+    branchName: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly statusSeq: number; readonly branchesRefreshed: boolean }> {
     await this.#session.track(['switch'], () => gitSwitchBranch(this.#session.context(signal), branchName));
     await this.#session.refreshStatus(signal);
-    return { statusSeq: this.#session.statusSeq };
+    return { statusSeq: this.#session.statusSeq, branchesRefreshed: false };
+  }
+
+  /**
+   * 対応表 #45。リモートブランチ（`<remote>/<branch>`）をローカルへ取り出して切り替える。
+   * リモートペインのダブルクリックの実体。確認不要（#12 と同じ扱い）。
+   *
+   * 切替と違い、**ローカル追跡ブランチが 1 本増える**ので一覧も取り直す。
+   * 取り直さないとローカル側にその枝が出ず、現在位置の印もどこにも付かない
+   * （docs/02-git-command-map.md「リモートブランチをローカルへ取り出して切替」）。
+   */
+  async switchToRemoteBranch(
+    remoteBranch: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly statusSeq: number; readonly branchesRefreshed: boolean }> {
+    await this.#session.track(['switch', '--track'], () =>
+      gitSwitchToRemoteBranch(this.#session.context(signal), remoteBranch),
+    );
+    await this.#session.refreshStatus(signal);
+    await this.#session.refreshBranches(signal);
+    return { statusSeq: this.#session.statusSeq, branchesRefreshed: true };
   }
 
   /**
    * 対応表 #14。確認不要。作成して切替までを 1 git プロセスで行う（`switch -c`）。
-   * push は行わない。切替後は status のみ再取得する。
+   * push は行わない。
+   *
+   * 切替（#12）と違い、**ローカル枝が 1 本増える**のでブランチ一覧も取り直す
+   * （#45 と同じ理由。取り直さないと、作ったばかりの枝が「更新」を押すまで
+   * ブランチペインに出てこない）。
    */
   async createBranch(
     name: string,
@@ -254,6 +282,7 @@ export class SessionOperations {
       gitCreateBranch(this.#session.context(signal), name, startPoint),
     );
     await this.#session.refreshStatus(signal);
+    await this.#session.refreshBranches(signal);
     return { statusSeq: this.#session.statusSeq };
   }
 

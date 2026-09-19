@@ -100,19 +100,27 @@
   }
 
   /**
-   * ダブルクリックでのブランチ切替（対応表 #12）。無確認で即実行する。
-   * リモートブランチはリモート名を除いたブランチ名を渡し、git の DWIM に
-   * ローカル追跡ブランチの作成を任せる。
+   * ダブルクリックでのブランチ切替（対応表 #12 / #45）。無確認で即実行する。
+   *
+   * 送るのは**一覧に出ている名前そのまま**（リモートなら `origin/feature/x`）。
+   * ローカルへ取り出すのか既存のローカル枝へ移るだけなのかは、一覧を持っている
+   * main が決める（renderer で名前を削ると、同名のブランチを持つリモートが 2 つある
+   * ときに行き先が曖昧になる）。
    */
-  function switchArg(branch: BranchDto): string {
+  async function handleSwitch(branch: BranchDto): Promise<void> {
+    if (app.busy || localNameOf(branch) === app.currentBranch) return;
+    await app.switchBranch(branch.shortName);
+  }
+
+  /**
+   * その行に移ったときに居ることになるローカルブランチ名。
+   * リモート行は git が `--track` で付ける名前と同じ決め方（リモート名を 1 段落とす）。
+   * 既にそこに居るならダブルクリックを捨てる（git を無駄に動かさない）ために使う。
+   */
+  function localNameOf(branch: BranchDto): string {
     if (!branch.isRemote) return branch.shortName;
     const slash = branch.shortName.indexOf('/');
     return slash === -1 ? branch.shortName : branch.shortName.slice(slash + 1);
-  }
-
-  async function handleSwitch(branch: BranchDto): Promise<void> {
-    if (isCurrent(branch) || app.busy) return;
-    await app.switchBranch(switchArg(branch));
   }
 
   /**
@@ -175,7 +183,7 @@
     </li>
   {:else}
     <li
-      title="ダブルクリックでこのブランチに切り替え"
+      title="ダブルクリックでローカルに取り出して切り替え"
       style:padding-left={indent(row.depth)}
       ondblclick={() => void handleSwitch(row.branch)}
     >

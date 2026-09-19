@@ -399,6 +399,57 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     expect(service.statusGetSummary(id).seq).toBe(result.statusSeq);
   });
 
+  it('リモートブランチのダブルクリックはローカルへ取り出して切り替える（対応表 #45 → #2 → #3）', async () => {
+    const remoteDir = join(TEST_ROOT, randomBytes(8).toString('hex'));
+    await mkdir(remoteDir, { recursive: true });
+    await git(remoteDir, ['init', '--initial-branch=main']);
+    await git(remoteDir, ['config', 'user.name', 'T']);
+    await git(remoteDir, ['config', 'user.email', 't@example.invalid']);
+    await writeFile(join(remoteDir, 'u.txt'), 'x', 'utf8');
+    await git(remoteDir, ['add', '-A']);
+    await git(remoteDir, ['commit', '-m', 'upstream init']);
+    await git(remoteDir, ['switch', '-c', 'feature/x']);
+    await git(remoteDir, ['switch', 'main']);
+
+    try {
+      const id = await openDemo();
+      await service.stage(id, { kind: 'all' });
+      await service.commit(id, { message: 'init', amend: false });
+      await git(dir, ['remote', 'add', 'origin', remoteDir]);
+      await git(dir, ['fetch', 'origin']);
+      await service.sessionRefresh(id, 'full');
+
+      // renderer は一覧に出ている名前そのまま（リモート名つき）を渡す
+      const result = await service.branchSwitch(id, 'origin/feature/x');
+
+      expect(result.branchesRefreshed).toBe(true);
+      expect(service.statusGetSummary(id).head?.branch).toBe('feature/x');
+      // 一覧も取り直しているので、full refresh 抜きで新しいローカル枝が見える
+      const local = service.branchList(id).find((b) => !b.isRemote && b.shortName === 'feature/x');
+      expect(local?.upstream).toBe('origin/feature/x');
+
+      // 同じ行をもう一度叩くと、今度は既存のローカル枝への切替（#12）になる
+      await service.branchSwitch(id, 'main');
+      const again = await service.branchSwitch(id, 'origin/feature/x');
+      expect(again.branchesRefreshed).toBe(false);
+      expect(service.statusGetSummary(id).head?.branch).toBe('feature/x');
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+        () => undefined,
+      );
+    }
+  });
+
+  it('リモート名を落とした名前は受け付けない（renderer が送る名前は一覧の名前そのまま、3-B）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+
+    await expect(service.branchSwitch(id, 'feature/x')).rejects.toMatchObject({
+      dto: { kind: 'internal' },
+    });
+  });
+
   it('未コミットの変更が上書きされる切替は失敗する', async () => {
     const id = await openDemo();
     await service.stage(id, { kind: 'all' });
@@ -451,7 +502,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     ).rejects.toMatchObject({ dto: { kind: 'internal' } });
   });
 
-  it('ブランチを作成すると起点から分岐して切り替わる（対応表 #14 → #2、push はしない）', async () => {
+  it('ブランチを作成すると起点から分岐して切り替わる（対応表 #14 → #2 → #3、push はしない）', async () => {
     const id = await openDemo();
     await service.stage(id, { kind: 'all' });
     await service.commit(id, { message: 'init', amend: false });
@@ -460,10 +511,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
 
     expect(service.statusGetSummary(id).head?.branch).toBe('obana/topic');
     expect(service.statusGetSummary(id).seq).toBe(result.statusSeq);
-    // 作成後は status のみ再取得する設計なので、branch 一覧はここではまだ古いまま
-    // （更新ボタン相当の full refresh で初めて反映される）
-    expect(service.branchList(id).find((b) => b.shortName === 'obana/topic')).toBeUndefined();
-    await service.sessionRefresh(id, 'full');
+    // 作成後はブランチ一覧も取り直すので、full refresh 抜きで新しい枝が見える
     const feature = service.branchList(id).find((b) => b.shortName === 'obana/topic');
     expect(feature?.isHead).toBe(true);
     expect(feature?.oid).toBe(service.branchList(id).find((b) => b.shortName === 'main')?.oid);

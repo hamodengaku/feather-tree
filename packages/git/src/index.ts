@@ -33,7 +33,13 @@ export type { GitContext } from './commands/context.js';
 export { getGitVersion, listRemotes, resolveRepository } from './commands/repository.js';
 export { getStatus } from './commands/status.js';
 export type { StatusOptions } from './commands/status.js';
-export { createBranch, listBranches, mergeBranch, switchBranch } from './commands/branches.js';
+export {
+  createBranch,
+  listBranches,
+  mergeBranch,
+  switchBranch,
+  switchToRemoteBranch,
+} from './commands/branches.js';
 export { fetchRemote, pullCurrent, pushBranch } from './commands/remote.js';
 export { buildCloneCommand, cloneRepository } from './commands/clone.js';
 export type { CloneOptions } from './commands/clone.js';

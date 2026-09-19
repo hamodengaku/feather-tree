@@ -45,6 +45,28 @@ export async function switchBranch(ctx: GitContext, branchName: string): Promise
 }
 
 /**
+ * 対応表 #45: リモートブランチをローカルへ取り出して切替（`<remote>/<branch>` を渡す）。
+ *
+ * `--track` はローカル枝の名前をリモート名を除いた部分から自分で決め、上流も張る。
+ * DWIM（`switch -- <branch>` にリモート名なしの名前を渡す）でも同じことが起きるが、
+ * **同名のブランチを持つリモートが 2 つあると `matched multiple (2) remote tracking branches`
+ * で失敗する**（実測）。利用者はリモートペインで「どの origin の枝か」を選んでいるので、
+ * その選択をそのまま git に渡す。
+ *
+ * `--` はリモート追跡名の直前（switch と同じ理由）。実測: `switch --track -- origin/feature/x`
+ * は通常の `--track` と同じ結果になる。
+ * ローカルに同名の枝が既にあると `a branch named '<name>' already exists` で失敗するので、
+ * 呼び出し側（main）は一覧を見て、その場合は #12 の通常の切替を選ぶ。
+ */
+export async function switchToRemoteBranch(ctx: GitContext, remoteBranch: string): Promise<void> {
+  const { exit } = await runGitText(
+    commandFor(ctx, [...WRITE_PREFIX, 'switch', '--track', '--', remoteBranch]),
+    ctx.signal,
+  );
+  if (exit.code !== 0) throw new GitCommandError(['switch', '--track'], exit.code, exit.stderr);
+}
+
+/**
  * 対応表 #14: ブランチを作成して切替。push は行わない。
  *
  * `-c` は次のトークンを無条件にブランチ名として消費する（`-c` 自身が必須引数を取るため、
