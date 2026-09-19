@@ -1025,10 +1025,22 @@ export class AppState {
     await this.refreshEnvironment();
   }
 
-  /** SSH 秘密鍵のパスの永続化（決定 13 の追記）。null で「使わない」。git は動かない。 */
+  /**
+   * **アクティブなタブのリポジトリ**で使う SSH 秘密鍵（決定 13 の追記）。
+   * null で「使わない」。git は動かない（次にこのリポジトリで git を実行するときから効く）。
+   */
   async setSshKeyPath(path: string | null): Promise<void> {
-    const result = await this.#ft.settingsUpdate({ sshKeyPath: path });
+    const id = this.activeId;
+    if (id === null) return;
+    const result = await this.#ft.sshSetKey(id, path);
     if (this.#check(result)) this.settings = result.value;
+  }
+
+  /** アクティブなタブのリポジトリに登録されている鍵。未登録・タブ無しなら null。 */
+  get sshKeyPath(): string | null {
+    const root = this.sessions.find((s) => s.id === this.activeId)?.root;
+    if (root === undefined) return null;
+    return this.settings?.sshKeyPaths[root] ?? null;
   }
 
   /** git の検出結果を取り直す。git は動かない（main が持っている解決済みの情報を読むだけ）。 */
@@ -1044,11 +1056,20 @@ export class AppState {
     await this.setGitPath(picked.value);
   }
 
-  /** SSH 秘密鍵を選んで保存する。キャンセルなら何もしない。 */
-  async pickSshKey(): Promise<void> {
+  /**
+   * SSH 秘密鍵を選ぶだけ（**保存しない**）。キャンセル・失敗なら null。
+   * クローンの入力欄のように「まだ保存先が決まっていない」場面で使う。
+   */
+  async pickSshKeyPath(): Promise<string | null> {
     const picked = await this.#ft.dialogPickFile('ssh-private-key');
-    if (!this.#check(picked) || picked.value === null) return;
-    await this.setSshKeyPath(picked.value);
+    return this.#check(picked) ? picked.value : null;
+  }
+
+  /** SSH 秘密鍵を選び、アクティブなタブのリポジトリに登録する。キャンセルなら何もしない。 */
+  async pickSshKey(): Promise<void> {
+    const picked = await this.pickSshKeyPath();
+    if (picked === null) return;
+    await this.setSshKeyPath(picked);
   }
 
   /**

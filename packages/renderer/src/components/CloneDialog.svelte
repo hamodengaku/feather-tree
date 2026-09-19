@@ -16,6 +16,14 @@
   let typedName = $state('');
 
   /**
+   * このクローンに使う SSH 秘密鍵（決定 9 の追記）。空なら ssh-agent 等に任せる。
+   *
+   * 鍵はリポジトリごとに持つ（決定 13）が、**クローンの時点ではまだリポジトリが無い**
+   * ので、ここだけ入力から受け取る。成功したらそのリポジトリの設定として保存される。
+   */
+  let sshKeyPath = $state('');
+
+  /**
    * URL 欄の入力が確定したか（貼り付け・ドロップ・欄から離れた）。
    * 形の分からない URL（`\\server\share\repo` 等）だけは、確定するまで補完しない（cloneForm.ts）。
    */
@@ -48,7 +56,14 @@
     customName = false;
     typedName = '';
     committed = false;
+    sshKeyPath = '';
   });
+
+  /** 鍵を選ぶだけ（この時点では保存しない。保存はクローンが成功してから main が行う）。 */
+  async function pickKey(): Promise<void> {
+    const picked = await app.pickSshKeyPath();
+    if (picked !== null) sshKeyPath = picked;
+  }
 
   function onShallowChange(checked: boolean): void {
     shallow = checked;
@@ -80,7 +95,14 @@
     event.preventDefault();
     if (!canSubmit) return;
     const mode = large ? 'large' : shallow ? 'shallow' : 'normal';
-    app.confirmClone({ url: url.trim(), parentDir: parentDir.trim(), name: name.trim(), mode });
+    const key = sshKeyPath.trim();
+    app.confirmClone({
+      url: url.trim(),
+      parentDir: parentDir.trim(),
+      name: name.trim(),
+      mode,
+      sshKeyPath: key.length === 0 ? null : key,
+    });
   }
 </script>
 
@@ -156,6 +178,24 @@
         <span>大規模レポジトリをいい感じにクローンする</span>
       </label>
       <p class="note">タイムアウト対策とLFSロードを全自動で行います</p>
+
+      <!--
+        SSH 鍵（任意）。https の URL では要らないので、畳まず出しつつ「任意」と明記する。
+        ここで選んだ鍵はクローンに使い、成功したらそのリポジトリの設定になる。
+      -->
+      <label class="field">
+        <span>SSH 秘密鍵（任意）</span>
+        <div class="row">
+          <input
+            type="text"
+            class="mono"
+            placeholder="自動（ssh-agent や ~/.ssh/config に準拠）"
+            spellcheck="false"
+            bind:value={sshKeyPath}
+          />
+          <button type="button" onclick={() => void pickKey()}>参照…</button>
+        </div>
+      </label>
 
       {#if preview.length > 0}
         <p class="preview mono" title={preview}>{preview} に作成します</p>

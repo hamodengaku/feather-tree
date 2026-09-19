@@ -49,7 +49,7 @@ describe('起動', () => {
       appGetEnvironment: () =>
         Promise.resolve({
           ok: true as const,
-          value: { gitPath: null, gitSource: null, gitVersion: null, warning: 'git が見つかりません' },
+          value: { gitPath: null, gitSource: null, gitVersion: null, sshPath: null, warning: 'git が見つかりません' },
         }),
     });
 
@@ -806,7 +806,7 @@ describe('設定ダイアログの Git / ssh 通信タブ', () => {
     expect(app.settings?.gitPath).toBe('C:/tools/git/cmd/git.exe');
   });
 
-  it('SSH 秘密鍵のパスを保存する。git は動かさない', async () => {
+  it('SSH 秘密鍵はアクティブなタブのリポジトリに保存する。git は動かさない', async () => {
     const { app, bridge } = await boot();
     const mark = bridge.calls.length;
 
@@ -814,15 +814,40 @@ describe('設定ダイアログの Git / ssh 通信タブ', () => {
     await app.pickSshKey();
 
     expect(bridge.lastArgsOf('dialogPickFile')).toEqual(['ssh-private-key']);
-    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([
-      { sshKeyPath: 'C:/Users/me/.ssh/id_ed25519' },
-    ]);
-    expect(app.settings?.sshKeyPath).toBe('C:/Users/me/.ssh/id_ed25519');
+    // リポジトリは**セッション id で**指す（renderer からパスを渡さない）
+    expect(bridge.lastArgsOf('sshSetKey')).toEqual(['s1', 'C:/Users/me/.ssh/id_ed25519']);
+    expect(app.sshKeyPath).toBe('C:/Users/me/.ssh/id_ed25519');
     // 鍵の設定は次の git から効く。設定した時点では git を 1 本も起動しない
-    expect(bridge.calls.slice(mark).map((c) => c.name)).toEqual([
-      'dialogPickFile',
-      'settingsUpdate',
-    ]);
+    expect(bridge.calls.slice(mark).map((c) => c.name)).toEqual(['dialogPickFile', 'sshSetKey']);
+  });
+
+  it('鍵はリポジトリごとに独立して見える（タブを切り替えると相手の鍵は出ない）', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.pickFileResult = 'C:/keys/one';
+    await app.pickSshKey();
+    expect(app.sshKeyPath).toBe('C:/keys/one');
+
+    await app.activate('s2');
+    expect(app.sshKeyPath).toBeNull();
+
+    bridge.pickFileResult = 'C:/keys/two';
+    await app.pickSshKey();
+    expect(app.sshKeyPath).toBe('C:/keys/two');
+
+    await app.activate('s1');
+    expect(app.sshKeyPath).toBe('C:/keys/one');
+  });
+
+  it('選ぶだけ（クローンの入力欄用）は保存しない', async () => {
+    const { app, bridge } = await boot();
+    const mark = bridge.calls.length;
+
+    bridge.pickFileResult = 'C:/keys/for-clone';
+    expect(await app.pickSshKeyPath()).toBe('C:/keys/for-clone');
+
+    expect(bridge.calls.slice(mark).map((c) => c.name)).toEqual(['dialogPickFile']);
+    expect(app.sshKeyPath).toBeNull();
   });
 
   it('SSH 鍵を「使わない」に戻すときは null を送る', async () => {
@@ -830,7 +855,7 @@ describe('設定ダイアログの Git / ssh 通信タブ', () => {
 
     await app.setSshKeyPath(null);
 
-    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ sshKeyPath: null }]);
+    expect(bridge.lastArgsOf('sshSetKey')).toEqual(['s1', null]);
   });
 
   it('コミット情報はアクティブなタブのものを読む', async () => {

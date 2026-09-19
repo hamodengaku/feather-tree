@@ -22,30 +22,59 @@ afterEach(async () => {
   }
 });
 
-describe('SSH 鍵のパス（決定 13 の追記）', () => {
-  it('既定は null（何も注入しない＝OS の機構に委譲）', () => {
-    expect(DEFAULT_SETTINGS.sshKeyPath).toBeNull();
-    expect(normalizeSettings({}).sshKeyPath).toBeNull();
+describe('SSH 鍵（決定 13 の追記。リポジトリごと）', () => {
+  const keys = (raw: unknown): Record<string, string> => normalizeSettings({ sshKeyPaths: raw }).sshKeyPaths;
+
+  it('既定は空（何も注入しない＝OS の機構に委譲）', () => {
+    expect(DEFAULT_SETTINGS.sshKeyPaths).toEqual({});
+    expect(normalizeSettings({}).sshKeyPaths).toEqual({});
   });
 
-  it('絶対パスはそのまま保つ', () => {
-    const win = normalizeSettings({ sshKeyPath: 'C:\\Users\\me\\.ssh\\id_ed25519' });
-    expect(win.sshKeyPath).toBe('C:\\Users\\me\\.ssh\\id_ed25519');
+  it('リポジトリごとに独立して保つ', () => {
+    expect(
+      keys({
+        'D:\\work\\alpha': 'C:\\keys\\alpha',
+        'D:\\work\\beta': 'C:\\keys\\beta',
+      }),
+    ).toEqual({
+      'D:\\work\\alpha': 'C:\\keys\\alpha',
+      'D:\\work\\beta': 'C:\\keys\\beta',
+    });
   });
 
-  it('相対パス・bare 名は null に落とす（spawn / ssh の引数になるため）', () => {
-    expect(normalizeSettings({ sshKeyPath: 'id_ed25519' }).sshKeyPath).toBeNull();
-    expect(normalizeSettings({ sshKeyPath: '.ssh/id_ed25519' }).sshKeyPath).toBeNull();
+  it('値が相対パス・bare 名の項目は捨てる（spawn / ssh の引数になるため）', () => {
+    expect(keys({ 'D:\\work\\a': 'id_ed25519' })).toEqual({});
+    expect(keys({ 'D:\\work\\a': '.ssh/id_ed25519' })).toEqual({});
   });
 
-  it('制御文字・空文字・文字列以外は null に落とす', () => {
-    expect(normalizeSettings({ sshKeyPath: 'C:\\a\nb' }).sshKeyPath).toBeNull();
-    expect(normalizeSettings({ sshKeyPath: '' }).sshKeyPath).toBeNull();
-    expect(normalizeSettings({ sshKeyPath: 42 }).sshKeyPath).toBeNull();
+  it('キー（リポジトリ）が絶対パスでない項目も捨てる', () => {
+    expect(keys({ relative: 'C:\\keys\\a' })).toEqual({});
   });
 
-  it('長すぎるパスは null に落とす', () => {
-    expect(normalizeSettings({ sshKeyPath: 'C:\\' + 'a'.repeat(5000) }).sshKeyPath).toBeNull();
+  it('制御文字・空文字・文字列以外の項目は捨てる。**他の項目は残す**', () => {
+    expect(
+      keys({
+        'D:\\work\\bad': 'C:\\a\nb',
+        'D:\\work\\empty': '',
+        'D:\\work\\num': 42,
+        'D:\\work\\ok': 'C:\\keys\\ok',
+      }),
+    ).toEqual({ 'D:\\work\\ok': 'C:\\keys\\ok' });
+  });
+
+  it('長すぎるパスの項目は捨てる', () => {
+    expect(keys({ 'D:\\work\\a': 'C:\\' + 'a'.repeat(5000) })).toEqual({});
+  });
+
+  it('件数の上限で打ち切る（際限なく育たない）', () => {
+    const many: Record<string, string> = {};
+    for (let i = 0; i < 150; i += 1) many['D:\\work\\r' + String(i)] = 'C:\\keys\\k' + String(i);
+    expect(Object.keys(keys(many))).toHaveLength(100);
+  });
+
+  it('辞書でない値は空に落とす', () => {
+    expect(keys('nonsense')).toEqual({});
+    expect(keys(null)).toEqual({});
   });
 
   /*

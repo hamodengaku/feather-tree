@@ -27,6 +27,13 @@ function git(cwd: string, args: readonly string[]): Promise<void> {
   });
 }
 
+/*
+ * ssh の解決結果（実在しなくてよい。組み立てた文字列だけを検証する）。
+ * 実際の解決は locateSsh が行い、テストは sshLocator.test.ts にある。
+ */
+const SSH_PATH = 'C:' + String.fromCharCode(92) + 'ssh.exe';
+const SSH_PATH_Q = "'C:/ssh.exe'";
+
 describe('RepositorySession / SessionManager', () => {
   let dir: string;
   let manager: SessionManager;
@@ -49,6 +56,7 @@ describe('RepositorySession / SessionManager', () => {
     ended = [];
     manager = new SessionManager({
       gitPath: GIT_PATH,
+      sshPath: SSH_PATH,
       tempDir: join(dir, '.ft-tmp'),
       commandLog,
       settings: () => settings,
@@ -477,21 +485,49 @@ describe('RepositorySession / SessionManager', () => {
    * 文脈はコマンドごとに組み立て直されるので、設定を変えたら**次の git から効く**。
    * セッションを張り直したりアプリを再起動したりする必要は無い。
    */
-  describe('SSH 鍵の注入', () => {
-    it('鍵が未設定なら env を持たない（ユーザーの ssh 設定に任せる）', async () => {
+  describe('SSH 鍵の注入（リポジトリごと）', () => {
+    /** 鍵を 1 リポジトリだけに登録した設定を作る。キーは必ず session.root に合わせる。 */
+    const withKey = (root: string, key: string): AppSettings => ({
+      ...DEFAULT_SETTINGS,
+      sshKeyPaths: { [root]: key },
+    });
+
+    it('鍵が未登録なら env を持たない（ユーザーの ssh 設定に任せる）', async () => {
       const session = await manager.create(dir);
       expect(session.context().env).toBeUndefined();
     });
 
-    it('鍵を設定すると GIT_SSH_COMMAND が文脈に載り、変更が次の実行から効く', async () => {
+    it('鍵を登録すると GIT_SSH_COMMAND が文脈に載り、変更が次の実行から効く', async () => {
       const session = await manager.create(dir);
 
-      settings = { ...DEFAULT_SETTINGS, sshKeyPath: 'C:\\keys\\id_ed25519' };
+      settings = withKey(session.root, 'C:\\keys\\id_ed25519');
       expect(session.context().env).toEqual({
-        GIT_SSH_COMMAND: "ssh -i 'C:/keys/id_ed25519' -o IdentitiesOnly=yes",
+        GIT_SSH_COMMAND: SSH_PATH_Q + " -i 'C:/keys/id_ed25519' -o IdentitiesOnly=yes",
       });
 
       settings = DEFAULT_SETTINGS;
+      expect(session.context().env).toBeUndefined();
+    });
+
+    /** ここが「リポジトリごと」の肝。別のリポジトリの鍵を巻き添えにしない。 */
+    it('他のリポジトリの登録は、このリポジトリに漏れない', async () => {
+      const session = await manager.create(dir);
+
+      settings = withKey('D:\\work\\other-repo', 'C:\\keys\\other_ed25519');
+      expect(session.context().env).toBeUndefined();
+    });
+
+    it('ssh が見つかっていなければ、鍵を登録しても注入しない（bare 名は渡さない）', async () => {
+      const noSsh = new SessionManager({
+        gitPath: GIT_PATH,
+        sshPath: null,
+        tempDir: join(dir, '.ft-tmp'),
+        commandLog,
+        settings: () => settings,
+      });
+      const session = await noSsh.create(dir);
+
+      settings = withKey(session.root, 'C:\\keys\\id_ed25519');
       expect(session.context().env).toBeUndefined();
     });
   });
@@ -516,6 +552,27 @@ describe('補助関数', () => {
       exists: (p) => Promise.resolve(p === 'C:/custom/git.exe'),
     });
     expect(found).toEqual({ gitPath: 'C:/custom/git.exe', source: 'configured' });
+  });
+
+  /*
+   * 設定値も絶対パスでなければ採らない（2026-09-19 追加、診断 1-A）。
+   *
+   * 相対パスを許すと、存在確認（access）はプロセスの cwd 基準なのに実行は
+   * `cwd: リポジトリルート` で spawn されるため、確認したファイルと起動される
+   * ファイルが別物になりうる。エラーにはせず PATH 探索へ落とす。
+   */
+  it('設定パスが相対パス・bare 名なら採らず、PATH 探索へ落とす', async () => {
+    for (const configured of ['git.exe', './git.exe', 'tools\\git.exe']) {
+      const found = await locateGit({
+        configuredPath: configured,
+        env: { PATH: 'C:\\onpath' },
+        // 相対の候補も「存在する」と答えるが、それでも採ってはいけない
+        exists: (p) => Promise.resolve(p === configured || p.startsWith('C:\\onpath')),
+        queryRegistry: () => Promise.resolve(null),
+      });
+      expect(found?.source).toBe('path');
+      expect(found?.gitPath).not.toBe(configured);
+    }
   });
 
   it('どこにも無ければ null（導入案内は上位層の責務）', async () => {

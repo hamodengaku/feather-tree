@@ -30,13 +30,16 @@ export interface AppSettings {
   /** 設定画面で明示指定した git.exe のパス。null なら自動探索。 */
   readonly gitPath: string | null;
   /**
-   * 設定画面で指定した SSH 秘密鍵のパス（決定 13 の追記）。
+   * SSH 秘密鍵。**リポジトリの絶対パス → 鍵の絶対パス**（決定 13 の追記）。
    *
    * **このアプリが spawn する git にだけ** `GIT_SSH_COMMAND` として渡す。
-   * null なら何も注入せず、ユーザー自身の `GIT_SSH_COMMAND` / `core.sshCommand` が効く。
-   * 鍵の中身もパスフレーズも保持しない（保持するのはパスだけ）。
+   * 登録の無いリポジトリには何も注入せず、ユーザー自身の `GIT_SSH_COMMAND` /
+   * `core.sshCommand` が効く。鍵の中身もパスフレーズも保持しない（保持するのはパスだけ）。
+   *
+   * リポジトリごとに持つのは、鍵をホストごとに使い分けるのが普通で、
+   * アプリ全体に 1 本だと別ホストの認証を巻き添えにするため。
    */
-  readonly sshKeyPath: string | null;
+  readonly sshKeyPaths: Readonly<Record<string, string>>;
   readonly theme: ThemeName;
   /** status の rename 検出を切る。巨大リポで所要時間に効く。 */
   readonly noRenames: boolean;
@@ -94,7 +97,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   gitPath: null,
-  sshKeyPath: null,
+  sshKeyPaths: {},
   theme: 'phoenix-light',
   noRenames: false,
   untrackedFiles: 'normal',
@@ -147,6 +150,30 @@ function absolutePathOrNull(value: unknown): string | null {
 }
 
 /**
+ * 鍵を覚えておくリポジトリの上限。branchExpanded と同じく、
+ * 際限なく増える辞書なので頭打ちにする。
+ */
+const MAX_SSH_KEY_ENTRIES = 100;
+
+/**
+ * 「絶対パス → 絶対パス」の辞書（リポジトリ → SSH 鍵）。
+ * キーも値も絶対パスでなければその 1 件を捨てる（理由は absolutePathOrNull と同じ）。
+ */
+function absolutePathRecord(value: unknown, keyLimit: number): Readonly<Record<string, string>> {
+  const out: Record<string, string> = {};
+  let kept = 0;
+  for (const [key, raw] of Object.entries(record(value))) {
+    if (kept >= keyLimit) break;
+    if (absolutePathOrNull(key) === null) continue;
+    const path = absolutePathOrNull(raw);
+    if (path === null) continue;
+    out[key] = path;
+    kept += 1;
+  }
+  return out;
+}
+
+/**
  * 設定ファイルは人間が手で編集しうるし、古いバージョンの残骸も入る。
  * 未知・不正な値は既定値で埋めて必ず有効な設定を返す（起動を止めない）。
  */
@@ -161,7 +188,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
      * 落とさないため。新しく保存される値は service.settingsUpdate 側で絶対パスを要求する。
      */
     gitPath: stringOrNull(o['gitPath']),
-    sshKeyPath: absolutePathOrNull(o['sshKeyPath']),
+    sshKeyPaths: absolutePathRecord(o['sshKeyPaths'], MAX_SSH_KEY_ENTRIES),
     theme: pickFrom(o['theme'], THEMES, DEFAULT_SETTINGS.theme),
     noRenames: boolOr(o['noRenames'], DEFAULT_SETTINGS.noRenames),
     untrackedFiles: pickFrom(o['untrackedFiles'], UNTRACKED, DEFAULT_SETTINGS.untrackedFiles),

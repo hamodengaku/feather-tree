@@ -10,8 +10,17 @@
   let draft = $state('');
   let editing = $state(false);
 
-  const saved = $derived(app.settings?.sshKeyPath ?? '');
+  /** 鍵はリポジトリごと（決定 13 の 2026-09-19 改定 2）。対象はアクティブなタブ。 */
+  const session = $derived(app.sessions.find((s) => s.id === app.activeId) ?? null);
+  const saved = $derived(app.sshKeyPath ?? '');
   const value = $derived(editing ? draft : saved);
+
+  /* 対象のリポジトリが変わったら打ちかけを捨てる（別のリポジトリに書いてしまわないように）。 */
+  $effect(() => {
+    void app.activeId;
+    editing = false;
+    draft = '';
+  });
 
   /**
    * 実際に git へ渡す値。core の buildSshCommand と同じ規則で組み立てる。
@@ -20,12 +29,18 @@
    * **正本は `packages/core/src/env/sshCommand.ts`**（そちらの結果が実際に git へ渡る）。
    * ここはあくまで「何が渡るか」を見せるための写し。
    */
+  const quote = (path: string): string =>
+    "'" + path.split('\\').join('/').split("'").join("'\\''") + "'";
+
   const injected = $derived.by((): string | null => {
-    if (saved.length === 0) return null;
-    const posix = saved.split('\\').join('/');
-    const quoted = posix.split("'").join("'\\''");
-    return "ssh -i '" + quoted + "' -o IdentitiesOnly=yes";
+    const ssh = app.environment?.sshPath ?? null;
+    if (saved.length === 0 || ssh === null) return null;
+    // ssh も鍵も絶対パスで引用する（bare 名は渡さない。診断 1-A）
+    return quote(ssh) + ' -i ' + quote(saved) + ' -o IdentitiesOnly=yes';
   });
+
+  /** 鍵は登録されているのに ssh が見つかっていない＝何も注入されない。黙って効かないので知らせる。 */
+  const sshMissing = $derived(saved.length > 0 && (app.environment?.sshPath ?? null) === null);
 
   /** 公開鍵を選んでしまう取り違えはよくあるので、警告だけ出す（保存は妨げない）。 */
   const looksPublic = $derived(saved.toLowerCase().endsWith('.pub'));
@@ -34,7 +49,7 @@
     editing = false;
     const next = draft.trim();
     const value = next.length === 0 ? null : next;
-    if (value === (app.settings?.sshKeyPath ?? null)) return;
+    if (value === (app.sshKeyPath ?? null)) return;
     void app.setSshKeyPath(value);
   }
 
@@ -50,12 +65,23 @@
 </script>
 
 <div class="block">
-  <h3 class="block-title">SSH 秘密鍵</h3>
+  <div class="block-head">
+    <h3 class="block-title">SSH 秘密鍵</h3>
+    {#if session !== null}
+      <span class="target" title={session.root}>対象: {session.displayName}</span>
+    {/if}
+  </div>
   <p class="note">
-    FeatherTreeが使用するSSH秘密鍵を指定できます。
+    FeatherTreeが使用するSSH秘密鍵を、<strong>このリポジトリについて</strong>指定できます。
     秘密鍵（.pubではない方）を選んでください。
   </p>
 
+  {#if session === null}
+    <p class="note">
+      対象のリポジトリがありません。リポジトリを開くと、そのリポジトリで使う鍵を指定できます。
+      クローンする前に鍵が要る場合は、クローンの入力欄で指定してください。
+    </p>
+  {:else}
   <div class="row">
     <input
       type="text"
@@ -86,6 +112,13 @@
     何が git に渡るかをそのまま見せる（透明性）。引用の付き方で通る・通らないが変わるので、
     「指定したのに効かない」ときに、ここを読めば原因の当たりが付く。
   -->
+  {#if sshMissing}
+    <p class="warning">
+      ssh が見つからないため、この鍵は使われません。Git for Windows か Windows の OpenSSH を
+      導入するか、ssh のあるフォルダを PATH に通してアプリを再起動してください。
+    </p>
+  {/if}
+
   {#if injected !== null}
     <div class="injected">
       <span class="injected-label">git に渡す値</span>
@@ -94,10 +127,11 @@
   {/if}
 
   <p class="note scope">
-    本項は全体設定を上書きしません。
+    本項はグローバル設定を上書きしません。
     ※<code>-o IdentitiesOnly=yes</code> オプションは、ssh-agent に鍵が多数登録されている環境で
     「認証の試行回数が上限を超えました」を避けるためです。
   </p>
+  {/if}
 </div>
 
 <style>
@@ -106,6 +140,20 @@
     font-size: var(--app-font-size-ui);
     font-weight: 600;
     color: var(--app-text-secondary);
+  }
+
+  /* 見出しの右に対象リポジトリを添える。どこに効く設定かを常に見せるため（Git タブと同じ）。 */
+  .block-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--app-metric-gap);
+  }
+
+  .target {
+    color: var(--app-text-muted);
+    font-size: var(--app-font-size-mono);
+    overflow-wrap: anywhere;
   }
 
   .note {

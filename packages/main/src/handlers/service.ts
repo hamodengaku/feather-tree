@@ -106,6 +106,8 @@ export interface ServiceDeps {
   readonly appInfo: () => AppInfoDto;
   readonly git: () => GitLocation | null;
   readonly gitVersion: () => GitVersionCheck | null;
+  /** GIT_SSH_COMMAND に埋める ssh の絶対パス（決定 13 の追記）。未検出なら null。 */
+  readonly sshPath: () => string | null;
   readonly settings: () => AppSettings;
   readonly updateSettings: (patch: Partial<AppSettings>) => Promise<AppSettings>;
   readonly reloadGit: () => Promise<void>;
@@ -142,6 +144,7 @@ export interface Service {
   dialogPickFile(kind: PickFileKindDto): Promise<string | null>;
   gitConfigGetIdentity(id: string): Promise<GitIdentityDto>;
   gitConfigSetIdentity(id: string, req: GitIdentityRequest): Promise<null>;
+  sshSetKey(id: string, keyPath: string | null): Promise<SettingsDto>;
   sessionPickAndCreate(): Promise<SessionDto | null>;
   sessionLoad(id: string): Promise<null>;
   sessionOpen(root: string): Promise<SessionDto>;
@@ -411,7 +414,26 @@ export function createService(deps: ServiceDeps): Service {
     if (info === null || !info.isDirectory()) reject('保存先フォルダが見つかりません。');
 
     const mode = req.mode === 'shallow' || req.mode === 'large' ? req.mode : 'normal';
-    return { url, parentDir, name, mode };
+
+    // SSH 鍵は任意。指定するなら絶対パス（理由は assertAbsolutePathSetting と同じ）
+    const sshKeyPath = req.sshKeyPath ?? null;
+    assertAbsolutePathSetting('SSH 秘密鍵のパス', sshKeyPath);
+
+    return { url, parentDir, name, mode, sshKeyPath };
+  };
+
+  /**
+   * そのリポジトリに使う SSH 鍵を設定へ書く（決定 13 の 2026-09-19 改定 2）。
+   * null なら登録を消す。**リポジトリ別の辞書なので、他のリポジトリの登録は触らない。**
+   */
+  const rememberSshKey = async (root: string, keyPath: string | null): Promise<void> => {
+    const current = deps.settings().sshKeyPaths;
+    if ((current[root] ?? null) === keyPath) return;
+
+    const next: Record<string, string> = { ...current };
+    if (keyPath === null) delete next[root];
+    else next[root] = keyPath;
+    await deps.updateSettings({ sshKeyPaths: next });
   };
 
   return {
@@ -424,6 +446,7 @@ export function createService(deps: ServiceDeps): Service {
         gitPath: git?.gitPath ?? null,
         gitSource: git?.source ?? null,
         gitVersion: version?.version.raw ?? null,
+        sshPath: deps.sshPath(),
         warning:
           git === null
             ? 'git が見つかりませんでした。Git for Windows を導入するか、設定で git.exe のパスを指定してください。'
@@ -435,7 +458,14 @@ export function createService(deps: ServiceDeps): Service {
 
     settingsUpdate: async (patch) => {
       assertAbsolutePathSetting('git.exe のパス', patch.gitPath);
-      assertAbsolutePathSetting('SSH 秘密鍵のパス', patch.sshKeyPath);
+      /*
+       * SSH 鍵はリポジトリ別の辞書。UI からは sshSetKey（1 リポジトリずつ）を通るので
+       * ここに来るのは想定外だが、来たならキーも値も絶対パスであることを見る。
+       */
+      for (const [root, keyPath] of Object.entries(patch.sshKeyPaths ?? {})) {
+        assertAbsolutePathSetting('リポジトリのパス', root);
+        assertAbsolutePathSetting('SSH 秘密鍵のパス', keyPath);
+      }
       const before = deps.settings().gitPath;
       const updated = await deps.updateSettings(patch);
       if (updated.gitPath !== before) await deps.reloadGit();
@@ -478,6 +508,18 @@ export function createService(deps: ServiceDeps): Service {
 
       await session.setLocalCommitIdentity(patch);
       return null;
+    },
+
+    /*
+     * そのリポジトリで使う SSH 鍵（決定 13 の 2026-09-19 改定 2）。
+     * 鍵の登録先はセッションのルートなので、renderer はリポジトリのパスを送らない。
+     * git は動かさない——次にこのリポジトリで git を実行するときから効く。
+     */
+    sshSetKey: async (id, keyPath) => {
+      const session = requireSession(id);
+      assertAbsolutePathSetting('SSH 秘密鍵のパス', keyPath);
+      await rememberSshKey(session.root, keyPath);
+      return deps.settings();
     },
 
     sessionPickAndCreate: async () => {
@@ -529,6 +571,15 @@ export function createService(deps: ServiceDeps): Service {
       try {
         const outcome = await sessions.clone(valid, (stages, urgent) => throttle.push(stages, urgent), controller.signal);
         const session = outcome.session === null ? null : await rememberOpened(sessions, outcome.session);
+        /*
+         * クローンに使った鍵を、そのリポジトリの設定として引き継ぐ（決定 9 の追記）。
+         * タブが立った（= リポジトリができた）ときだけ。失敗したクローンの行き先に
+         * 鍵の登録だけ残っても意味が無い。
+         */
+        const usedKey = valid.sshKeyPath ?? null;
+        if (outcome.session !== null && usedKey !== null) {
+          await rememberSshKey(outcome.session.root, usedKey);
+        }
         return {
           result: outcome.result,
           cancelled: outcome.cancelled,

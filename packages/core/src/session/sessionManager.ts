@@ -118,8 +118,12 @@ export class SessionManager {
         gitPath: this.#deps.gitPath,
         tempDir: this.#deps.tempDir,
         commandLog: this.#deps.commandLog,
-        // SSH の URL をクローンするときに鍵が要る（決定 13 の追記）。セッションはまだ無い
-        env: gitSshEnv(this.#deps.settings()),
+        /*
+         * SSH の URL をクローンするときに鍵が要る（決定 13 の追記）。
+         * **クローンの時点ではまだリポジトリが無い**ので、鍵はリポジトリ別の設定から
+         * 引けない。呼び出し側（クローンの入力）が選んだものをそのまま使う（決定 9）。
+         */
+        env: gitSshEnv(this.#deps.sshPath ?? null, req.sshKeyPath ?? null),
       },
       onProgress,
       signal,

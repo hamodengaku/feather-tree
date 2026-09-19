@@ -46,6 +46,8 @@ const bridge: FeatherTreeBridge = {
   gitConfigGetIdentity: (id: string) => ipcRenderer.invoke(CHANNELS.gitConfigGetIdentity, id),
   gitConfigSetIdentity: (id: string, req: GitIdentityRequest) =>
     ipcRenderer.invoke(CHANNELS.gitConfigSetIdentity, id, req),
+  sshSetKey: (id: string, keyPath: string | null) =>
+    ipcRenderer.invoke(CHANNELS.sshSetKey, id, keyPath),
 
   sessionPickAndCreate: () => ipcRenderer.invoke(CHANNELS.sessionPickAndCreate),
   sessionLoad: (id: string) => ipcRenderer.invoke(CHANNELS.sessionLoad, id),

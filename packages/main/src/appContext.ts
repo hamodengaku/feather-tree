@@ -6,6 +6,7 @@ import {
   AppSettingsStore,
   checkGitVersion,
   locateGit,
+  locateSsh,
   type AppSettings,
   type CommandStart,
   type GitLocation,
@@ -37,6 +38,8 @@ export class AppContext {
 
   #sessions: SessionManager | null = null;
   #git: GitLocation | null = null;
+  /** GIT_SSH_COMMAND に埋める ssh の絶対パス（決定 13 の追記）。未検出なら null。 */
+  #sshPath: string | null = null;
   #gitVersion: GitVersionCheck | null = null;
 
   constructor() {
@@ -52,6 +55,10 @@ export class AppContext {
 
   get gitVersion(): GitVersionCheck | null {
     return this.#gitVersion;
+  }
+
+  get sshPath(): string | null {
+    return this.#sshPath;
   }
 
   currentSettings(): AppSettings {
@@ -88,6 +95,22 @@ export class AppContext {
         this.#gitVersion = null;
       }
     }
+
+    await this.#resolveSsh();
+  }
+
+  /**
+   * `GIT_SSH_COMMAND` に埋める ssh を解決する（決定 13 の追記）。
+   *
+   * git の探索と同じく**起動時に 1 回だけ**。bare 名の `ssh` を渡さないための解決なので、
+   * 見つからなければ null のままにして何も注入しない（git の既定に任せる）。
+   * Git 同梱の ssh を候補にするため、git の解決より後に呼ぶ。
+   */
+  async #resolveSsh(): Promise<void> {
+    this.#sshPath = await locateSsh({
+      env: process.env,
+      gitPath: this.#git?.gitPath ?? null,
+    }).catch(() => null);
   }
 
   /**
@@ -110,6 +133,7 @@ export class AppContext {
     if (this.#sessions === null) {
       this.#sessions = new SessionManager({
         gitPath: this.#git.gitPath,
+        sshPath: this.#sshPath,
         tempDir: this.tempDir,
         commandLog: this.commandLog,
         settings: () => this.settings.current,
@@ -133,5 +157,7 @@ export class AppContext {
       this.#git === null
         ? null
         : await checkGitVersion(this.#git.gitPath, app.getPath('home')).catch(() => null);
+    // Git 同梱の ssh は git のパスから導くので、git を解決し直したらこちらも取り直す
+    await this.#resolveSsh();
   }
 }
