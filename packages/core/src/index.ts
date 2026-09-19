@@ -20,6 +20,7 @@ export {
   requiresConfirmation,
 } from './policy/destructiveActions.js';
 export type { ConfirmationSpec, DestructiveAction } from './policy/destructiveActions.js';
+export { OPEN_EXECUTABLE_CONFIRMATION, isExecutableFileName } from './policy/executableFile.js';
 
 export { DEFAULT_SETTINGS, normalizeSettings } from './settings/schema.js';
 export { AppSettingsStore } from './settings/settingsStore.js';
@@ -58,6 +59,7 @@ export {
   lfsMissingHint,
   sshEndpoint,
 } from './policy/cloneHints.js';
+export { redactUrl } from './policy/redactUrl.js';
 export type { CloneHint, CloneHintContext, SshEndpoint } from './policy/cloneHints.js';
 export {
   MAX_EXPLICIT_PATHS,
@@ -86,3 +88,9 @@ export type { OperationOutcome } from './session/operations.js';
 // main はボタンの出し分けのためにこれを DTO へ写す。git 層の関数をそのまま通す。
 export { canBuildPatch } from '@feathertree/git';
 export type { PatchRefusal } from '@feathertree/git';
+
+// 更新通知（決定 29）。electron を知らない純関数だけをここに置く。
+export { compareVersions, isNewer, parseReleaseTag } from './update/version.js';
+export type { Version } from './update/version.js';
+export { UPDATE_CHECK_INTERVAL_MS, evaluateLatestRelease, shouldCheck } from './update/updateCheckPolicy.js';
+export type { LatestRelease } from './update/updateCheckPolicy.js';

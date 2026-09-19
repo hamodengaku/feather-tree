@@ -149,6 +149,29 @@ describe('設定の正規化', () => {
     expect(normalizeSettings({ paneWidths: { centerRatio: 0.99 } }).paneWidths.centerRatio).toBe(0.9);
     expect(normalizeSettings({ paneWidths: { centerRatio: 0.6 } }).paneWidths.centerRatio).toBe(0.6);
   });
+
+  /* 更新通知（決定 29）の 3 キー。 */
+
+  it('checkForUpdates は既定でオンで、真偽値以外なら既定に落ちる', () => {
+    expect(normalizeSettings({}).checkForUpdates).toBe(true);
+    expect(normalizeSettings({ checkForUpdates: false }).checkForUpdates).toBe(false);
+    expect(normalizeSettings({ checkForUpdates: 'yes' }).checkForUpdates).toBe(true);
+  });
+
+  it('lastUpdateCheckAt は既定 null で、0 以上の数値だけを保持する', () => {
+    expect(normalizeSettings({}).lastUpdateCheckAt).toBeNull();
+    expect(normalizeSettings({ lastUpdateCheckAt: 'yesterday' }).lastUpdateCheckAt).toBeNull();
+    expect(normalizeSettings({ lastUpdateCheckAt: -5 }).lastUpdateCheckAt).toBeNull();
+    expect(normalizeSettings({ lastUpdateCheckAt: 1_700_000_000_000 }).lastUpdateCheckAt).toBe(1_700_000_000_000);
+    expect(normalizeSettings({ lastUpdateCheckAt: 12.7 }).lastUpdateCheckAt).toBe(13);
+  });
+
+  it('dismissedUpdateVersion は既定 null で、空文字・非文字列は既定に落ちる', () => {
+    expect(normalizeSettings({}).dismissedUpdateVersion).toBeNull();
+    expect(normalizeSettings({ dismissedUpdateVersion: '' }).dismissedUpdateVersion).toBeNull();
+    expect(normalizeSettings({ dismissedUpdateVersion: 42 }).dismissedUpdateVersion).toBeNull();
+    expect(normalizeSettings({ dismissedUpdateVersion: '1.3.0' }).dismissedUpdateVersion).toBe('1.3.0');
+  });
 });
 
 describe('AppSettingsStore（土台の SettingsStore + FeatherTree のスキーマ）', () => {

@@ -5,23 +5,58 @@
 大規模開発でのブランチ移動に耐えることを目的に、
 ** git 操作を素の git コマンドと 1:1 で対応させ、アプリ都合の付随処理を少なくする**方針で作っている。
 
-## 動作要件
+## 使い方（利用者向け）
+
+### 動作要件
 
 - Windows 10 / 11（x64）
 - **Git for Windows が必須**（2.25 以降。`--pathspec-from-file` を使うため）
-  - FeatherTree は git を同梱しない。未検出の場合は導入を案内する
+  - FeatherTree は git を同梱しない。https://gitforwindows.org/ から導入する
+  - 未検出の場合、起動時に導入を案内する
 
-## 配布形態
+### インストール
 
-| 形式 | 特徴 |
-|------|------|
-| `FeatherTree-<version>-portable.exe` | 単一 exe。インストール不要。**初回起動時に %TEMP% へ展開するため初回だけ遅い** |
-| `FeatherTree-<version>-win.zip` | 展開型。起動が速い。フォルダごと持ち運べる |
+1. [Releases](https://github.com/hamodengaku/feather-tree/releases) から `FeatherTree-Setup-x.y.z.exe` をダウンロードする
+2. ダブルクリックして実行する（管理者権限は不要）
+3. 完了。スタートメニューとデスクトップにショートカットが作られる
 
-いずれも設定・データは **exe と同じ場所の `FeatherTree-data/`** に保存する。
-`%APPDATA%` には何も書き込まない。
+**「Windows によって PC が保護されました」という SmartScreen の警告が出た場合**は、
+「詳細情報」→「実行」の順に進める。これは exe が未署名（同人配布のためコード署名を行っていない）
+であることによる警告で、悪意のあるファイルという意味ではない。
 
-未署名のため、初回実行時に Windows SmartScreen の警告が表示される。
+### アップデート
+
+新しい版が出ると、アプリ内で通知する。新しい `Setup.exe` を実行すれば上書き更新され、
+**設定はそのまま保持される**。
+
+### アンインストール
+
+Windows の「設定 → アプリ → インストールされているアプリ」から「FeatherTree」を選んでアンインストールする。
+設定・データ（下記）はアンインストール時に削除されない。
+
+### データの場所
+
+| 導入方法 | 保存先 |
+|---------|--------|
+| インストール版（Setup.exe） | `%APPDATA%\FeatherTree` |
+| zip 展開版 | 展開した exe と同じフォルダの `FeatherTree-data` |
+
+### zip 展開版（上級者向け）
+
+インストールせずに使いたい場合や、USB メモリなど外部メディアで持ち運びたい場合は、
+Releases の `FeatherTree-x.y.z-win-x64.zip` を展開して `FeatherTree.exe` を直接起動する。
+フォルダごと移動できる。
+
+### 安全にお使いいただくために
+
+- **信頼できない人から受け取った「git リポジトリのフォルダ」（`.git` を含む zip など）を、そのまま開かない。**
+  リポジトリの中の設定ファイルに、フォルダを開いた（あるいは操作した）だけで任意のプログラムが
+  実行されるよう仕込むことができる。これは FeatherTree に限らず、git 本体や他の git クライアントでも
+  同じ性質の危険であり、アプリ側では防げない。**URL からクローンする場合はこの危険の対象外**（クローン先は
+  FeatherTree が新しく作る空のフォルダなので、悪意ある設定が最初から入っている心配はない）。
+- **クローンする URL にパスワードやトークンを直接埋め込まない**（`https://user:TOKEN@host/...` のような形）。
+  認証は Git Credential Manager（Git for Windows に同梱）に任せれば、初回だけサインイン画面が出て、
+  以降は安全に保存された資格情報が使われる。
 
 ## 開発
 
@@ -29,7 +64,7 @@
 npm install          # 依存の取得（キャッシュはリポジトリ内に閉じる）
 npm run dev          # 開発起動（HMR あり）
 npm run verify       # 依存方向検査 + 型検査 + テスト
-npm run dist         # 配布物のビルド（release/ に出力）
+npm run dist         # 配布物のビルド（release/ に出力。Setup.exe + zip）
 npm run measure      # 配布 exe のサイズ・起動時間・メモリを実測
 ```
 
@@ -43,7 +78,7 @@ npm run measure      # 配布 exe のサイズ・起動時間・メモリを実�
 
 npm と Electron のキャッシュ、開発時の userData、テストの一時ファイルはすべて
 リポジトリ内（`.cache/` `.tmp/`）に閉じている。
-`%APPDATA%` や `%LOCALAPPDATA%` には何も書き込まない。
+`%APPDATA%` や `%LOCALAPPDATA%` には何も書き込まない（インストール版の userData を除く。上記参照）。
 `.npmrc` と `scripts/*.mjs`、`packages/base-electron/src/paths.ts` で担保している。
 
 ## 設計の要点

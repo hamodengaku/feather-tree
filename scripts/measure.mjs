@@ -1,8 +1,8 @@
 // Phase 0 / Phase 10 の実測: 配布物のサイズ・起動時間・メモリ。
 //
-// 既定では release/win-unpacked を計測する（zip 配布版と同等）。
-// portable exe は起動時に %TEMP% へ約 266MB 展開するため、
-// CLAUDE.md 規約 2 に触れる。計測したい場合のみ --portable を明示する。
+// 計測対象は release/win-unpacked（zip 展開版・インストール版の展開後と同等の構成）。
+// portable ターゲットは廃止済み（決定 5・2026-09-13 改定。旧: portable exe が %TEMP% へ
+// 約 266MB 展開するため既定を win-unpacked にしていた）なので、その計測経路は無い。
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 // rmSync はこの環境でプロセスを即死させるため使わない（CLAUDE.md 参照）
@@ -14,7 +14,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const root = resolve(import.meta.dirname, '..');
 const releaseDir = resolve(root, 'release');
-const usePortable = process.argv.includes('--portable');
 
 function dirSizeMb(dir) {
   let total = 0;
@@ -68,23 +67,18 @@ async function main() {
   const unpacked = resolve(releaseDir, 'win-unpacked');
   if (existsSync(unpacked)) out(`  win-unpacked (展開後)${' '.repeat(18)} ${dirSizeMb(unpacked).toFixed(1)} MB`);
 
-  const exe = usePortable
-    ? resolve(releaseDir, readdirSync(releaseDir).find((f) => f.endsWith('portable.exe')) ?? '')
-    : resolve(unpacked, 'FeatherTree.exe');
+  const exe = resolve(unpacked, 'FeatherTree.exe');
   if (!existsSync(exe)) {
     process.stderr.write(`計測対象が見つかりません: ${exe}\n先に npm run dist を実行してください。\n`);
     process.exit(1);
   }
 
-  const dataDir = usePortable
-    ? resolve(releaseDir, 'FeatherTree-data')
-    : resolve(unpacked, 'FeatherTree-data');
+  const dataDir = resolve(unpacked, 'FeatherTree-data');
   const metricsFile = resolve(dataDir, 'startup-metrics.json');
   await rm(metricsFile, { force: true });
 
   out('');
-  out(`== 起動計測 (${usePortable ? 'portable exe' : 'win-unpacked'}) ==`);
-  if (usePortable) out('  ※ portable は %TEMP% へ展開します（CLAUDE.md 規約 2 に触れる点に注意）');
+  out('== 起動計測 (win-unpacked) ==');
 
   const wallStart = Date.now();
   spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
@@ -126,7 +120,6 @@ async function main() {
   out(`  メモリ合計                     : ${totalMb.toFixed(0)} MB (${procs.length} プロセス)`);
 
   await killAll('FeatherTree.exe');
-  if (usePortable) await killAll('FeatherTree-0.0.0-portable.exe');
   out('');
   out('計測完了。アプリは終了させました。');
 }

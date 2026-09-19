@@ -104,4 +104,23 @@ describe('リモート操作 (対応表 #22〜#25)', () => {
   it('存在しないリモートへのフェッチは GitCommandError になる（ハングしない）', async () => {
     await expect(fetchRemote(fx.ctx, 'nowhere')).rejects.toBeInstanceOf(GitCommandError);
   });
+
+  /*
+   * 診断 3-A: `.git/config` の `[remote "--upload-pack=..."]` のように、リモート名は
+   * git のリファレンス名検証を通らない「先頭が - の文字列」にできる（`remote add -- <name>` で
+   * 実際に作れることを確認済み）。`--` 無しで `fetch --progress <remote>` を打つと、こうした名前は
+   * オプションとして解釈され `error: unknown switch` になる（≒ RCE オプションの注入口）。
+   * `--` を挟むと同じ名前でも通常の fetch/push と同じ結果になることを確かめる。
+   */
+  it('先頭が - のリモート名でも、-- 区切りにより通常の fetch/push と同じ結果になる（3-A）', async () => {
+    // remote add 自体は -- を挟めば先頭 - の名前も受け付ける（診断が指摘した経路を再現）
+    await fx.run('remote', 'remove', 'origin');
+    await fx.run('remote', 'add', '--', '-mirror', bare);
+
+    await expect(fetchRemote(fx.ctx, '-mirror')).resolves.toBeUndefined();
+    await expect(pushBranch(fx.ctx, '-mirror', 'main', true)).resolves.toBeUndefined();
+
+    const branches = await listBranches(fx.ctx);
+    expect(branches.find((b) => b.shortName === 'main')?.upstream).toBe('-mirror/main');
+  });
 });

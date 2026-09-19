@@ -1,6 +1,6 @@
 import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 export type GitSource = 'configured' | 'path' | 'registry';
 
@@ -57,7 +57,9 @@ async function searchPath(env: NodeJS.ProcessEnv, exists: (p: string) => Promise
 
   for (const dir of rawPath.split(separator)) {
     const trimmed = dir.trim().replace(/^"|"$/g, '');
-    if (trimmed.length === 0) continue;
+    // 相対パス要素（`.` を含む）は無視する。ここは cwd を渡さない spawn なので実害は無いが、
+    // terminalLocator.ts の findOnPath と同じ規則にしておく（1-A の教訓）。
+    if (trimmed.length === 0 || !isAbsolute(trimmed)) continue;
     for (const name of names) {
       const candidate = join(trimmed, name);
       if (await exists(candidate)) return candidate;
@@ -66,12 +68,21 @@ async function searchPath(env: NodeJS.ProcessEnv, exists: (p: string) => Promise
   return null;
 }
 
-/** HKLM\SOFTWARE\GitForWindows の InstallPath を読む。reg query を 1 回だけ実行する。 */
+/**
+ * HKLM\SOFTWARE\GitForWindows の InstallPath を読む。reg query を 1 回だけ実行する。
+ *
+ * `reg` を bare 名で spawn すると、cwd 検索の対象になる（1-B, Low）。ここは cwd を
+ * 指定しない spawn なのでアプリの起動ディレクトリが対象になり、リポジトリからは直接
+ * 到達できないが、念のため `%SystemRoot%\System32\reg.exe` の絶対パスに固定する。
+ */
 function queryGitForWindowsRegistry(): Promise<string | null> {
   if (process.platform !== 'win32') return Promise.resolve(null);
 
+  const systemRoot = process.env['SystemRoot'] ?? process.env['SYSTEMROOT'] ?? 'C:\\Windows';
+  const regPath = join(systemRoot, 'System32', 'reg.exe');
+
   return new Promise((resolve) => {
-    const child = spawn('reg', ['query', 'HKLM' + String.fromCharCode(92) + 'SOFTWARE' + String.fromCharCode(92) + 'GitForWindows', '/v', 'InstallPath'], {
+    const child = spawn(regPath, ['query', 'HKLM' + String.fromCharCode(92) + 'SOFTWARE' + String.fromCharCode(92) + 'GitForWindows', '/v', 'InstallPath'], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore'],
     });

@@ -19,6 +19,20 @@
       (e.currentTarget as HTMLSelectElement).value as SettingsDto['refocusUpdateMode'],
     );
   }
+
+  /*
+   * 更新確認の結果文言（決定 29）。
+   * 確認中は結果欄を空にする（「今すぐ確認」ボタン側の文字で分かるので二重に出さない）。
+   */
+  const updateResultText = $derived.by((): string => {
+    if (app.checkingUpdate) return '';
+    if (app.updateState.outcome === 'new-version') {
+      return `新しいバージョン ${app.updateState.version ?? ''} があります`;
+    }
+    if (app.updateState.outcome === 'up-to-date') return '最新です';
+    if (app.updateState.outcome === 'failed') return '確認できませんでした';
+    return ''; // 'unknown'（まだ 1 度も確認していない）
+  });
 </script>
 
 <!--
@@ -62,6 +76,37 @@
       <span>レポジトリタブに現在情報を記載</span>
     </label>
     <p class="note">アクティブなタブに、ブランチ名と今のコミットの件名を並べます。</p>
+
+    <!-- 更新（決定 29）。自動確認はしないが、新版の存在は通知する。ダウンロード・インストールはしない。 -->
+    <div class="section">
+      <h3 class="section-title">更新</h3>
+      <p class="note version">現在のバージョン: {app.appInfo?.appVersion ?? '不明'}</p>
+
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={app.settings?.checkForUpdates ?? true}
+          onchange={(e) => void app.setCheckForUpdates(e.currentTarget.checked)}
+        />
+        <span>起動時に自動で確認する（24 時間に 1 回）</span>
+      </label>
+
+      <div class="update-row">
+        <button onclick={() => void app.checkForUpdatesNow()} disabled={app.checkingUpdate}>
+          {app.checkingUpdate ? '確認中…' : '今すぐ確認'}
+        </button>
+        {#if updateResultText.length > 0}
+          <span class="update-result">{updateResultText}</span>
+        {/if}
+      </div>
+
+      {#if app.hasUpdateAvailable}
+        <div class="update-row">
+          <button onclick={() => void app.openUpdateReleasePage()}>ダウンロードページを開く</button>
+          <button onclick={() => void app.dismissUpdate()}>この版は通知しない</button>
+        </div>
+      {/if}
+    </div>
 
     <div class="actions">
       <button onclick={onclose}>閉じる</button>
@@ -121,6 +166,37 @@
   /* 設定の効きを 1 行で補う。項目名より一段引いた見た目にする。 */
   .note {
     margin: 0 0 14px 22px;
+    color: var(--app-text-muted);
+    font-size: var(--app-font-size-mono);
+  }
+
+  /* 節の区切り（更新）。上に区切り線を敷いて、テーマ系の設定と混ざらないようにする。 */
+  .section {
+    margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--app-border-subtle);
+  }
+
+  .section-title {
+    margin: 0 0 10px;
+    font-size: var(--app-font-size-ui);
+    font-weight: 600;
+    color: var(--app-text-secondary);
+  }
+
+  /* バージョン表示は note と同じ引き方だが、チェックボックスの上に来るので左マージンは付けない。 */
+  .note.version {
+    margin-left: 0;
+  }
+
+  .update-row {
+    display: flex;
+    align-items: center;
+    gap: var(--app-metric-gap);
+    margin: 8px 0;
+  }
+
+  .update-result {
     color: var(--app-text-muted);
     font-size: var(--app-font-size-mono);
   }

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { isAbsolute } from 'node:path';
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import { CHANNELS } from '@feathertree/ipc';
 import { applyTitleBarOverlay } from '@feathertree/base-electron';
@@ -70,6 +71,12 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
      * stdio を捨てるのは、相手の出力を読む気が無いため（読まないパイプは詰まる）。
      */
     launchTerminal: (launch, cwd) => {
+      // locateTerminal は必ず絶対パスを返す契約（1-A）。相対パス・bare 名で spawn すると
+      // Windows の libuv が cwd（リポジトリルート）を PATH より先に検索してしまうため、
+      // 契約違反を検知したらここで落とす（起動しない）。実装ミスの検出を兼ねた防御的二重チェック。
+      if (!isAbsolute(launch.exe)) {
+        throw new Error('ターミナルの起動先が絶対パスではありません: ' + launch.exe);
+      }
       const child = spawn(launch.exe, [...launch.args], {
         cwd,
         shell: false,
@@ -162,7 +169,9 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     service.remotePush(id, req),
   );
 
-  bind(CHANNELS.shellOpenPath, (id: string, path: string) => service.shellOpenPath(id, path));
+  bind(CHANNELS.shellOpenPath, (id: string, path: string, confirmed?: boolean) =>
+    service.shellOpenPath(id, path, confirmed),
+  );
   bind(CHANNELS.shellShowInFolder, (id: string, path: string) =>
     service.shellShowInFolder(id, path),
   );

@@ -66,6 +66,12 @@ export const CHANNELS = {
 
   commandLogRecent: 'diag:commandLog',
 
+  // 更新通知（決定 29）
+  updateGetState: 'update:getState',
+  updateCheckNow: 'update:checkNow',
+  updateOpenReleasePage: 'update:openReleasePage',
+  updateDismiss: 'update:dismiss',
+
   // main -> renderer の通知
   eventSessionChanged: 'event:sessionChanged',
   eventProgress: 'event:progress',
@@ -74,6 +80,7 @@ export const CHANNELS = {
   eventCommandStart: 'event:commandStart',
   eventCommandEnd: 'event:commandEnd',
   eventCommandLogged: 'event:commandLogged',
+  eventUpdateAvailable: 'event:updateAvailable',
 } as const;
 
 export type ChannelName = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -143,6 +150,13 @@ export interface SettingsDto {
   readonly refocusUpdateMode: 'auto' | 'modal' | 'none';
   readonly recentRepositories: readonly string[];
   readonly openRepositories: readonly string[];
+
+  /** 起動時の自動確認（決定 29）。オフなら手動確認のみ。 */
+  readonly checkForUpdates: boolean;
+  /** 最後に確認を試みた時刻（epoch ms）。未確認は null。 */
+  readonly lastUpdateCheckAt: number | null;
+  /** 「この版は通知しない」で選んだバージョン（'x.y.z'）。 */
+  readonly dismissedUpdateVersion: string | null;
 }
 
 // ---------------------------------------------------------------- セッション
@@ -503,6 +517,28 @@ export interface FocusRefreshPromptEvent {
   readonly sessionId: string;
 }
 
+// ---------------------------------------------------------------- 更新通知（決定 29）
+
+/**
+ * 確認の結果。
+ *  - unknown: まだ 1 度も確認していない（起動直後、自動確認がまだ届いていない等）
+ *  - up-to-date: 確認できて、新版は無かった（dismissed で隠した場合も含む）
+ *  - new-version: 新版がある（version に 'x.y.z'）
+ *  - failed: 確認できなかった（非 200・JSON 不正・タイムアウト・オフライン等）
+ */
+export type UpdateOutcomeDto = 'unknown' | 'up-to-date' | 'new-version' | 'failed';
+
+export interface UpdateStateDto {
+  readonly outcome: UpdateOutcomeDto;
+  /** outcome が 'new-version' のときだけ値を持つ。 */
+  readonly version: string | null;
+}
+
+/** 起動時の自動確認で新版が見つかったときの通知。renderer 準備前に届いた分は updateGetState で取り直す。 */
+export interface UpdateAvailableEvent {
+  readonly version: string;
+}
+
 // ---------------------------------------------------------------- 公開 API
 
 /** preload が contextBridge で renderer に公開する API の形。 */
@@ -583,7 +619,11 @@ export interface FeatherTreeBridge {
   remotePull(id: string): Promise<Result<RemoteResultDto>>;
   remotePush(id: string, req: PushRequest): Promise<Result<RemoteResultDto>>;
 
-  shellOpenPath(id: string, path: string): Promise<Result<void>>;
+  /**
+   * 実行されうる拡張子（`.exe` 等、判定は `isExecutableFileName`）のときだけ、
+   * main が `confirmed` を求める（`needs-confirmation`）。それ以外は無確認で開く（脆弱性診断 §5）。
+   */
+  shellOpenPath(id: string, path: string, confirmed?: boolean): Promise<Result<void>>;
   shellShowInFolder(id: string, path: string): Promise<Result<void>>;
   /**
    * リポジトリを外部ターミナルで開く（決定 26）。
@@ -592,6 +632,22 @@ export interface FeatherTreeBridge {
   shellOpenTerminal(id: string): Promise<Result<void>>;
 
   commandLogRecent(limit: number): Promise<Result<readonly CommandLogEntryDto[]>>;
+
+  /**
+   * 直近の確認結果を取り直す（決定 29）。
+   * 起動時の自動確認は renderer の準備前に終わることがあるので、
+   * onUpdateAvailable の取りこぼしに備えてここで取り直せるようにしてある。
+   */
+  updateGetState(): Promise<Result<UpdateStateDto>>;
+  /** 手動確認。24 時間の間引きと dismissed を無視して確認し、結果を返す。 */
+  updateCheckNow(): Promise<Result<UpdateStateDto>>;
+  /**
+   * ダウンロードページ（GitHub の releases タグページ）を既定のブラウザで開く。
+   * URL や tag は渡さない——main が保持している検証済みの tag から組み立てる。
+   */
+  updateOpenReleasePage(): Promise<Result<void>>;
+  /** 「この版は通知しない」。現在通知中の版を dismissedUpdateVersion に保存する。 */
+  updateDismiss(): Promise<Result<void>>;
 
   /** 購読解除用の関数を返す。 */
   onSessionChanged(listener: (event: SessionChangedEvent) => void): () => void;
@@ -605,4 +661,6 @@ export interface FeatherTreeBridge {
    * （取り直すきっかけが操作の後に限られていると、表示が古いまま残るため）。
    */
   onCommandLogged(listener: (entry: CommandLogEntryDto) => void): () => void;
+  /** 起動時の自動確認で新版が見つかった（決定 29）。 */
+  onUpdateAvailable(listener: (event: UpdateAvailableEvent) => void): () => void;
 }

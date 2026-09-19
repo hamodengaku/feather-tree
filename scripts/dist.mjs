@@ -25,7 +25,16 @@ const cli = resolve(root, 'node_modules/electron-builder', binRel);
 
 // 追加引数はそのまま electron-builder へ渡す（--dir で win-unpacked のみ作る等）
 const extra = process.argv.slice(2);
-const args = ['--win', ...extra, `--config.electronDownload.cache=${electronCache}`];
+// --publish never を固定する（決定 22）。electron-builder.yml の publish: null と二重の保険。
+// 開発機の環境に GH_TOKEN が残っていても、それだけで Releases へ誤アップロードしないようにする
+// （公開はソースのみで、成果物は人間が手動で Releases に上げる方針のため）。
+const args = [
+  '--win',
+  ...extra,
+  `--config.electronDownload.cache=${electronCache}`,
+  '--publish',
+  'never',
+];
 
 console.log(`[dist] electron-builder cache -> ${builderCache}`);
 console.log(`[dist] electron download cache -> ${electronCache}`);

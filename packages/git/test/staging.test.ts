@@ -129,6 +129,35 @@ describe('ステージングとコミット (対応表 #5〜#11)', () => {
     expect((await getStatus(fx.ctx)).counts.untracked).toBe(0);
   });
 
+  /*
+   * 破壊的バグ診断（.tmp/release-prep/destructive.md #1）: `git clean` はパス無しで打つと
+   * リポジトリ全体の未追跡ファイルを無条件に全削除する安全弁の無いコマンド。CLEAN_CHUNK
+   * ちょうどの件数・その前後で「最後のチャンクが空になる」ような off-by-one が
+   * 将来のリファクタリングで入り込んでいないかを境界値で確かめる（199 / 200 / 201 件）。
+   */
+  it.each([199, 200, 201])('CLEAN_CHUNK の境界（%i 件）でも欠けなく削除される', async (count) => {
+    const paths: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const p = `boundary/file_${String(i)}.txt`;
+      await fx.write(p, 'x');
+      paths.push(p);
+    }
+
+    await removeUntracked(fx.ctx, paths);
+
+    expect((await getStatus(fx.ctx)).counts.untracked).toBe(0);
+  });
+
+  it('空配列では git を実行せず、リポジトリ全体を削除するような事故も起きない', async () => {
+    await fx.write('keep1.txt', 'x');
+    await fx.write('keep2.txt', 'y');
+
+    await removeUntracked(fx.ctx, []);
+
+    await expect(stat(join(fx.dir, 'keep1.txt'))).resolves.toBeTruthy();
+    await expect(stat(join(fx.dir, 'keep2.txt'))).resolves.toBeTruthy();
+  });
+
   it('複数行・日本語のコミットメッセージを扱える', async () => {
     await fx.write('a.txt', 'x');
     await stagePaths(fx.ctx, ['a.txt']);

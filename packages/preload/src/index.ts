@@ -25,6 +25,7 @@ import {
   type SessionChangedEvent,
   type SettingsDto,
   type StatusPageRequest,
+  type UpdateAvailableEvent,
 } from '@feathertree/ipc';
 
 function subscribe<T>(channel: string, listener: (payload: T) => void): () => void {
@@ -86,12 +87,18 @@ const bridge: FeatherTreeBridge = {
   remotePull: (id: string) => ipcRenderer.invoke(CHANNELS.remotePull, id),
   remotePush: (id: string, req: PushRequest) => ipcRenderer.invoke(CHANNELS.remotePush, id, req),
 
-  shellOpenPath: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.shellOpenPath, id, path),
+  shellOpenPath: (id: string, path: string, confirmed?: boolean) =>
+    ipcRenderer.invoke(CHANNELS.shellOpenPath, id, path, confirmed),
   shellShowInFolder: (id: string, path: string) =>
     ipcRenderer.invoke(CHANNELS.shellShowInFolder, id, path),
   shellOpenTerminal: (id: string) => ipcRenderer.invoke(CHANNELS.shellOpenTerminal, id),
 
   commandLogRecent: (limit: number) => ipcRenderer.invoke(CHANNELS.commandLogRecent, limit),
+
+  updateGetState: () => ipcRenderer.invoke(CHANNELS.updateGetState),
+  updateCheckNow: () => ipcRenderer.invoke(CHANNELS.updateCheckNow),
+  updateOpenReleasePage: () => ipcRenderer.invoke(CHANNELS.updateOpenReleasePage),
+  updateDismiss: () => ipcRenderer.invoke(CHANNELS.updateDismiss),
 
   onSessionChanged: (listener: (event: SessionChangedEvent) => void) =>
     subscribe(CHANNELS.eventSessionChanged, listener),
@@ -107,6 +114,8 @@ const bridge: FeatherTreeBridge = {
     subscribe(CHANNELS.eventCommandEnd, listener),
   onCommandLogged: (listener: (entry: CommandLogEntryDto) => void) =>
     subscribe(CHANNELS.eventCommandLogged, listener),
+  onUpdateAvailable: (listener: (event: UpdateAvailableEvent) => void) =>
+    subscribe(CHANNELS.eventUpdateAvailable, listener),
 };
 
 contextBridge.exposeInMainWorld('ft', bridge);

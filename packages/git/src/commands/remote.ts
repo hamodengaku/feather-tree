@@ -15,10 +15,17 @@ import type { GitContext } from './context.js';
  * 資格情報が無ければハングせず異常終了し、stderr がエラー表へ写される。
  */
 
-/** 対応表 #22: 指定したリモートを取得する。追跡ブランチだけが動き、作業ツリーは触らない。 */
+/**
+ * 対応表 #22: 指定したリモートを取得する。追跡ブランチだけが動き、作業ツリーは触らない。
+ *
+ * `remote` の直前に `--` を置く（3-A）。`.git/config` の `[remote "--upload-pack=..."]` のように
+ * リモート名は git のリファレンス名検証を通らない文字列にできるため、`--` が無いと
+ * `--upload-pack=<任意コマンド>` をオプションとして解釈させられる（RCE）。main 側の一覧照合
+ * （knownRemote）と多重防御にする。
+ */
 export async function fetchRemote(ctx: GitContext, remote: string): Promise<void> {
   const { exit } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'fetch', '--progress', remote] },
+    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'fetch', '--progress', '--', remote] },
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['fetch'], exit.code, exit.stderr);
@@ -44,6 +51,10 @@ export async function pullCurrent(ctx: GitContext): Promise<void> {
  * setUpstream が真なら #25（`--set-upstream`）。上流がまだ無いブランチに対して使い、
  * 以後 pull / push が引数なしで通るようにする。
  * 強制プッシュ（#26）はここに無い。確認ダイアログを伴うので別の関数として足すこと。
+ *
+ * `remote` / `branch` の直前に `--` を置く（3-A）。fetch と同じ理由で、リモート名・ブランチ名に
+ * `--receive-pack=<任意コマンド>` のような文字列が来てもオプションとして解釈させない。
+ * `--set-upstream` はオプションなので `--` より前に置く（`--` の後ろは全て位置引数）。
  */
 export async function pushBranch(
   ctx: GitContext,
@@ -52,8 +63,8 @@ export async function pushBranch(
   setUpstream: boolean,
 ): Promise<void> {
   const args = setUpstream
-    ? [...WRITE_PREFIX, 'push', '--progress', '--set-upstream', remote, branch]
-    : [...WRITE_PREFIX, 'push', '--progress', remote, branch];
+    ? [...WRITE_PREFIX, 'push', '--progress', '--set-upstream', '--', remote, branch]
+    : [...WRITE_PREFIX, 'push', '--progress', '--', remote, branch];
 
   const { exit } = await runGitText({ gitPath: ctx.gitPath, cwd: ctx.cwd, args }, ctx.signal);
   if (exit.code !== 0) throw new GitCommandError(['push'], exit.code, exit.stderr);

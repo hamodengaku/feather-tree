@@ -28,6 +28,13 @@
   const mode = $derived(app.viewMode);
   const collapsed = $derived(app.settings?.branchPaneCollapsed ?? false);
   const dark = $derived(isDarkTheme(app.settings?.theme ?? 'phoenix-light'));
+  /** 新版があるとき、設定ボタンに小さなバッジを出す（決定 29）。 */
+  const hasUpdate = $derived(app.hasUpdateAvailable);
+  const settingsTitle = $derived(
+    hasUpdate && app.updateState.version !== null
+      ? `設定（新しいバージョン ${app.updateState.version} があります）`
+      : '設定',
+  );
 </script>
 
 <nav class="activity-bar" aria-label="表示と設定">
@@ -94,13 +101,17 @@
   <!-- 下端。アプリ全体に効くものだけを置く。 -->
   <div class="group bottom">
     <button
-      class="activity-btn small"
-      title="設定"
+      class="activity-btn small update-anchor"
+      title={settingsTitle}
       aria-haspopup="dialog"
       aria-expanded={optionsOpen}
       onclick={onopenoptions}
     >
       {dark ? '☾' : '☀'}⚙
+      {#if hasUpdate}
+        <!-- 押せる的の面積は変えない。バッジは装飾で、確定情報は title と設定ダイアログ側にある。 -->
+        <span class="update-badge" aria-hidden="true"></span>
+      {/if}
     </button>
   </div>
 </nav>
@@ -152,6 +163,23 @@
   .activity-btn.small {
     font-size: calc(var(--app-font-size-ui) * 1.2);
     line-height: 1.4;
+  }
+
+  /* バッジを乗せる基準にするだけ。ボタンの見た目・的の面積は変えない。 */
+  .update-anchor {
+    position: relative;
+  }
+
+  /* 新版の通知（決定 29）。押せる面積を変えないよう絶対配置の装飾に留める。 */
+  .update-badge {
+    position: absolute;
+    top: 2px;
+    right: calc(50% - 12px);
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--app-accent);
+    border: 1px solid var(--app-bg-raised);
   }
 
   /* SVG を入れるものは中央に置く（文字の行送りに引きずられないように）。 */

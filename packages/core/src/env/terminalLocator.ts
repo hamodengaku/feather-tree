@@ -1,5 +1,5 @@
 import { access } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
 /**
  * 「ターミナルで開く」の起動先を決める（決定 26）。
@@ -8,7 +8,15 @@ import { dirname, join } from 'node:path';
  * ただ Windows ターミナルを出せばいいわけではない。
  */
 export interface TerminalLaunch {
-  /** 起動する実行ファイル。PATH 上の名前か絶対パス。 */
+  /**
+   * 起動する実行ファイル。**必ず絶対パス。**
+   *
+   * bare な実行ファイル名（`wt.exe` 等）を spawn すると、Windows の libuv は
+   * `shell: false` かつ cwd 指定つきのとき、cwd を PATH より先に検索する
+   * （`search_path()` の仕様）。cwd はこれから開くリポジトリのルート＝信頼できない場所なので、
+   * 同名の実行ファイルを直下に置かれるだけで乗っ取られる（1-A の Critical）。
+   * それを避けるため、ここで返す `exe` は常に解決済みの絶対パスにする。
+   */
   readonly exe: string;
   /** 引数。必ず配列で持つ（コマンド文字列を組み立てない）。 */
   readonly args: readonly string[];
@@ -37,17 +45,29 @@ export interface TerminalLocatorDeps {
 export async function locateTerminal(deps: TerminalLocatorDeps): Promise<TerminalLaunch | null> {
   const exists = deps.exists ?? defaultExists;
 
-  if (await findOnPath('git.exe', deps.env, exists)) {
+  if ((await findOnPath('git.exe', deps.env, exists)) !== null) {
+    // wt.exe は PATH 上で見つかった絶対パスを使う（bare 名は返さない）。
     // -d はディレクトリ指定。新しいタブがリポジトリ直下で開く。
-    if (await findOnPath('wt.exe', deps.env, exists)) return { exe: 'wt.exe', args: ['-d', deps.cwd] };
-    // powershell.exe は Windows に必ずある。cwd は spawn 側で与えるので引数は要らない。
-    return { exe: 'powershell.exe', args: [] };
+    const wt = await findOnPath('wt.exe', deps.env, exists);
+    if (wt !== null) return { exe: wt, args: ['-d', deps.cwd] };
+
+    // powershell.exe は PATH 探索に頼らず、%SystemRoot%\System32\...\v1.0 を直接組み立てる。
+    // System32 は cwd 検索より前に来ないため元々安全だが、絶対パスで統一して事故の芽を消す。
+    // cwd は spawn 側で与えるので引数は要らない。
+    const powershell = powershellPath(deps.env);
+    if (await exists(powershell)) return { exe: powershell, args: [] };
   }
 
   const gitBash = gitBashFor(deps.gitPath);
   if (gitBash !== null && (await exists(gitBash))) return { exe: gitBash, args: [] };
 
   return null;
+}
+
+/** `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` の絶対パスを組み立てる。 */
+function powershellPath(env: NodeJS.ProcessEnv): string {
+  const systemRoot = env['SystemRoot'] ?? env['SYSTEMROOT'] ?? 'C:\\Windows';
+  return join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 }
 
 /**
@@ -62,21 +82,30 @@ function gitBashFor(gitPath: string | null): string | null {
   return join(installDir, 'git-bash.exe');
 }
 
+/**
+ * PATH 上で name を探し、見つかった**絶対パス**を返す（bare 名は返さない）。
+ *
+ * 相対パス要素（`.` を含む）・空要素は無視する。PATH に `.` が混ざっていると
+ * 「カレントディレクトリの同名ファイルが拾われる」という 1-A と同種の問題になるため、
+ * 絶対パスでない PATH エントリはそもそも候補にしない。
+ */
 async function findOnPath(
   name: string,
   env: NodeJS.ProcessEnv,
   exists: (path: string) => Promise<boolean>,
-): Promise<boolean> {
+): Promise<string | null> {
   const rawPath = env['PATH'] ?? env['Path'] ?? '';
-  if (rawPath.length === 0) return false;
+  if (rawPath.length === 0) return null;
 
   const separator = process.platform === 'win32' ? ';' : ':';
   for (const dir of rawPath.split(separator)) {
     const trimmed = dir.trim().replace(/^"|"$/g, '');
     if (trimmed.length === 0) continue;
-    if (await exists(join(trimmed, name))) return true;
+    if (!isAbsolute(trimmed)) continue;
+    const candidate = join(trimmed, name);
+    if (await exists(candidate)) return candidate;
   }
-  return false;
+  return null;
 }
 
 async function defaultExists(path: string): Promise<boolean> {

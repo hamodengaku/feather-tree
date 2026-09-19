@@ -11,6 +11,7 @@ import type { CommandLogEntry } from '@feathertree/core';
 import { AppContext } from './appContext.js';
 import { toCommandLogEntryDto } from './handlers/commandLogDto.js';
 import { registerHandlers } from './handlers/register.js';
+import { STARTUP_UPDATE_CHECK_DELAY_MS, registerUpdateHandlers } from './handlers/update.js';
 import { hardenWindow, titleBarOverlayOptions, writeStartupMetrics } from '@feathertree/base-electron';
 import { WINDOW_BACKGROUND, chromeFor } from './windowChrome.js';
 import {
@@ -45,6 +46,12 @@ function resolveWindowIcon(): string | undefined {
 
 let mainWindow: BrowserWindow | null = null;
 let appReadyMs = 0;
+
+/**
+ * 更新通知（決定 29）の起動時チェック。null なら未登録（起動処理が途中で失敗した場合等）。
+ * handOverToMainWindow から呼ぶので、登録は app.whenReady 内の try ブロックで行う。
+ */
+let runStartupUpdateCheck: (() => Promise<void>) | null = null;
 
 /**
  * スプラッシュ（決定 28）。起動中だけ存在する。
@@ -92,6 +99,16 @@ async function handOverToMainWindow(): Promise<void> {
       ...(splashShownMs === undefined ? {} : { splashShownMs }),
       windowShownMs,
     });
+
+    /*
+     * 更新通知（決定 29）: 本体ウィンドウ表示後に、数秒待ってから 1 回だけ確認する。
+     * setTimeout にしてあるのは、show() 直後の重い時間帯とネットワーク処理を重ねないため
+     * （決定 28 の起動を 1ms も遅らせない、という制約はここまでで満たしている）。
+     */
+    const startupCheck = runStartupUpdateCheck;
+    if (startupCheck !== null) {
+      setTimeout(() => void startupCheck(), STARTUP_UPDATE_CHECK_DELAY_MS);
+    }
   }
 
   if (splash !== null) await fadeOutAndClose(splash);
@@ -250,6 +267,7 @@ void app.whenReady().then(async () => {
     context.onCommandEnd = notifyCommandEnd;
     context.commandLog.onAdd(notifyCommandLogged);
     registerHandlers(context, () => mainWindow);
+    runStartupUpdateCheck = registerUpdateHandlers(context, () => mainWindow).runStartupCheck;
     mainWindow = createWindow();
     mainWindow.on('closed', () => {
       mainWindow = null;

@@ -20,6 +20,7 @@ import {
 } from '@feathertree/git';
 import type { CommandLog } from '@feathertree/base-core';
 import { mapGitStderr, type MappedError } from '../policy/errorMapping.js';
+import { redactUrl } from '../policy/redactUrl.js';
 import type { AppSettings } from '../settings/schema.js';
 import { pageEntries, type StatusFilter, type StatusPage, type StatusSummary } from './statusView.js';
 
@@ -296,12 +297,20 @@ export class RepositorySession {
       return result;
     } catch (err) {
       const mapped = toMappedError(err);
+      /*
+       * fetch/pull/push はここを通る唯一の関門（track() のコメント参照）。git の stderr には
+       * リモート URL が現れることがあり、利用者が資格情報埋め込み URL
+       * （`https://user:TOKEN@host/...`）を remote に設定していれば平文で残る（診断 §11 残存指摘）。
+       * クローン（cloneRunner.ts）と同じ理由でコマンドログに渡す前に redactUrl を通す。
+       * redactUrl は冪等（既に *** に置換済みの文字列を渡しても変化しない）なので、
+       * クローンの生ログ等、別経路で既に一度適用されていても二重適用で壊れない。
+       */
       this.#deps.commandLog.add({
         cwd: this.#root,
         args,
         exitCode: mapped.exitCode ?? -1,
         elapsedMs: Date.now() - startedAt,
-        ...(mapped.detail === undefined ? {} : { stderr: mapped.detail }),
+        ...(mapped.detail === undefined ? {} : { stderr: redactUrl(mapped.detail) }),
         scope: this.id,
       });
       throw err;

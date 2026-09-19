@@ -26,6 +26,8 @@ import type {
   SessionDto,
   SettingsDto,
   StatusPageRequest,
+  UpdateAvailableEvent,
+  UpdateStateDto,
 } from '@feathertree/ipc';
 
 export interface Call {
@@ -54,6 +56,9 @@ const SETTINGS: SettingsDto = {
   refocusUpdateMode: 'auto',
   recentRepositories: [],
   openRepositories: [],
+  checkForUpdates: true,
+  lastUpdateCheckAt: null,
+  dismissedUpdateVersion: null,
 };
 
 const ok = <T>(value: T): Result<T> => ({ ok: true, value });
@@ -215,6 +220,16 @@ export class FakeBridge {
   commandLoggedListeners: ((e: CommandLogEntryDto) => void)[] = [];
   /** main が保持しているコマンドログ（新しい順）。commandLogRecent が返す。 */
   commandLogEntries: CommandLogEntryDto[] = [];
+
+  /** main が保持している更新確認の状態（決定 29）。updateGetState / updateCheckNow が返す。 */
+  updateState: UpdateStateDto = { outcome: 'unknown', version: null };
+  updateAvailableListeners: ((e: UpdateAvailableEvent) => void)[] = [];
+
+  /** main が起動時の自動確認で新版を見つけたことにする。 */
+  emitUpdateAvailable(version: string): void {
+    this.updateState = { outcome: 'new-version', version };
+    for (const listener of this.updateAvailableListeners) listener({ version });
+  }
 
   /** main がコマンドログに 1 件足して通知してきたことにする（保持分にも足す）。 */
   emitCommandLogged(entry: CommandLogEntryDto): void {
@@ -538,9 +553,11 @@ export class FakeBridge {
         this.seq += 1;
         return Promise.resolve(ok({ statusSeq: this.seq }));
       },
-      shellOpenPath: (id: string, path: string) => {
-        this.record('shellOpenPath', id, path);
-        return Promise.resolve(ok(undefined));
+      shellOpenPath: (id: string, path: string, confirmed?: boolean) => {
+        this.record('shellOpenPath', id, path, confirmed);
+        return Promise.resolve(
+          this.guard('shellOpenPath', 'open-executable-file', confirmed, undefined),
+        );
       },
       shellShowInFolder: (id: string, path: string) => {
         this.record('shellShowInFolder', id, path);
@@ -553,6 +570,23 @@ export class FakeBridge {
       commandLogRecent: (limit: number) => {
         this.record('commandLogRecent', limit);
         return Promise.resolve(ok(this.commandLogEntries.slice(0, limit)));
+      },
+      updateGetState: () => {
+        this.record('updateGetState');
+        return Promise.resolve(ok(this.updateState));
+      },
+      updateCheckNow: () => {
+        this.record('updateCheckNow');
+        return Promise.resolve(ok(this.updateState));
+      },
+      updateOpenReleasePage: () => {
+        this.record('updateOpenReleasePage');
+        return Promise.resolve(ok(undefined));
+      },
+      updateDismiss: () => {
+        this.record('updateDismiss');
+        this.updateState = { outcome: 'up-to-date', version: null };
+        return Promise.resolve(ok(undefined));
       },
       onSessionChanged: (listener) => {
         this.changedListeners.push(listener);
@@ -594,6 +628,12 @@ export class FakeBridge {
         this.commandLoggedListeners.push(listener);
         return () => {
           this.commandLoggedListeners = this.commandLoggedListeners.filter((l) => l !== listener);
+        };
+      },
+      onUpdateAvailable: (listener) => {
+        this.updateAvailableListeners.push(listener);
+        return () => {
+          this.updateAvailableListeners = this.updateAvailableListeners.filter((l) => l !== listener);
         };
       },
     };

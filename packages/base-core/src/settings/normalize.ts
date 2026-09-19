@@ -36,6 +36,17 @@ export function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+/**
+ * epoch ms のような「0 以上の整数か null」を保つ値。
+ * 既定は null（「まだ確認していない」等の意味に使う。clampInt と違い、範囲外を
+ * 既定値へ丸めるのではなく null に落とす——最終確認時刻は丸めて誤魔化せる値ではないため）。
+ */
+export function intOrNull(value: unknown, min: number): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const rounded = Math.round(value);
+  return rounded < min ? null : rounded;
+}
+
 /** ネストしたオブジェクトを安全に取り出す。 */
 export function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};

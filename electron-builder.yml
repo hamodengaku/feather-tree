@@ -5,6 +5,11 @@ copyright: FeatherTree
 directories:
   output: release
 
+# zip の artifactName（決定 5・2026-09-13 改定）。
+# NSIS は自分専用の artifactName（nsis: セクション）を持つので、ここは実質 zip にしか効かない
+# （zip はターゲット固有のオプションを持たないため、この win 直下の値まで降りてくる）。
+artifactName: FeatherTree-${version}-win-x64.${ext}
+
 # out/ は electron-vite がバンドル済み。実行時 npm 依存はゼロなので node_modules は含めない。
 files:
   - out/**/*
@@ -20,13 +25,55 @@ compression: maximum
 
 # Chromium が持ち込む WebGPU 用 DLL（dxcompiler / dxil、計約 26MB）を削る（決定 5）。
 # files は app 側にしか効かないので、Electron 本体のファイルはこのフックで消すしかない。
-# 成果物の作成前に呼ばれるため、portable exe にも zip にも含まれない。
+# 成果物の作成前に呼ばれるため、NSIS インストーラにも zip にも含まれない。
 afterPack: scripts/afterPack.mjs
 
 # 不要ロケールを落として配布サイズを削る
 electronLanguages:
   - ja
   - en-US
+
+# Electron Fuses（脆弱性診断 §7 Medium）。既定では RunAsNode 等が有効なままパッケージされ、
+# 配布 exe に ELECTRON_RUN_AS_NODE=1 や NODE_OPTIONS を設定して起動すると Node ランタイムとして
+# 任意コードを実行できてしまう。nodeIntegration を使っていないため通常経路での悪用は難しいが、
+# この経路自体は塞いでおく。キー名は node_modules/app-builder-lib/scheme.json の
+# FuseOptionsV1 で確認済み（@electron/fuses の FuseV1Options に対応）。
+#
+# 実行順序の確認（app-builder-lib/out/platformPackager.js の pack()）:
+#   1. copyAppFiles で resources/app.asar を作る
+#   2. asar 整合性ハッシュを計算（app.asar の内容のみが対象）
+#   3. emitAfterPack → afterPack フック（scripts/afterPack.mjs、appOutDir 直下の
+#      dxcompiler.dll / dxil.dll を削除。app.asar の外なので 2. のハッシュに影響しない）
+#   4. framework.afterPack（Electron 側の内部フック）→ sanityCheckPackage
+#   5. doAddElectronFuses（"fuses MUST be flipped right before signing" とコメントあり）
+#      → @electron/fuses の flipFuses が実行ファイル本体（appOutDir/FeatherTree.exe）に
+#        2. のハッシュを埋め込みつつフューズを書き込む
+#   6. 署名（forceCodeSigning: false なので実質スキップ）
+# afterPack（3.）は exe 本体も app.asar も書き換えないため、フューズ書き込み（5.）や
+# asar 整合性ハッシュの計算（2.）と衝突しない。scripts/dist.mjs の
+# --config.electronDownload.cache 等（Electron 本体 zip の取得先）ともファイルが別なので無関係。
+#
+# 未署名配布（forceCodeSigning: false）では enableEmbeddedAsarIntegrityValidation の効果は
+# 限定的（署名が無ければ exe 自体の改変を検出できない）。それでも app.asar 単体の改竄検出には
+# 意味があるため有効にする。enableCookieEncryption は既存のクッキーとの一方向変換であり
+# 挙動への影響を精査していないため今回は触らない。
+#
+# grantFileProtocolExtraPrivileges（既定 true）は無効化した。本番の renderer / splash は
+# file:// から loadFile している（packages/main/src/index.ts:192, splashWindow.ts:97）が、
+# このフューズが与える特権（file:// からの fetch、service worker、file:// 間 iframe の
+# sandbox 越え）はいずれも使っていない（packages/renderer/src を検索して fetch() /
+# serviceWorker 登録 / iframe が無いことを確認済み。`app.fetch` は git fetch を指す
+# IPC メソッド名で、ブラウザの fetch API ではない）。
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  onlyLoadAppFromAsar: true
+  enableEmbeddedAsarIntegrityValidation: true
+  # grantFileProtocolExtraPrivileges は落とせない（2026-09-17 の実測）。
+  # この権限には file:// URL の中の .asar をアーカイブとして辿る扱いが含まれるため、
+  # false にすると app.asar 内の index.html / splash.html が ERR_FILE_NOT_FOUND になり
+  # 画面が一切出ない。既定（有効）のまま残す。
 
 win:
   # アイコンは .ico を直接渡す。PNG を渡すと electron-builder が機械的に縮小して
@@ -35,15 +82,34 @@ win:
   # 生成物なので版管理していない。`npm run icon` で作り直す（dist が前段で自動実行する）。
   icon: build/icon.ico
   target:
-    - target: portable
+    - target: nsis
       arch:
         - x64
     - target: zip
       arch:
         - x64
 
-portable:
-  artifactName: FeatherTree-${version}-portable.exe
+# ワンクリック・インストーラ（主。決定 5・2026-09-13 改定。旧 portable ターゲットは廃止）。
+# ユーザー単位（perMachine: false）で管理者権限不要。userData の置き場は
+# packages/base-electron/src/paths.ts の resolveUserDataDir を参照。
+nsis:
+  oneClick: true
+  perMachine: false
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: FeatherTree
+  # アンインストール時に userData（%APPDATA%\FeatherTree）を消さない（決定 5）
+  deleteAppDataOnUninstall: false
+  artifactName: FeatherTree-Setup-${version}.exe
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+
+# publish は使わない（決定 22。ビルドは人間が手動で GitHub Releases へ上げる）。
+# undefined のままだと GH_TOKEN が環境にあるときに electron-builder が
+# publish 先の解決を試みることがあるため、明示的に null で止める
+# （scripts/dist.mjs の --publish never と二重で誤アップロードを防ぐ）。
+publish: null
 
 # 未署名配布（README に SmartScreen 警告の注意を記載する）
 forceCodeSigning: false

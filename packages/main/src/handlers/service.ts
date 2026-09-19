@@ -1,9 +1,11 @@
 import {
+  OPEN_EXECUTABLE_CONFIRMATION,
   SessionOperations,
   canBuildPatch,
   describeAction,
   displayNameOf,
   gitNotFoundHint,
+  isExecutableFileName,
   type AppSettings,
   type CloneStage,
   type CommandLog,
@@ -47,8 +49,8 @@ import type {
   StatusSummaryDto,
 } from '@feathertree/ipc';
 import { stat } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
-import { assertInsideRoot } from '@feathertree/base-core';
+import { basename, isAbsolute, join } from 'node:path';
+import { assertInsideRoot, assertRealPathInsideRoot } from '@feathertree/base-core';
 import { HandlerError } from '../errors.js';
 import { toCommandLogEntryDto } from './commandLogDto.js';
 import { createProgressThrottle } from './progressThrottle.js';
@@ -145,7 +147,7 @@ export interface Service {
   remoteFetch(id: string, remote: string): Promise<RemoteResultDto>;
   remotePull(id: string): Promise<RemoteResultDto>;
   remotePush(id: string, req: PushRequest): Promise<RemoteResultDto>;
-  shellOpenPath(id: string, path: string): Promise<void>;
+  shellOpenPath(id: string, path: string, confirmed?: boolean): Promise<void>;
   shellShowInFolder(id: string, path: string): Promise<void>;
   shellOpenTerminal(id: string): Promise<void>;
   commandLogRecent(limit: number): readonly CommandLogEntryDto[];
@@ -223,7 +225,22 @@ export function createService(deps: ServiceDeps): Service {
    * シェル解釈の事故は起きないが、**renderer が名前を自由に決められる状態にしない**
    * （renderer は信頼できない入力を表示する層でもある。docs/01-architecture.md 10 章）。
    */
+  /**
+   * `-` 始まりの名前を拒否する（3-A / 3-B）。
+   *
+   * `.git/config` の `[remote "--upload-pack=..."]` のように、悪意あるリポジトリの設定は
+   * git のリファレンス名検証を通らない文字列をリモート名・ブランチ名にできる。
+   * 一覧照合（knownRemote 等）だけでは「悪意あるリポジトリが作った一覧に載っている」ことしか
+   * 保証しないので、**一覧照合と先頭 `-` 拒否の二重防御**にする（git 層の `--` 区切りとも多重化）。
+   */
+  const rejectLeadingDash = (label: string, value: string): void => {
+    if (value.startsWith('-')) {
+      throw new HandlerError({ kind: 'internal', message: label + '「' + value + '」は使用できません。' });
+    }
+  };
+
   const knownRemote = (id: string, remote: string): string => {
+    rejectLeadingDash('リモート名', remote);
     const session = requireSession(id);
     if (!session.remotes.includes(remote)) {
       throw new HandlerError({ kind: 'internal', message: 'リモート「' + remote + '」がありません。' });
@@ -232,8 +249,34 @@ export function createService(deps: ServiceDeps): Service {
   };
 
   const knownLocalBranch = (id: string, branch: string): string => {
+    rejectLeadingDash('ブランチ名', branch);
     const session = requireSession(id);
     const found = session.branches.some((b) => !b.isRemote && b.shortName === branch);
+    if (!found) {
+      throw new HandlerError({ kind: 'internal', message: 'ブランチ「' + branch + '」がありません。' });
+    }
+    return branch;
+  };
+
+  /**
+   * `branchSwitch` 専用の照合。
+   *
+   * renderer（BranchPane.svelte の switchArg）はリモートブランチをダブルクリックしたとき、
+   * リモート名を除いた名前を渡す（git の DWIM に「ローカル追跡ブランチを新規作成して切替」を
+   * 任せるため）。そのため switch の対象はローカルブランチの shortName だけでなく、
+   * 「いずれかのリモートブランチの shortName からリモート名を除いた名前」も正当な入力になる。
+   * knownLocalBranch のように「ローカル一覧にある名前だけ」に絞ると DWIM チェックアウトが
+   * 全滅するので、ここだけ別の照合にする。
+   */
+  const knownSwitchTarget = (id: string, branch: string): string => {
+    rejectLeadingDash('ブランチ名', branch);
+    const session = requireSession(id);
+    const found = session.branches.some((b) => {
+      if (!b.isRemote) return b.shortName === branch;
+      const slash = b.shortName.indexOf('/');
+      const deprefixed = slash === -1 ? b.shortName : b.shortName.slice(slash + 1);
+      return deprefixed === branch;
+    });
     if (!found) {
       throw new HandlerError({ kind: 'internal', message: 'ブランチ「' + branch + '」がありません。' });
     }
@@ -260,6 +303,21 @@ export function createService(deps: ServiceDeps): Service {
     const session = requireSession(id);
     assertInsideRoot(session.root, path);
     return join(session.root, path);
+  };
+
+  /**
+   * `shell.openPath` / `shell.showItemInFolder` の直前だけに使う、実体パスでの再検証（Medium 1）。
+   *
+   * `resolveInsideRoot` の文字列検証だけでは、ワークツリー内のジャンクション（Windows では
+   * 無権限で作成できる）越しにリポジトリ外の実ファイルを指されても素通りしてしまう。
+   * OS のファイルシステムをそのまま辿る shell 系 API の直前でだけ `fs.realpath` を通し、
+   * 実体がリポジトリルート配下かを改めて確かめる。git 本体（pathspec 経由）はこの影響を
+   * 受けにくいので、他の操作には適用しない。
+   */
+  const resolveShellTarget = async (id: string, path: string): Promise<string> => {
+    const session = requireSession(id);
+    const absolute = resolveInsideRoot(id, path);
+    return assertRealPathInsideRoot(session.root, absolute);
   };
 
   const stateOf = (session: RepositorySession): SessionStateDto => ({
@@ -547,7 +605,7 @@ export function createService(deps: ServiceDeps): Service {
 
     branchList: (id) => requireSession(id).branches,
 
-    branchSwitch: async (id, branchName) => opsFor(id).switchBranch(branchName),
+    branchSwitch: async (id, branchName) => opsFor(id).switchBranch(knownSwitchTarget(id, branchName)),
 
     branchCreate: async (id, req) => {
       const name = req.name.trim();
@@ -558,6 +616,10 @@ export function createService(deps: ServiceDeps): Service {
       if (startPoint.length === 0) {
         throw new HandlerError({ kind: 'internal', message: 'ブランチ元を入力してください。' });
       }
+      // renderer が自由に打てる 2 つの文字列。knownRemote 等と違い一覧照合はできない
+      // （まだ存在しないブランチ名を作る操作のため）ので、先頭 `-` だけ形で縛る。
+      rejectLeadingDash('新しいブランチ名', name);
+      rejectLeadingDash('ブランチ元', startPoint);
       return opsFor(id).createBranch(name, startPoint);
     },
 
@@ -566,9 +628,12 @@ export function createService(deps: ServiceDeps): Service {
       if (name.length === 0) {
         throw new HandlerError({ kind: 'internal', message: 'マージするブランチを指定してください。' });
       }
+      // マージの右クリックメニューはローカルブランチにしか出さない（BranchPane.svelte）ので
+      // knownLocalBranch で一覧照合する。remotePush と同じ趣旨（3-B）。
+      const known = knownLocalBranch(id, name);
       const ops = opsFor(id);
       requireConfirmed(SessionOperations.confirmationFor('merge'), confirmed);
-      return ops.mergeBranch(name);
+      return ops.mergeBranch(known);
     },
 
     /*
@@ -602,8 +667,22 @@ export function createService(deps: ServiceDeps): Service {
       deps.launchTerminal(launch, session.root);
     },
 
-    shellOpenPath: async (id, path) => {
-      const absolute = resolveInsideRoot(id, path);
+    shellOpenPath: async (id, path, confirmed) => {
+      const absolute = await resolveShellTarget(id, path);
+      /*
+       * 実行されうる拡張子（脆弱性診断 §5）だけ確認を強制する。resolveShellTarget の
+       * 実体パス検証（Medium 1）の**後**に見るのは、ジャンクション越しに実体の拡張子を
+       * 詐称されないようにするため（文字列上のパスではなく実体パスの basename を見る）。
+       * discard 等と同じ形（HandlerError の needs-confirmation）にするが、これは
+       * DestructiveAction ではない（git 操作ではないため別枠。決定 16 の例外）。
+       */
+      if (isExecutableFileName(basename(absolute)) && confirmed !== true) {
+        throw new HandlerError({
+          kind: 'needs-confirmation',
+          message: OPEN_EXECUTABLE_CONFIRMATION.title,
+          confirmation: OPEN_EXECUTABLE_CONFIRMATION,
+        });
+      }
       const failure = await deps.openPath(absolute);
       // openPath は throw せずエラー文字列を返す（ファイルが無いときなど）
       if (failure.length > 0) {
@@ -612,7 +691,7 @@ export function createService(deps: ServiceDeps): Service {
     },
 
     shellShowInFolder: async (id, path) => {
-      deps.showItemInFolder(resolveInsideRoot(id, path));
+      deps.showItemInFolder(await resolveShellTarget(id, path));
     },
 
     commandLogRecent: (limit) =>

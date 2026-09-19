@@ -1,5 +1,6 @@
 import type { FeatherTreeBridge } from '@feathertree/ipc';
 import type {
+  AppInfoDto,
   BranchDto,
   CloneOutcomeDto,
   CloneRequest,
@@ -20,6 +21,7 @@ import type {
   SettingsDto,
   StatusGroupDto,
   StatusSummaryDto,
+  UpdateStateDto,
 } from '@feathertree/ipc';
 import { tick } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
@@ -57,6 +59,11 @@ export interface PendingConfirmation {
   readonly confirmation: ConfirmationDto;
   /** 承認されたら再実行する処理。 */
   readonly retry: () => Promise<void>;
+  /**
+   * 承認以外の代替行動（例: 実行されうるファイルを開く確認での「フォルダで表示」）。
+   * 無ければ ConfirmDialog はキャンセル／承認の 2 択のまま出す。
+   */
+  readonly secondary?: { readonly label: string; readonly onClick: () => void };
 }
 
 export interface Section {
@@ -89,6 +96,17 @@ export class AppState {
 
   environment = $state<EnvironmentDto | null>(null);
   settings = $state<SettingsDto | null>(null);
+  /** 設定ダイアログの「更新」節で現在のバージョンを出すためだけに持つ。 */
+  appInfo = $state<AppInfoDto | null>(null);
+
+  /**
+   * 更新通知（決定 29）。既定は 'unknown'（まだ 1 度も確認結果を受け取っていない）。
+   * 起動時の自動確認は main 側で本体表示から数秒後に走るので、initialize() で
+   * updateGetState を呼んで取りこぼしに備え、以後は onUpdateAvailable の通知で更新する。
+   */
+  updateState = $state<UpdateStateDto>({ outcome: 'unknown', version: null });
+  /** 「今すぐ確認」ボタンの実行中表示。 */
+  checkingUpdate = $state(false);
 
   sessions = $state<SessionDto[]>([]);
   activeId = $state<string | null>(null);
@@ -234,6 +252,11 @@ export class AppState {
     return this.sessions.find((s) => s.id === this.activeId) ?? null;
   }
 
+  /** 縦帯下端の設定ボタンにバッジを出すか（決定 29）。 */
+  get hasUpdateAvailable(): boolean {
+    return this.updateState.outcome === 'new-version';
+  }
+
   get canCommit(): boolean {
     if (this.busy || this.activeId === null) return false;
     if (this.commitMessage.trim().length === 0) return false;
@@ -292,12 +315,15 @@ export class AppState {
   }
 
   async initialize(): Promise<void> {
-    const [env, settings, list] = await Promise.all([
+    const [info, env, settings, list, updateState] = await Promise.all([
+      this.#ft.appGetInfo(),
       this.#ft.appGetEnvironment(),
       this.#ft.settingsGet(),
       this.#ft.sessionList(),
+      this.#ft.updateGetState(),
     ]);
 
+    if (info.ok) this.appInfo = info.value;
     if (env.ok) this.environment = env.value;
     if (settings.ok) {
       this.settings = settings.value;
@@ -308,6 +334,15 @@ export class AppState {
       this.activeId = list.value.activeId;
       if (this.activeId !== null) await this.reloadAll();
     }
+    /*
+     * 起動時の自動確認（決定 29）は main 側で本体表示から数秒後に走る。
+     * ここで取っておくのは、それが renderer の初期化より先に終わっていた場合の取りこぼし対策。
+     * 後から届く分は onUpdateAvailable が更新する。
+     */
+    if (updateState.ok) this.updateState = updateState.value;
+    this.#ft.onUpdateAvailable((event) => {
+      this.updateState = { outcome: 'new-version', version: event.version };
+    });
 
     // main 側の自動更新（ウィンドウ復帰時）を受けて表示を合わせる
     this.#ft.onSessionChanged((event) => {
@@ -965,6 +1000,40 @@ export class AppState {
     if (result.ok) this.settings = result.value;
   }
 
+  /* ---------------------------------------------------------------- 更新通知（決定 29） */
+
+  /** 起動時の自動確認オンオフの永続化。 */
+  async setCheckForUpdates(enabled: boolean): Promise<void> {
+    const result = await this.#ft.settingsUpdate({ checkForUpdates: enabled });
+    if (result.ok) this.settings = result.value;
+  }
+
+  /**
+   * 「今すぐ確認」。24 時間の間引きも dismissed も無視して確認する（main 側の仕様）。
+   * 結果は updateState に反映し、設定ダイアログの「更新」節が読む。
+   */
+  async checkForUpdatesNow(): Promise<void> {
+    if (this.checkingUpdate) return;
+    this.checkingUpdate = true;
+    try {
+      const result = await this.#ft.updateCheckNow();
+      if (this.#check(result)) this.updateState = result.value;
+    } finally {
+      this.checkingUpdate = false;
+    }
+  }
+
+  /** ダウンロードページを既定のブラウザで開く。URL は main が持つ検証済み tag から組み立てる。 */
+  async openUpdateReleasePage(): Promise<void> {
+    this.#check(await this.#ft.updateOpenReleasePage());
+  }
+
+  /** 「この版は通知しない」。通知中の版が消え、バッジも下がる。 */
+  async dismissUpdate(): Promise<void> {
+    if (!this.#check(await this.#ft.updateDismiss())) return;
+    this.updateState = { outcome: 'up-to-date', version: null };
+  }
+
   dismissFocusRefreshPrompt(): void {
     this.focusRefreshPrompt = null;
   }
@@ -1124,10 +1193,29 @@ export class AppState {
    *
    * リポジトリの状態は変わらないので、#operate ではなく軽い経路を使う
    * （成功のたびに一覧と差分を取り直すのは無駄。決定: アイドル時に git を起動しない）。
+   *
+   * 実行されうる拡張子（脆弱性診断 §5）は main が 'needs-confirmation' で拒否してくる
+   * ので、#operate の破壊的操作と同じ形で受けて確認ダイアログを出す。判定自体は
+   * ここでは行わない（決定 16 の例外も main 側で強制する）。
    */
   openFile(path: string): Promise<void> {
     return this.#run(async () => {
-      this.#check(await this.#ft.shellOpenPath(this.#id(), path));
+      const result = await this.#ft.shellOpenPath(this.#id(), path);
+      if (result.ok) return;
+      const confirmation = result.error.confirmation;
+      if (result.error.kind === 'needs-confirmation' && confirmation !== undefined) {
+        this.pendingConfirmation = {
+          confirmation,
+          retry: () =>
+            this.#run(async () => {
+              this.#check(await this.#ft.shellOpenPath(this.#id(), path, true));
+            }),
+          // キャンセルする代わりに、実行せずエクスプローラで確認したい利用者のための代替行動
+          secondary: { label: 'フォルダで表示', onClick: () => void this.showInFolder(path) },
+        };
+        return;
+      }
+      this.error = result.error;
     });
   }
 

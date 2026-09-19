@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CommandLog, DEFAULT_SETTINGS, SessionManager, type AppSettings } from '@feathertree/core';
@@ -381,6 +381,9 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     await service.stage(id, { kind: 'all' });
     await service.commit(id, { message: 'init', amend: false });
     await git(dir, ['branch', 'feature']);
+    // main は自分が知っているブランチ一覧としか照合しない（3-B）。
+    // git を直接叩いて作った 'feature' を main に見せるには一度取り直す。
+    await service.sessionRefresh(id, 'full');
 
     const result = await service.branchSwitch(id, 'feature');
 
@@ -398,8 +401,46 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     await git(dir, ['commit', '-am', 'feature change']);
     await git(dir, ['switch', 'main']);
     await write('README.md', 'uncommitted');
+    await service.sessionRefresh(id, 'full');
 
     await expect(service.branchSwitch(id, 'feature')).rejects.toMatchObject({ name: 'GitCommandError' });
+  });
+
+  it('知らないブランチ名への切替は拒否する（renderer の値を鵜呑みにしない、3-B）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+
+    await expect(service.branchSwitch(id, 'どこにもない')).rejects.toMatchObject({
+      dto: { kind: 'internal' },
+    });
+  });
+
+  it('先頭が - のブランチ名は切替・作成・マージのいずれも拒否する（3-A / 3-B の argv インジェクション対策）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+
+    await expect(service.branchSwitch(id, '-feature')).rejects.toMatchObject({ dto: { kind: 'internal' } });
+    await expect(
+      service.branchCreate(id, { name: '-feature', startPoint: 'main' }),
+    ).rejects.toMatchObject({ dto: { kind: 'internal' } });
+    await expect(
+      service.branchCreate(id, { name: 'feature', startPoint: '-main' }),
+    ).rejects.toMatchObject({ dto: { kind: 'internal' } });
+    await expect(service.branchMerge(id, '-feature', true)).rejects.toMatchObject({
+      dto: { kind: 'internal' },
+    });
+  });
+
+  it('先頭が - のリモート名・ブランチ名でのフェッチ・プッシュは拒否する（3-A）', async () => {
+    await git(dir, ['remote', 'add', 'origin', 'D:/nowhere.git']);
+    const id = await openDemo();
+
+    await expect(service.remoteFetch(id, '-origin')).rejects.toMatchObject({ dto: { kind: 'internal' } });
+    await expect(
+      service.remotePush(id, { remote: 'origin', branch: '-main', setUpstream: false }),
+    ).rejects.toMatchObject({ dto: { kind: 'internal' } });
   });
 
   it('ブランチを作成すると起点から分岐して切り替わる（対応表 #14 → #2、push はしない）', async () => {
@@ -474,6 +515,44 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     });
   });
 
+  /*
+   * 脆弱性診断 §5: 実行されうる拡張子（.exe 等）だけ、main が確認を強制する。
+   * resolveShellTarget の realpath 検証の後に判定するため、renderer を迂回した
+   * IPC 呼び出し（confirmed を渡さない）でも openPath には到達しない。
+   */
+  it('実行されうる拡張子は未確認だと needs-confirmation で拒否し、openPath を呼ばない', async () => {
+    const id = await openDemo();
+    await write('malware.exe', 'dummy');
+
+    await expect(service.shellOpenPath(id, 'malware.exe')).rejects.toMatchObject({
+      dto: { kind: 'needs-confirmation' },
+    });
+    expect(opened).toEqual([]);
+  });
+
+  it('実行されうる拡張子でも確認済みなら開く', async () => {
+    const id = await openDemo();
+    await write('malware.exe', 'dummy');
+
+    await service.shellOpenPath(id, 'malware.exe', true);
+
+    expect(opened).toEqual([join(dir, 'malware.exe')]);
+  });
+
+  it('大文字拡張子・複合拡張子（readme.txt.exe）も同じく確認が必須', async () => {
+    const id = await openDemo();
+    await write('SETUP.EXE', 'dummy');
+    await write('readme.txt.exe', 'dummy');
+
+    await expect(service.shellOpenPath(id, 'SETUP.EXE')).rejects.toMatchObject({
+      dto: { kind: 'needs-confirmation' },
+    });
+    await expect(service.shellOpenPath(id, 'readme.txt.exe')).rejects.toMatchObject({
+      dto: { kind: 'needs-confirmation' },
+    });
+    expect(opened).toEqual([]);
+  });
+
   it('リポジトリ外のパスは開かない', async () => {
     const id = await openDemo();
 
@@ -483,6 +562,34 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     });
     await expect(service.shellShowInFolder(id, 'C:/Windows/system32/cmd.exe')).rejects.toThrow();
     expect(opened).toEqual([]);
+  });
+
+  /*
+   * 診断 Medium 1: ジャンクション（Windows では無権限で作成できる）越しに、文字列上は
+   * リポジトリ配下に見えるパスが実体としてリポジトリ外を指せる。shell 系 API の直前でだけ
+   * 実体パスを再検証する（assertRealPathInsideRoot）ことを、実際にジャンクションを作って確かめる。
+   */
+  it('ワークツリー内のジャンクション越しにリポジトリ外を指すパスは開かない', async () => {
+    const id = await openDemo();
+    const outside = join(TEST_ROOT, 'ft-junction-outside-' + randomBytes(8).toString('hex'));
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, 'secret.txt'), 'leak', 'utf8');
+
+    const junctionPath = join(dir, 'link');
+    await symlink(outside, junctionPath, 'junction');
+
+    try {
+      await expect(service.shellOpenPath(id, 'link/secret.txt')).rejects.toMatchObject({
+        name: 'PathOutsideRootError',
+      });
+      await expect(service.shellShowInFolder(id, 'link/secret.txt')).rejects.toMatchObject({
+        name: 'PathOutsideRootError',
+      });
+      expect(opened).toEqual([]);
+      expect(shownInFolder).toEqual([]);
+    } finally {
+      await rm(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined);
+    }
   });
 
   it('マージ対象が空なら拒否する', async () => {

@@ -5,12 +5,13 @@
 export { CommandLog } from './diagnostics/commandLog.js';
 export type { CommandLogEntry } from './diagnostics/commandLog.js';
 export { RefreshCoordinator } from './concurrency/refreshCoordinator.js';
-export { PathOutsideRootError, assertInsideRoot } from './fs/pathGuard.js';
+export { PathOutsideRootError, assertInsideRoot, assertRealPathInsideRoot } from './fs/pathGuard.js';
 export { SettingsStore } from './settings/settingsStore.js';
 export {
   boolOr,
   clampFloatOrNull,
   clampInt,
+  intOrNull,
   pickFrom,
   record,
   stringArray,

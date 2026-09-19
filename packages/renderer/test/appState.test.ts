@@ -662,6 +662,71 @@ describe('破壊的操作の確認 (決定 16)', () => {
   });
 });
 
+/*
+ * 脆弱性診断 §5: ファイルを開く（shellOpenPath）は git 操作ではないため他の破壊的操作とは
+ * 別枠だが、main が同じ 'needs-confirmation' の形で拒否してくるので、renderer 側の受け方は
+ * discard 等と同じ確認フローを通る（decisions 決定 16 の例外）。
+ */
+describe('実行可能ファイルを開く確認（脆弱性診断 §5）', () => {
+  it('main が拒否したら確認ダイアログの内容を保持する（無確認では openPath へ進まない）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.requireConfirmation = 'shellOpenPath';
+    });
+
+    await app.openFile('malware.exe');
+
+    expect(app.pendingConfirmation?.confirmation.action).toBe('open-executable-file');
+    expect(app.error).toBeNull();
+    expect(bridge.confirmedCalls).toEqual([]);
+  });
+
+  it('承認すると confirmed: true で再送する', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.requireConfirmation = 'shellOpenPath';
+    });
+
+    await app.openFile('malware.exe');
+    await app.acceptConfirmation();
+
+    expect(bridge.confirmedCalls).toEqual(['shellOpenPath']);
+    expect(app.pendingConfirmation).toBeNull();
+  });
+
+  it('キャンセルすると confirmed 付きで再送しない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.requireConfirmation = 'shellOpenPath';
+    });
+
+    await app.openFile('malware.exe');
+    app.cancelConfirmation();
+
+    expect(app.pendingConfirmation).toBeNull();
+    expect(bridge.confirmedCalls).toEqual([]);
+    expect(bridge.countOf('shellOpenPath')).toBe(1);
+  });
+
+  it('「フォルダで表示」の代替行動を持つ（実行せずに確認できる）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.requireConfirmation = 'shellOpenPath';
+    });
+
+    await app.openFile('malware.exe');
+    app.pendingConfirmation?.secondary?.onClick();
+    await Promise.resolve();
+
+    expect(bridge.lastArgsOf('shellShowInFolder')).toEqual(['s1', 'malware.exe']);
+  });
+
+  it('確認不要なファイル（README.md 相当）は確認を出さずに開く', async () => {
+    const { app, bridge } = await boot();
+
+    await app.openFile('README.md');
+
+    expect(app.pendingConfirmation).toBeNull();
+    expect(bridge.lastArgsOf('shellOpenPath')).toEqual(['s1', 'README.md', undefined]);
+  });
+});
+
 describe('エラー表示', () => {
   it('git の失敗は原文つきで保持する', async () => {
     const bridge = new FakeBridge();
@@ -1634,5 +1699,70 @@ describe('HEAD の件名（リポジトリタブに出す）', () => {
 
     expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ tabShowCurrentInfo: false }]);
     expect(app.settings?.tabShowCurrentInfo).toBe(false);
+  });
+});
+
+describe('更新通知（決定 29）', () => {
+  it('起動時に updateGetState を取り、取りこぼしに備える', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.updateState = { outcome: 'new-version', version: '9.9.9' };
+    });
+
+    expect(bridge.countOf('updateGetState')).toBe(1);
+    expect(app.updateState).toEqual({ outcome: 'new-version', version: '9.9.9' });
+    expect(app.hasUpdateAvailable).toBe(true);
+  });
+
+  it('onUpdateAvailable の通知で状態が変わる（本体表示後の自動確認の分）', async () => {
+    const { app, bridge } = await boot();
+
+    expect(app.hasUpdateAvailable).toBe(false);
+    bridge.emitUpdateAvailable('2.0.0');
+
+    expect(app.updateState).toEqual({ outcome: 'new-version', version: '2.0.0' });
+    expect(app.hasUpdateAvailable).toBe(true);
+  });
+
+  it('今すぐ確認は checkingUpdate を立ててから戻し、結果を反映する', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.updateState = { outcome: 'new-version', version: '3.0.0' };
+    });
+
+    const promise = app.checkForUpdatesNow();
+    expect(app.checkingUpdate).toBe(true);
+    await promise;
+
+    expect(app.checkingUpdate).toBe(false);
+    expect(bridge.countOf('updateCheckNow')).toBe(1);
+    expect(app.updateState.version).toBe('3.0.0');
+  });
+
+  it('ダウンロードページを開く。main へ URL や tag を渡さない（引数無しの呼び出し）', async () => {
+    const { app, bridge } = await boot();
+
+    await app.openUpdateReleasePage();
+
+    expect(bridge.lastArgsOf('updateOpenReleasePage')).toEqual([]);
+  });
+
+  it('この版は通知しない。バッジが下がる', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.updateState = { outcome: 'new-version', version: '9.9.9' };
+    });
+    expect(app.hasUpdateAvailable).toBe(true);
+
+    await app.dismissUpdate();
+
+    expect(bridge.countOf('updateDismiss')).toBe(1);
+    expect(app.hasUpdateAvailable).toBe(false);
+  });
+
+  it('自動確認オンオフの永続化', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setCheckForUpdates(false);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ checkForUpdates: false }]);
+    expect(app.settings?.checkForUpdates).toBe(false);
   });
 });

@@ -68,12 +68,22 @@ export async function discardStagedAndWorktree(ctx: GitContext, paths: readonly 
  *
  * `git clean` は --pathspec-from-file に対応していないため、パスを引数で渡す。
  * コマンドライン長制限に当たらないよう分割して実行する（この 1 操作だけの例外）。
+ *
+ * **`git clean` はパス無しで打つとリポジトリ全体の未追跡ファイル・フォルダを無条件に全削除する**
+ * （`restore --pathspec-from-file` 等と違い、空パスspecを git 自身が拒否する安全弁が無い。
+ * 破壊的バグ診断で実証済み）。呼び出し元（先頭の空配列チェック / main の guardTarget）が
+ * 現状は正しく効いているが、それは「今の実装がたまたま正しい」だけで、`CLEAN_CHUNK` の
+ * ループ条件を変えるなどのリファクタリングで空チャンクが生成されうる形になった場合、
+ * ここが最後の砦として効くようにする。多重防御であり、通常経路では発火しない。
  */
 export async function removeUntracked(ctx: GitContext, paths: readonly string[]): Promise<void> {
   if (paths.length === 0) return;
 
   for (let i = 0; i < paths.length; i += CLEAN_CHUNK) {
     const chunk = paths.slice(i, i + CLEAN_CHUNK);
+    if (chunk.length === 0) {
+      throw new Error('removeUntracked: empty pathspec for clean（未追跡削除の全削除事故を防ぐ防御）');
+    }
     await runWrite(ctx, [...WRITE_PREFIX, 'clean', '-f', '-d', '--', ...chunk], ['clean', '-f', '-d']);
   }
 }

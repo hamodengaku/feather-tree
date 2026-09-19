@@ -14,7 +14,12 @@ const read = (rel: string): string => readFileSync(resolve(root, rel), 'utf8');
  */
 describe('IPC 契約の網羅性', () => {
   const contract = read('packages/ipc/src/contract.ts');
-  const register = read('packages/main/src/handlers/register.ts');
+  /*
+   * ハンドラ登録は register.ts が大半だが、更新通知（決定 29）は専用ファイル
+   * （handlers/update.ts）に分けて index.ts から登録している。register.ts 1 本を見ると
+   * 常に「取りこぼし」に見えてしまうので、main 側の登録は 2 ファイルを合わせて見る。
+   */
+  const register = read('packages/main/src/handlers/register.ts') + read('packages/main/src/handlers/update.ts');
   const preload = read('packages/preload/src/index.ts');
 
   /** FeatherTreeBridge に宣言されたメソッド名。 */

@@ -21,6 +21,7 @@ import {
   MAX_HINTS,
   type CloneHint,
 } from '../policy/cloneHints.js';
+import { redactUrl } from '../policy/redactUrl.js';
 import { toMappedError } from '../session/repositorySession.js';
 import { CloneProgressTracker, type CloneMode, type CloneStage, type CloneStep } from './cloneProgress.js';
 
@@ -93,7 +94,9 @@ export async function runClone(
   const log: string[] = [
     'FeatherTree クローンログ',
     '日時: ' + new Date(now()).toISOString(),
-    'URL: ' + req.url,
+    // URL に資格情報（https://user:TOKEN@host/... 等）が埋め込まれていても、
+    // 生ログ（コピー可能）にはそのまま出さない（脆弱性診断 §11）
+    'URL: ' + redactUrl(req.url),
     '作成先: ' + target,
     'クローン方法: ' + MODE_LABEL[req.mode],
     '',
@@ -119,10 +122,14 @@ export async function runClone(
   });
 
   const record = (cwd: string, args: readonly string[], exitCode: number, elapsedMs: number, stderr: string): void => {
-    const trimmed = stderr.trim();
-    deps.commandLog.add({ cwd, args, exitCode, elapsedMs, ...(trimmed.length > 0 ? { stderr: trimmed } : {}) });
+    // args には clone の引数として req.url がそのまま入る。コマンドログ（実行ログパネル）・
+    // 生ログのどちらにも渡すので、ここで一括して資格情報を伏せる（脆弱性診断 §11）。
+    // 実際に git へ渡す引数（cloneRepository 呼び出し）はこの関数を経由しないため影響しない。
+    const safeArgs = args.map(redactUrl);
+    const trimmed = redactUrl(stderr.trim());
+    deps.commandLog.add({ cwd, args: safeArgs, exitCode, elapsedMs, ...(trimmed.length > 0 ? { stderr: trimmed } : {}) });
     log.push(
-      '$ git ' + args.join(' '),
+      '$ git ' + safeArgs.join(' '),
       '  (場所: ' + cwd + ')',
       '  終了コード ' + String(exitCode) + '（' + (elapsedMs / 1000).toFixed(1) + ' 秒）',
       ...(trimmed.length > 0 ? [cleanStderr(trimmed)] : []),
@@ -150,7 +157,10 @@ export async function runClone(
     } catch (err) {
       const cancelled = err instanceof GitCancelledError || signal?.aborted === true;
       const mapped = toMappedError(err);
-      const stderr = cancelled ? '' : (mapped.detail ?? mapped.message);
+      // git 自身の stderr にも URL が出ることがある（認証エラー等）。ヒント判定・生ログ・
+      // 呼び出し元に返す failures にまで伝わる値なので、ここで一度だけ伏せておく
+      // （record() 側でも重ねて伏せるが、redactUrl は冪等なので実害は無い）
+      const stderr = cancelled ? '' : redactUrl(mapped.detail ?? mapped.message);
       record(cwd, args, mapped.exitCode ?? -1, now() - startedAt, cancelled ? '（利用者が中止）' : stderr);
       if (step !== null) tracker.endStep(step, cancelled ? 'cancelled' : 'failed');
       return { ok: false, cancelled, notFound: err instanceof GitNotFoundError, stderr };

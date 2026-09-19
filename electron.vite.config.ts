@@ -1,8 +1,39 @@
 import { resolve } from 'node:path';
 import { defineConfig } from 'electron-vite';
+import type { Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 const root = __dirname;
+
+/**
+ * 本番ビルドの CSP から Vite HMR 用の localhost 許可を落とす（脆弱性診断 §7 Low）。
+ *
+ * index.html / splash.html は開発・本番で同じ HTML ファイルを共有しているため、
+ * `connect-src` に入れた `ws://localhost:* http://localhost:*`（dev サーバの HMR 用）が
+ * そのまま配布物にも残ってしまう。単独では悪用できないが、他の脆弱性と組み合わさった
+ * ときの攻撃対象領域を広げるため、ビルド時（transformIndexHtml、= command 'build'）だけ
+ * この 2 語を落とす。dev（electron-vite dev）では手を加えず HMR を維持する。
+ *
+ * 純関数にしてあるのは、`npm run build` を実行できない状況でも動作を確認できるようにするため
+ * （呼び出し側は下の transformIndexHtml のみ）。
+ */
+export function stripDevConnectSrc(html: string): string {
+  return html.replace(/connect-src([^";]*)/, (_match, sources: string) => {
+    const kept = sources
+      .split(/\s+/)
+      .filter((s) => s.length > 0 && s !== 'ws://localhost:*' && s !== 'http://localhost:*');
+    return 'connect-src ' + (kept.length > 0 ? kept.join(' ') : "'none'");
+  });
+}
+
+function productionCspPlugin(command: 'build' | 'serve'): Plugin {
+  return {
+    name: 'feathertree-production-csp',
+    transformIndexHtml(html) {
+      return command === 'build' ? stripDevConnectSrc(html) : html;
+    },
+  };
+}
 
 /**
  * main / preload / renderer の 3 ターゲット。
@@ -10,8 +41,9 @@ const root = __dirname;
  * - 内部パッケージ（@feathertree/*）は package.json の main が TS ソースを指しており、
  *   externalizeDepsPlugin を使わずバンドルに取り込む。実行時依存はゼロ。
  * - preload は sandbox: true で動くため CJS 単一ファイルでなければならない。
+ * - CSP を本番だけ絞るため（stripDevConnectSrc）、関数形式の defineConfig で command を受け取る。
  */
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   main: {
     build: {
       outDir: 'out/main',
@@ -59,6 +91,6 @@ export default defineConfig({
         },
       },
     },
-    plugins: [svelte()],
+    plugins: [svelte(), productionCspPlugin(command)],
   },
-});
+}));

@@ -449,6 +449,27 @@ describe('RepositorySession / SessionManager', () => {
     expect(started.map((e) => e.args)).toEqual([['boom']]);
     expect(ended).toEqual([started[0]?.opId]);
   });
+
+  /*
+   * 診断 §11 残存指摘: track() は fetch/pull/push など全ての git 実行が通る唯一の関門。
+   * リモートに資格情報埋め込み URL（https://user:TOKEN@host/...）を設定していると、
+   * git の stderr にそれがそのまま現れることがある。redactUrl を通さずに
+   * commandLog へ渡ると平文でログに残ってしまう（クローン以外の経路での漏えい）。
+   */
+  it('fetch/push 相当の失敗で stderr に資格情報が残っていても、コマンドログでは伏せられる', async () => {
+    const session = await manager.open(dir);
+
+    const credentialedStderr =
+      "fatal: unable to access 'https://user:TOKEN@host/repo.git/': The requested URL returned error: 403";
+    await expect(
+      session.track(['fetch', 'origin'], () => Promise.reject(new Error(credentialedStderr))),
+    ).rejects.toThrow();
+
+    const entry = commandLog.recent(20).find((e) => e.args[0] === 'fetch');
+    expect(entry?.stderr).toBeDefined();
+    expect(entry?.stderr).not.toContain('TOKEN');
+    expect(entry?.stderr).toContain('https://***@host/repo.git/');
+  });
 });
 
 describe('補助関数', () => {

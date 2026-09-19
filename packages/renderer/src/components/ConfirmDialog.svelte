@@ -18,6 +18,17 @@
     {/if}
     <div class="actions">
       <button onclick={() => app.cancelConfirmation()}>キャンセル</button>
+      {#if pending.secondary}
+        {@const secondary = pending.secondary}
+        <button
+          onclick={() => {
+            secondary.onClick();
+            app.cancelConfirmation();
+          }}
+        >
+          {secondary.label}
+        </button>
+      {/if}
       <button class="danger" onclick={() => void app.acceptConfirmation()}>
         {pending.confirmation.confirmLabel}
       </button>

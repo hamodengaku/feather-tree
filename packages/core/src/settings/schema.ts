@@ -2,6 +2,7 @@ import {
   boolOr,
   clampFloatOrNull,
   clampInt,
+  intOrNull,
   pickFrom,
   record,
   stringArray,
@@ -71,6 +72,15 @@ export interface AppSettings {
   readonly recentRepositories: readonly string[];
   /** 起動時に復元するタブ。 */
   readonly openRepositories: readonly string[];
+
+  /* ---------------------------------------------------------------- 更新通知（決定 29） */
+
+  /** 起動時の自動確認（本体ウィンドウ表示後、24 時間に 1 回）。オフなら手動確認のみ。 */
+  readonly checkForUpdates: boolean;
+  /** 最後に確認を試みた時刻（epoch ms）。未確認は null。結果に関わらず試みたら保存する。 */
+  readonly lastUpdateCheckAt: number | null;
+  /** 「この版は通知しない」で選んだバージョン（'x.y.z'）。手動確認では無視する。 */
+  readonly dismissedUpdateVersion: string | null;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -94,6 +104,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   refocusUpdateMode: 'auto',
   recentRepositories: [],
   openRepositories: [],
+  checkForUpdates: true,
+  lastUpdateCheckAt: null,
+  dismissedUpdateVersion: null,
 };
 
 const THEMES: readonly ThemeName[] = ['classic-dark', 'classic-light', 'phoenix-dark', 'phoenix-light'];
@@ -139,5 +152,8 @@ export function normalizeSettings(raw: unknown): AppSettings {
     refocusUpdateMode: pickFrom(o['refocusUpdateMode'], REFOCUS_MODES, DEFAULT_SETTINGS.refocusUpdateMode),
     recentRepositories: stringArray(o['recentRepositories'], 30),
     openRepositories: stringArray(o['openRepositories'], 20),
+    checkForUpdates: boolOr(o['checkForUpdates'], DEFAULT_SETTINGS.checkForUpdates),
+    lastUpdateCheckAt: intOrNull(o['lastUpdateCheckAt'], 0),
+    dismissedUpdateVersion: stringOrNull(o['dismissedUpdateVersion']),
   };
 }
