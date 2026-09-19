@@ -28,7 +28,7 @@ import {
   type UserIdentity,
 } from '@feathertree/git';
 import type { CommandLog } from '@feathertree/base-core';
-import { gitSshEnv } from '../env/sshCommand.js';
+import { gitSshEnv, sshKeyFor } from '../env/sshCommand.js';
 import { mapGitStderr, type MappedError } from '../policy/errorMapping.js';
 import { redactUrl } from '../policy/redactUrl.js';
 import type { AppSettings } from '../settings/schema.js';
@@ -56,6 +56,12 @@ export interface CommandStart {
 
 export interface SessionDeps {
   readonly gitPath: string;
+  /**
+   * `GIT_SSH_COMMAND` に埋める ssh の絶対パス（決定 13 の追記）。
+   * 見つかっていなければ null で、その場合は鍵を登録していても何も注入しない。
+   * 解決は locateSsh が起動時に 1 回だけ行う（bare 名を渡さないため。診断 1-A）。
+   */
+  readonly sshPath?: string | null;
   readonly tempDir: string;
   readonly commandLog: CommandLog;
   readonly settings: () => AppSettings;
@@ -346,9 +352,13 @@ export class RepositorySession {
    *
    * env は毎回 settings から作り直す。文脈はコマンドごとに組み立てられるので、
    * **SSH 鍵の設定を変えたら次の git から効く**（アプリの再起動もセッションの張り直しも要らない）。
+   * 鍵は**このリポジトリに登録されたもの**だけを見る（決定 13 の 2026-09-19 改定 2）。
    */
   context(signal?: AbortSignal): GitContext {
-    const env = gitSshEnv(this.#deps.settings());
+    const env = gitSshEnv(
+      this.#deps.sshPath ?? null,
+      sshKeyFor(this.#deps.settings(), this.#root),
+    );
     return {
       gitPath: this.#deps.gitPath,
       cwd: this.#root,

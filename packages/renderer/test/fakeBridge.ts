@@ -43,7 +43,7 @@ export interface Call {
 
 const SETTINGS: SettingsDto = {
   gitPath: 'C:/git/git.exe',
-  sshKeyPath: null,
+  sshKeyPaths: {},
   theme: 'classic-dark',
   noRenames: false,
   untrackedFiles: 'normal',
@@ -211,6 +211,8 @@ export class FakeBridge {
   clonePickResult: string | null = 'D:/work';
   /** 設定画面のファイル選択（git.exe / SSH 鍵）の結果。null ならキャンセル。 */
   pickFileResult: string | null = null;
+  /** main が解決した ssh の絶対パス。null なら未検出（＝鍵を登録しても注入されない）。 */
+  sshPath: string | null = 'C:/Windows/System32/OpenSSH/ssh.exe';
   /** main が持っているコミット情報（対応表 #42〜#44）。 */
   gitIdentity: GitIdentityDto = {
     name: { value: 'Local Name', scope: 'local' },
@@ -434,6 +436,7 @@ export class FakeBridge {
             gitPath: 'C:/git/git.exe',
             gitSource: 'path' as const,
             gitVersion: 'git version 2.40.0',
+            sshPath: this.sshPath,
             warning: null,
           }),
         );
@@ -468,6 +471,17 @@ export class FakeBridge {
       gitConfigGetIdentity: (id: string) => {
         this.record('gitConfigGetIdentity', id);
         return Promise.resolve(ok(this.gitIdentity));
+      },
+      sshSetKey: (id: string, keyPath: string | null) => {
+        this.record('sshSetKey', id, keyPath);
+        const root = this.sessions.find((s) => s.id === id)?.root;
+        if (root === undefined) return Promise.resolve(ok(this.settings));
+        // main と同じく、その 1 リポジトリだけを足し引きする
+        const next: Record<string, string> = { ...this.settings.sshKeyPaths };
+        if (keyPath === null) delete next[root];
+        else next[root] = keyPath;
+        this.settings = { ...this.settings, sshKeyPaths: next };
+        return Promise.resolve(ok(this.settings));
       },
       gitConfigSetIdentity: (id: string, req: GitIdentityRequest) => {
         this.record('gitConfigSetIdentity', id, structuredClone(req));

@@ -5,7 +5,10 @@ export { locateGit } from './env/gitLocator.js';
 export type { GitLocation, GitLocatorDeps, GitSource } from './env/gitLocator.js';
 export { locateTerminal } from './env/terminalLocator.js';
 export type { TerminalLaunch, TerminalLocatorDeps } from './env/terminalLocator.js';
-export { buildSshCommand, gitSshEnv } from './env/sshCommand.js';
+export { buildSshCommand, gitSshEnv, sshKeyFor } from './env/sshCommand.js';
+export { locateSsh } from './env/sshLocator.js';
+export type { SshLocatorDeps } from './env/sshLocator.js';
+export { findOnPath } from './env/pathSearch.js';
 export { checkGitVersion, MIN_GIT_MAJOR, MIN_GIT_MINOR } from './env/gitVersion.js';
 export type { GitVersionCheck } from './env/gitVersion.js';
 

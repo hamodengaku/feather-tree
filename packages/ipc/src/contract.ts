@@ -25,6 +25,7 @@ export const CHANNELS = {
   dialogPickFile: 'dialog:pickFile',
   gitConfigGetIdentity: 'gitConfig:getIdentity',
   gitConfigSetIdentity: 'gitConfig:setIdentity',
+  sshSetKey: 'ssh:setKey',
 
   sessionPickAndCreate: 'session:pickAndCreate',
   sessionLoad: 'session:load',
@@ -127,6 +128,11 @@ export interface EnvironmentDto {
   readonly gitPath: string | null;
   readonly gitSource: 'configured' | 'path' | 'registry' | null;
   readonly gitVersion: string | null;
+  /**
+   * GIT_SSH_COMMAND に埋める ssh の絶対パス（決定 13 の追記）。未検出なら null。
+   * null のときは鍵を登録しても何も注入されない（bare 名は渡さないため）。
+   */
+  readonly sshPath: string | null;
   /** 古い git などの警告。無ければ null。 */
   readonly warning: string | null;
 }
@@ -171,10 +177,11 @@ export interface GitIdentityRequest {
 export interface SettingsDto {
   readonly gitPath: string | null;
   /**
-   * SSH 秘密鍵のパス（決定 13 の追記）。このアプリが実行する git にだけ
-   * GIT_SSH_COMMAND として渡る。null なら何も注入しない。
+   * SSH 秘密鍵（決定 13 の追記）。**リポジトリの絶対パス → 鍵の絶対パス**。
+   * このアプリが実行する git にだけ GIT_SSH_COMMAND として渡る。
+   * 登録の無いリポジトリには何も注入しない。
    */
-  readonly sshKeyPath: string | null;
+  readonly sshKeyPaths: Readonly<Record<string, string>>;
   readonly theme: 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
   readonly noRenames: boolean;
   readonly untrackedFiles: 'normal' | 'all';
@@ -518,6 +525,13 @@ export interface CloneRequest {
   /** 作成するフォルダ名。区切り文字を含まない。 */
   readonly name: string;
   readonly mode: CloneMode;
+  /**
+   * このクローンに使う SSH 秘密鍵の絶対パス（決定 9 の追記）。null なら使わない
+   * （ssh-agent / ~/.ssh/config に任せる）。鍵はリポジトリごとに持つ（決定 13）が、
+   * クローンの時点ではまだリポジトリが無いのでここで受け取り、
+   * 成功したらそのリポジトリの設定として保存する。
+   */
+  readonly sshKeyPath?: string | null;
 }
 
 export type CloneStageState = 'pending' | 'running' | 'done' | 'skipped' | 'failed' | 'cancelled';
@@ -683,6 +697,13 @@ export interface FeatherTreeBridge {
    * renderer は手元の状態を進めればよい（git のプロセスを 1 本増やす意味が無い）。
    */
   gitConfigSetIdentity(id: string, req: GitIdentityRequest): Promise<Result<null>>;
+
+  /**
+   * そのリポジトリで使う SSH 秘密鍵を設定する（決定 13 の追記）。null で登録を消す。
+   * git は動かない（次に git を実行するときから効く）。
+   * **1 リポジトリずつ**の口にしてあるのは、renderer に辞書ごと書き換えさせないため。
+   */
+  sshSetKey(id: string, keyPath: string | null): Promise<Result<SettingsDto>>;
 
   /**
    * リポジトリを開く 2 段階のうちの 1 段目。

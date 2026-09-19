@@ -1,6 +1,9 @@
-import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { isAbsolute, join } from 'node:path';
+import { defaultExists, findOnPath, systemRoot } from './pathSearch.js';
+
+/** PATH 上で探す git の名前。 */
+const GIT_NAMES: readonly string[] = process.platform === 'win32' ? ['git.exe'] : ['git'];
 
 export type GitSource = 'configured' | 'path' | 'registry';
 
@@ -62,13 +65,22 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: 
 export async function locateGit(deps: GitLocatorDeps): Promise<GitLocation | null> {
   const exists = deps.exists ?? defaultExists;
 
-  if (deps.configuredPath !== undefined && deps.configuredPath.length > 0) {
+  /*
+   * 設定の明示パスも**絶対パスでなければ採らない**（2026-09-19 追加、診断 1-A）。
+   *
+   * 相対パスを許すと、存在確認（access）はプロセスの cwd 基準で行われるのに、
+   * 実行は spawn の `cwd: リポジトリルート` 基準になり、**確認したファイルと
+   * 起動されるファイルが別物になりうる**。PATH 要素に同じ規則を課しているのに
+   * ここだけ素通しでは意味が無いので揃える。
+   * 弾いた場合はエラーにせず PATH 探索へ落とす（設定の不正値で起動を止めない方針）。
+   */
+  if (deps.configuredPath !== undefined && isAbsolute(deps.configuredPath)) {
     if (await exists(deps.configuredPath)) {
       return { gitPath: deps.configuredPath, source: 'configured' };
     }
   }
 
-  const fromPath = await searchPath(deps.env, exists);
+  const fromPath = await findOnPath(GIT_NAMES, deps.env, exists);
   if (fromPath !== null) return { gitPath: fromPath, source: 'path' };
 
   /*
@@ -88,26 +100,6 @@ export async function locateGit(deps: GitLocatorDeps): Promise<GitLocation | nul
   return null;
 }
 
-async function searchPath(env: NodeJS.ProcessEnv, exists: (p: string) => Promise<boolean>): Promise<string | null> {
-  const rawPath = env['PATH'] ?? env['Path'] ?? '';
-  if (rawPath.length === 0) return null;
-
-  const separator = process.platform === 'win32' ? ';' : ':';
-  const names = process.platform === 'win32' ? ['git.exe'] : ['git'];
-
-  for (const dir of rawPath.split(separator)) {
-    const trimmed = dir.trim().replace(/^"|"$/g, '');
-    // 相対パス要素（`.` を含む）は無視する。ここは cwd を渡さない spawn なので実害は無いが、
-    // terminalLocator.ts の findOnPath と同じ規則にしておく（1-A の教訓）。
-    if (trimmed.length === 0 || !isAbsolute(trimmed)) continue;
-    for (const name of names) {
-      const candidate = join(trimmed, name);
-      if (await exists(candidate)) return candidate;
-    }
-  }
-  return null;
-}
-
 /**
  * HKLM\SOFTWARE\GitForWindows の InstallPath を読む。reg query を 1 回だけ実行する。
  *
@@ -118,8 +110,7 @@ async function searchPath(env: NodeJS.ProcessEnv, exists: (p: string) => Promise
 function queryGitForWindowsRegistry(timeoutMs: number = REGISTRY_QUERY_TIMEOUT_MS): Promise<string | null> {
   if (process.platform !== 'win32') return Promise.resolve(null);
 
-  const systemRoot = process.env['SystemRoot'] ?? process.env['SYSTEMROOT'] ?? 'C:\\Windows';
-  const regPath = join(systemRoot, 'System32', 'reg.exe');
+  const regPath = join(systemRoot(process.env), 'System32', 'reg.exe');
 
   return new Promise((resolve) => {
     const child = spawn(regPath, ['query', 'HKLM' + String.fromCharCode(92) + 'SOFTWARE' + String.fromCharCode(92) + 'GitForWindows', '/v', 'InstallPath'], {
@@ -163,13 +154,4 @@ function queryGitForWindowsRegistry(timeoutMs: number = REGISTRY_QUERY_TIMEOUT_M
       finish(value !== undefined && value.length > 0 ? value : null);
     });
   });
-}
-
-async function defaultExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }

@@ -10,6 +10,8 @@ import { createService, type Service } from '../src/handlers/service.js';
 
 const TEST_ROOT = resolve(import.meta.dirname, '../../../.tmp/main-service-tests');
 const GIT_PATH = process.env['FT_TEST_GIT'] ?? 'git';
+/** ssh の解決結果（実在しなくてよい。設定の読み書きしか見ないため）。 */
+const SSH_PATH = 'C:' + String.fromCharCode(92) + 'ssh.exe';
 
 function git(cwd: string, args: readonly string[]): Promise<void> {
   return new Promise((res, rej) => {
@@ -63,6 +65,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
 
     const sessions = new SessionManager({
       gitPath: GIT_PATH,
+      sshPath: SSH_PATH,
       tempDir: join(dir, '.ft-tmp'),
       commandLog,
       settings: () => settings,
@@ -79,6 +82,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       }),
       git: () => ({ gitPath: GIT_PATH, source: 'path' }),
       gitVersion: () => null,
+      sshPath: () => SSH_PATH,
       settings: () => settings,
       updateSettings: (patch) => {
         settings = { ...settings, ...patch } as AppSettings;
@@ -718,14 +722,56 @@ describe('Service (UI が通る経路の統合テスト)', () => {
   });
 
   describe('設定のパス検証', () => {
-    it('絶対パスでない git.exe / SSH 鍵は拒否する', async () => {
+    it('絶対パスでない git.exe は拒否する', async () => {
       await expect(service.settingsUpdate({ gitPath: 'git.exe' })).rejects.toThrow();
-      await expect(service.settingsUpdate({ sshKeyPath: '.ssh/id_ed25519' })).rejects.toThrow();
     });
 
-    it('null（自動探索に戻す／鍵を使わない）は通す', async () => {
+    it('null（自動探索に戻す）は通す', async () => {
       await expect(service.settingsUpdate({ gitPath: null })).resolves.toBeDefined();
-      await expect(service.settingsUpdate({ sshKeyPath: null })).resolves.toBeDefined();
+    });
+
+    it('SSH 鍵の辞書は、キーも値も絶対パスでなければ拒否する', async () => {
+      await expect(
+        service.settingsUpdate({ sshKeyPaths: { 'D:\\repo': '.ssh/id_ed25519' } }),
+      ).rejects.toThrow();
+      await expect(
+        service.settingsUpdate({ sshKeyPaths: { relative: 'C:\\keys\\id_ed25519' } }),
+      ).rejects.toThrow();
+    });
+  });
+
+  /*
+   * SSH 鍵はリポジトリごと（決定 13 の 2026-09-19 改定 2）。
+   * 「他のリポジトリの登録を巻き添えにしない」ことがこの機能の肝なので、そこを見る。
+   */
+  describe('SSH 鍵（リポジトリごと）', () => {
+    it('アクティブなタブのリポジトリに登録し、null で消す', async () => {
+      const id = await openDemo();
+      const root = service.sessionList().sessions.find((s) => s.id === id)?.root ?? '';
+
+      const saved = await service.sshSetKey(id, 'C:\\keys\\id_ed25519');
+      expect(saved.sshKeyPaths[root]).toBe('C:\\keys\\id_ed25519');
+
+      const cleared = await service.sshSetKey(id, null);
+      expect(cleared.sshKeyPaths[root]).toBeUndefined();
+    });
+
+    it('他のリポジトリの登録は触らない', async () => {
+      const id = await openDemo();
+      // 別のリポジトリの登録が先にあるところへ、このリポジトリの鍵を足す
+      await service.settingsUpdate({ sshKeyPaths: { 'D:\\other': 'C:\\keys\\other' } });
+
+      const saved = await service.sshSetKey(id, 'C:\\keys\\mine');
+      expect(saved.sshKeyPaths['D:\\other']).toBe('C:\\keys\\other');
+
+      const cleared = await service.sshSetKey(id, null);
+      expect(cleared.sshKeyPaths['D:\\other']).toBe('C:\\keys\\other');
+    });
+
+    it('絶対パスでない鍵は拒否し、タブが無ければ no-session', async () => {
+      const id = await openDemo();
+      await expect(service.sshSetKey(id, 'id_ed25519')).rejects.toThrow();
+      await expect(service.sshSetKey('no-such-id', 'C:\\keys\\a')).rejects.toThrow();
     });
 
     it('ファイル選択は用途をそのまま deps へ渡す', async () => {
@@ -1036,6 +1082,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       }),
       git: () => null,
       gitVersion: () => null,
+      sshPath: () => SSH_PATH,
       settings: () => settings,
       updateSettings: () => Promise.resolve(settings),
       reloadGit: () => Promise.resolve(),

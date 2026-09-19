@@ -49,7 +49,7 @@ describe('起動', () => {
       appGetEnvironment: () =>
         Promise.resolve({
           ok: true as const,
-          value: { gitPath: null, gitSource: null, gitVersion: null, warning: 'git が見つかりません' },
+          value: { gitPath: null, gitSource: null, gitVersion: null, sshPath: null, warning: 'git が見つかりません' },
         }),
     });
 
@@ -474,6 +474,71 @@ describe('ステージングとコミット', () => {
     // 採用の後は取り直して、マーカーが減った表示になる
     expect(app.conflict?.sections).toHaveLength(0);
   });
+
+  it('すでに出しているファイルを選び直しても取り直さない（スクロール位置を飛ばさない）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+    const before = bridge.countOf('diffGet');
+
+    await app.select({ path: 'a.txt', staged: false });
+
+    expect(bridge.countOf('diffGet')).toBe(before);
+  });
+
+  it('同じパスでもステージの側が違えば取り直す（中身が別物）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt')];
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+    const before = bridge.countOf('diffGet');
+
+    await app.select({ path: 'a.txt', staged: true });
+
+    expect(bridge.countOf('diffGet')).toBe(before + 1);
+    expect(bridge.lastArgsOf('diffGet')).toEqual(['s1', 'a.txt', true]);
+  });
+
+  /*
+   * ちらつき対策（既出なら取り直さない）は、コンフリクト表示にも同じく効く必要がある。
+   * 未マージのファイルは diff ではなく conflict に入るので、判定がそれを見ていないと
+   * **コンフリクト中のファイルだけ**取り直しが走る。両方の改修が噛み合っているかの検査。
+   */
+  it('未マージのファイルを選び直しても取り直さない（conflict も「出している」に数える）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('c.txt', { kind: 'unmerged', staged: 'U', worktree: 'U' })];
+    });
+    await app.select({ path: 'c.txt', staged: false });
+    const before = bridge.countOf('conflictGet');
+
+    await app.select({ path: 'c.txt', staged: false });
+
+    expect(bridge.countOf('conflictGet')).toBe(before);
+  });
+
+  it('取得に失敗したファイルは選び直すと再度取りにいく（押し直しで再試行できる）', async () => {
+    const bridge = new FakeBridge();
+    bridge.changes = [entry('a.txt')];
+    let attempts = 0;
+    const app = await load({
+      ...bridge.build(),
+      diffGet: () => {
+        attempts += 1;
+        return Promise.resolve({
+          ok: false as const,
+          error: { kind: 'git-failed' as const, message: '読めません' },
+        });
+      },
+    });
+    await app.select({ path: 'a.txt', staged: false });
+    expect(attempts).toBe(1);
+
+    await app.select({ path: 'a.txt', staged: false });
+
+    expect(attempts).toBe(2);
+  });
 });
 
 describe('更新（リロード）の対象', () => {
@@ -640,6 +705,26 @@ describe('ステージ切替と、そのあとの選択位置', () => {
     expect(app.selected).toEqual({ path: 'c.txt', staged: false });
   });
 
+  it('選択が移るのはステージが済んだあと（git を投げる時点ではまだ元の行）', async () => {
+    const bridge = new FakeBridge();
+    bridge.changes = [entry('a.txt'), entry('b.txt')];
+    const base = bridge.build();
+    let selectedWhenStaging: unknown = null;
+    const app = await load({
+      ...base,
+      stage: (id, target) => {
+        selectedWhenStaging = app.selected;
+        return base.stage(id, target);
+      },
+    });
+    await app.select({ path: 'a.txt', staged: false });
+
+    await app.toggleStage({ path: 'a.txt', staged: false });
+
+    expect(selectedWhenStaging).toEqual({ path: 'a.txt', staged: false });
+    expect(app.selected).toEqual({ path: 'b.txt', staged: false });
+  });
+
   it('一番下をステージすると 1 行上へ移る', async () => {
     const { app } = await boot((b) => {
       b.changes = [entry('a.txt'), entry('b.txt'), entry('c.txt')];
@@ -697,7 +782,7 @@ describe('ステージ切替と、そのあとの選択位置', () => {
     expect(app.selected).toEqual({ path: 'z.txt', staged: true });
   });
 
-  it('失敗しても移動先の選択は元に戻さない（一覧は変わっていないので選び直せる）', async () => {
+  it('失敗したときは選択を動かさない（ステージできていないので、そのファイルに留まる）', async () => {
     const bridge = new FakeBridge();
     bridge.changes = [entry('a.txt'), entry('b.txt')];
     const app = await load({
@@ -712,7 +797,7 @@ describe('ステージ切替と、そのあとの選択位置', () => {
 
     await app.toggleStage({ path: 'a.txt', staged: false });
 
-    expect(app.selected).toEqual({ path: 'b.txt', staged: false });
+    expect(app.selected).toEqual({ path: 'a.txt', staged: false });
     expect(app.error?.message).toBe('失敗しました');
   });
 });
@@ -913,7 +998,7 @@ describe('設定ダイアログの Git / ssh 通信タブ', () => {
     expect(app.settings?.gitPath).toBe('C:/tools/git/cmd/git.exe');
   });
 
-  it('SSH 秘密鍵のパスを保存する。git は動かさない', async () => {
+  it('SSH 秘密鍵はアクティブなタブのリポジトリに保存する。git は動かさない', async () => {
     const { app, bridge } = await boot();
     const mark = bridge.calls.length;
 
@@ -921,15 +1006,40 @@ describe('設定ダイアログの Git / ssh 通信タブ', () => {
     await app.pickSshKey();
 
     expect(bridge.lastArgsOf('dialogPickFile')).toEqual(['ssh-private-key']);
-    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([
-      { sshKeyPath: 'C:/Users/me/.ssh/id_ed25519' },
-    ]);
-    expect(app.settings?.sshKeyPath).toBe('C:/Users/me/.ssh/id_ed25519');
+    // リポジトリは**セッション id で**指す（renderer からパスを渡さない）
+    expect(bridge.lastArgsOf('sshSetKey')).toEqual(['s1', 'C:/Users/me/.ssh/id_ed25519']);
+    expect(app.sshKeyPath).toBe('C:/Users/me/.ssh/id_ed25519');
     // 鍵の設定は次の git から効く。設定した時点では git を 1 本も起動しない
-    expect(bridge.calls.slice(mark).map((c) => c.name)).toEqual([
-      'dialogPickFile',
-      'settingsUpdate',
-    ]);
+    expect(bridge.calls.slice(mark).map((c) => c.name)).toEqual(['dialogPickFile', 'sshSetKey']);
+  });
+
+  it('鍵はリポジトリごとに独立して見える（タブを切り替えると相手の鍵は出ない）', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.pickFileResult = 'C:/keys/one';
+    await app.pickSshKey();
+    expect(app.sshKeyPath).toBe('C:/keys/one');
+
+    await app.activate('s2');
+    expect(app.sshKeyPath).toBeNull();
+
+    bridge.pickFileResult = 'C:/keys/two';
+    await app.pickSshKey();
+    expect(app.sshKeyPath).toBe('C:/keys/two');
+
+    await app.activate('s1');
+    expect(app.sshKeyPath).toBe('C:/keys/one');
+  });
+
+  it('選ぶだけ（クローンの入力欄用）は保存しない', async () => {
+    const { app, bridge } = await boot();
+    const mark = bridge.calls.length;
+
+    bridge.pickFileResult = 'C:/keys/for-clone';
+    expect(await app.pickSshKeyPath()).toBe('C:/keys/for-clone');
+
+    expect(bridge.calls.slice(mark).map((c) => c.name)).toEqual(['dialogPickFile']);
+    expect(app.sshKeyPath).toBeNull();
   });
 
   it('SSH 鍵を「使わない」に戻すときは null を送る', async () => {
@@ -937,7 +1047,7 @@ describe('設定ダイアログの Git / ssh 通信タブ', () => {
 
     await app.setSshKeyPath(null);
 
-    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ sshKeyPath: null }]);
+    expect(bridge.lastArgsOf('sshSetKey')).toEqual(['s1', null]);
   });
 
   it('コミット情報はアクティブなタブのものを読む', async () => {

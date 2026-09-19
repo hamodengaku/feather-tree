@@ -25,6 +25,7 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     }),
     git: () => ctx.git,
     gitVersion: () => ctx.gitVersion,
+    sshPath: () => ctx.sshPath,
     settings: () => ctx.currentSettings(),
     /*
      * キャプション領域（OS が描く ─ □ ×）は CSS の外にあるので、テーマを変えても勝手には
@@ -136,6 +137,7 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.gitConfigSetIdentity, (id: string, req: Parameters<Service['gitConfigSetIdentity']>[1]) =>
     service.gitConfigSetIdentity(id, req),
   );
+  bind(CHANNELS.sshSetKey, (id: string, keyPath: string | null) => service.sshSetKey(id, keyPath));
 
   bind(CHANNELS.sessionPickAndCreate, () => service.sessionPickAndCreate());
   bind(CHANNELS.sessionLoad, (id: string) => service.sessionLoad(id));
