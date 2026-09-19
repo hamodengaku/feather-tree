@@ -218,3 +218,60 @@ export function ancestorKeys(scope: BranchScope, shortName: string): string[] {
   segments.pop();
   return expandKeys(scope, segments.join('/'));
 }
+
+/**
+ * 「現在のブランチへの経路を自動で開く」の判断。
+ *
+ * ロジックを純関数にしてあるのは、**この判断が壊れたことを検出できるようにする**ため。
+ * renderer にコンポーネントのテスト基盤は無い（純 TS のロジックテストだけ）ので、
+ * .svelte の $effect の中に判断を書くと、誰も見ていない場所になる。
+ *
+ * 実際に起きた事故: `<BranchPane />` を表示モードの分岐の両枝に重複して書いていたため、
+ * モードを切り替えるたびにコンポーネントが作り直され、シード済みの記録（`seeded`）が
+ * 初期化されて、**利用者が意図的に畳んだフォルダが開き直されていた**。
+ * 記録はコンポーネントの生存期間に結びつくので、コンポーネントを生かし続けること自体が
+ * 仕様の一部になる（App.svelte 側の責務）。
+ */
+export interface SeedInput {
+  /** アクティブなタブ。null ならまだ何も開いていない。 */
+  readonly sessionId: string | null;
+  /** status 由来の現在ブランチ。detached や未取得なら null。 */
+  readonly branch: string | null;
+  /** 設定を読み終えているか。読む前に保存すると既定値で上書きしてしまう。 */
+  readonly settingsReady: boolean;
+  /** 現在の展開集合（保存形式の配列）。 */
+  readonly expanded: readonly string[];
+  /** すでにシード済みの印（`seedMark` の戻り値）。 */
+  readonly seeded: readonly string[];
+}
+
+export interface SeedDecision {
+  /** シード済みとして記録する印。null なら今回は何もしない（記録もしない）。 */
+  readonly mark: string | null;
+  /** 保存すべき新しい展開集合。null なら保存不要（すでに開いている）。 */
+  readonly expanded: readonly string[] | null;
+}
+
+const NO_SEED: SeedDecision = { mark: null, expanded: null };
+
+/** 「リポジトリ × ブランチ」の組を 1 つの印にする。 */
+export function seedMark(sessionId: string, branch: string): string {
+  return JSON.stringify([sessionId, branch]);
+}
+
+/**
+ * シードするか、するなら何を保存するかを決める。
+ *
+ * 一度シードした組は二度とシードしない（`mark` を記録させる）。これが
+ * 「ユーザーが畳み直したものを開き直さない」の中身で、**開く必要が無かった場合でも
+ * 記録する**のが要点。記録しないと、畳まれた直後にもう一度開きにいってしまう。
+ */
+export function planCurrentBranchSeed(input: SeedInput): SeedDecision {
+  if (input.sessionId === null || input.branch === null || !input.settingsReady) return NO_SEED;
+
+  const mark = seedMark(input.sessionId, input.branch);
+  if (input.seeded.includes(mark)) return NO_SEED;
+
+  const missing = ancestorKeys('local', input.branch).filter((key) => !input.expanded.includes(key));
+  return { mark, expanded: missing.length === 0 ? null : [...input.expanded, ...missing] };
+}

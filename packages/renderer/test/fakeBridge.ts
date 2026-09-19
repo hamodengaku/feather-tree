@@ -163,6 +163,43 @@ export class FakeBridge {
     await new Promise<void>((release) => this.#waiting.set(name, release));
   }
 
+  /**
+   * 設定更新の応答を保留するための待ち行列（FIFO）。
+   *
+   * 既定（`deferSettings = false`）では即座に解決するので、
+   * 「応答が遅れている間に別の設定を書いた」というレース——ペイン幅のドラッグの応答が
+   * 後から届いてフォルダの展開状態を巻き戻す——を再現できない。
+   * `deferSettingsUpdate()` を呼ぶと、以後の settingsUpdate は
+   * `resolveSettingsUpdate()` / `rejectSettingsUpdate()` を呼ぶまで返らない。
+   * **保留中は main 側の設定も書き換えない**（実物と同じく、適用は応答の時点）。
+   */
+  deferSettings = false;
+  readonly #pendingSettings: {
+    readonly patch: Partial<SettingsDto>;
+    readonly settle: () => void;
+    readonly fail: (error: unknown) => void;
+  }[] = [];
+
+  /** 以後の settingsUpdate を保留する。 */
+  deferSettingsUpdate(): void {
+    this.deferSettings = true;
+  }
+
+  /** 保留中の settingsUpdate を、古い順に 1 件だけ成功させる。 */
+  resolveSettingsUpdate(): void {
+    this.#pendingSettings.shift()?.settle();
+  }
+
+  /** 保留中の settingsUpdate を、古い順に 1 件だけ reject する（IPC の失敗を模す）。 */
+  rejectSettingsUpdate(error: unknown = new Error('設定を保存できませんでした')): void {
+    this.#pendingSettings.shift()?.fail(error);
+  }
+
+  /** まだ返していない settingsUpdate の件数。 */
+  get pendingSettingsUpdates(): number {
+    return this.#pendingSettings.length;
+  }
+
   /** クローンの保存先選択の結果。null ならキャンセル。 */
   clonePickResult: string | null = 'D:/work';
   /** sessionCloneAndCreate の結果。session が null でなければタブが立つ（main と同じ）。 */
@@ -360,9 +397,23 @@ export class FakeBridge {
         return Promise.resolve(ok(this.settings));
       },
       settingsUpdate: (patch: Partial<SettingsDto>) => {
-        this.record('settingsUpdate', patch);
-        this.settings = { ...this.settings, ...patch };
-        return Promise.resolve(ok(this.settings));
+        /*
+         * 本物の IPC と同じく structured clone を通す（$state の Proxy を渡すとここで投げる）。
+         * sessionCloneAndCreate と同じ理由で、preload の境界を素通りさせない。
+         */
+        this.record('settingsUpdate', structuredClone(patch));
+        const apply = (): Result<SettingsDto> => {
+          this.settings = { ...this.settings, ...patch };
+          return ok(this.settings);
+        };
+        if (!this.deferSettings) return Promise.resolve(apply());
+        return new Promise<Result<SettingsDto>>((resolve, reject) => {
+          this.#pendingSettings.push({
+            patch,
+            settle: () => resolve(apply()),
+            fail: (error) => reject(error),
+          });
+        });
       },
       sessionPickAndCreate: () => {
         this.record('sessionPickAndCreate');

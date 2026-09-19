@@ -114,9 +114,10 @@
           <button
             class="danger"
             disabled={app.busy || changesTotal === 0}
+            title="作業ツリーの変更だけを捨てます。ステージ済みの内容は残ります。"
             onclick={() => void app.discard({ kind: 'filtered', filter: { group: 'unstaged' } })}
           >
-            変更をすべて破棄
+            未ステージの変更をすべて破棄
           </button>
           <button
             class="danger"
@@ -178,7 +179,7 @@
               onclick: () => void app.stage({ kind: 'paths', paths: [...changesSelection.selected] }),
             },
             {
-              label: '破棄',
+              label: '未ステージの変更を破棄',
               danger: true,
               onclick: () => void app.discard({ kind: 'paths', paths: [...changesSelection.selected] }),
             },

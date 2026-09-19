@@ -63,7 +63,7 @@ export interface AppSettings {
    * 既定は全折りたたみなので、開いている側を保存する。
    */
   readonly branchExpanded: Readonly<Record<string, readonly string[]>>;
-  /** 実行ログパネルの高さ（px）。 */
+  /** 「実行ログ」パネルの高さ（px）。 */
   readonly commandLogHeight: number;
   /** WorkingTreePane の「ステージ済み」セクションの高さ（px）。残りは「変更」に割り当てる。 */
   readonly stagedHeight: number;

@@ -16,6 +16,23 @@ describe('破壊的操作のポリシー (決定 16)', () => {
     expect(requiresConfirmation('merge-branch')).toBe(true);
   });
 
+  /*
+   * 2026-09-19（決定 16 の追記）: 破棄はインデックスを巻き込まなくなったので、
+   * 確認は 1 種類だけになった。文言でも「ステージ済みは残る」ことを約束する。
+   */
+  it('破棄の確認は 1 種類だけ（#8 の廃止）', () => {
+    expect(requiresConfirmation('discard-staged-and-worktree')).toBe(false);
+    expect(DESTRUCTIVE_ACTIONS.filter((a) => a.startsWith('discard'))).toEqual(['discard-changes']);
+  });
+
+  it('破棄の文言は、作業ツリーが失われることとステージ済みが残ることの両方を述べる', () => {
+    const spec = describeAction('discard-changes');
+    expect(spec.message).toContain('作業ツリー');
+    expect(spec.message).toContain('ステージ済み');
+    expect(spec.message).toContain('残り');
+    expect(spec.recoverable).toBe(false);
+  });
+
   it('日常操作は確認しない（軽量な操作感のため）', () => {
     for (const action of ['stage', 'unstage', 'commit', 'switch-branch', 'fetch', 'pull', 'push', 'merge']) {
       expect(requiresConfirmation(action)).toBe(false);

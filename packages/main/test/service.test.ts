@@ -443,7 +443,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     ).rejects.toMatchObject({ dto: { kind: 'internal' } });
   });
 
-  it('ブランチを作成すると起点から分岐して切り替わる（対応表 #14 → #2、push はしない）', async () => {
+  it('ブランチを作成すると起点から分岐して切り替わり、ブランチ一覧にも即座に現れる（対応表 #14 → #2 → #3、push はしない）', async () => {
     const id = await openDemo();
     await service.stage(id, { kind: 'all' });
     await service.commit(id, { message: 'init', amend: false });
@@ -452,11 +452,14 @@ describe('Service (UI が通る経路の統合テスト)', () => {
 
     expect(service.statusGetSummary(id).head?.branch).toBe('obana/topic');
     expect(service.statusGetSummary(id).seq).toBe(result.statusSeq);
-    // 作成後は status のみ再取得する設計なので、branch 一覧はここではまだ古いまま
-    // （更新ボタン相当の full refresh で初めて反映される）
-    expect(service.branchList(id).find((b) => b.shortName === 'obana/topic')).toBeUndefined();
-    await service.sessionRefresh(id, 'full');
+    /*
+     * **作成した直後にブランチ一覧へ現れること。**（2026-09-19 改定）
+     * 作ったブランチは #3 の結果にしか現れないので、#2 だけを取り直す従来の設計では
+     * ブランチペインに出ないまま、現在ブランチの印だけがどこにも付かない状態になっていた。
+     * 対応表の例外「ブランチ作成（作成して切替）後の反映: #14 → #2 → #3」。
+     */
     const feature = service.branchList(id).find((b) => b.shortName === 'obana/topic');
+    expect(feature).toBeDefined();
     expect(feature?.isHead).toBe(true);
     expect(feature?.oid).toBe(service.branchList(id).find((b) => b.shortName === 'main')?.oid);
 

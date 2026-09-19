@@ -151,6 +151,30 @@ export interface Service {
   shellShowInFolder(id: string, path: string): Promise<void>;
   shellOpenTerminal(id: string): Promise<void>;
   commandLogRecent(limit: number): readonly CommandLogEntryDto[];
+  /**
+   * 走行中の操作を全部中止する（アプリ終了時）。
+   *
+   * **IPC チャネルは持たない。** renderer から「全部止める」を撃てる必要は無く、
+   * 呼ぶのは index.ts の `before-quit` と本体ウィンドウの `close` だけ。
+   * これを呼ばずに終了すると、クローン中の git が孤児として残り、
+   * クローン先フォルダが「使用中」でエクスプローラから削除できなくなる
+   * （docs/01-architecture.md 11 章 2026-09-19 追加分）。
+   */
+  abortAll(): void;
+}
+
+/**
+ * 終了時に中止するための、最後に作られたサービス。
+ *
+ * register.ts は `createService()` の結果を外へ出さない（並行編集中で触れない）ので、
+ * index.ts がサービスへ届く経路がここしか無い。main プロセスが作るサービスは 1 つだけなので、
+ * 「最後の 1 つ」を覚えておけば足りる（handlers/update.ts が register.ts を迂回しているのと同じ事情）。
+ */
+let currentService: Service | null = null;
+
+/** アプリ終了時の後始末。サービスが無ければ何もしない。 */
+export function abortAllServiceOperations(): void {
+  currentService?.abortAll();
 }
 
 export function createService(deps: ServiceDeps): Service {
@@ -343,16 +367,93 @@ export function createService(deps: ServiceDeps): Service {
     return { id: session.id, root: session.root, displayName: displayNameOf(session.root) };
   };
 
+  /**
+   * まだセッション id が無い操作（タブを立てる／クローン）の中止口をまとめる鍵。
+   * セッション id とは衝突しない（id は UUID）。
+   */
+  const OPENING = '@opening';
+
   const addSession = async (root: string, load: boolean): Promise<SessionDto> => {
     const sessions = requireSessions();
-    const session = load ? await sessions.open(root) : await sessions.create(root);
-    return rememberOpened(sessions, session);
+    try {
+      const session = await withSignal(OPENING, (signal) =>
+        load ? sessions.open(root, signal) : sessions.create(root, signal),
+      );
+      return await rememberOpened(sessions, session);
+    } catch (err) {
+      throw asHandlerError(err);
+    }
   };
 
   /** 進捗の opId の連番。クローンは同時に 1 本だけだが、遅れて届いた通知の出所は区別しておく。 */
   let cloneSeq = 0;
   /** 実行中のクローンの中止口。null なら実行中でない（同時に 1 本だけ）。 */
   let cloneAbort: AbortController | null = null;
+
+  /**
+   * 走行中のハンドラの中止口（セッション id ごと）。
+   *
+   * `operations.ts` / `repositorySession.ts` / `sessionManager.ts` は既に全メソッドが
+   * `signal?: AbortSignal` を受けて `context(signal)` へ渡している。欠けていたのは
+   * **呼び出し側だけ**で、そのため実際には中断もタイムアウトもできていなかった
+   * （docs/01-architecture.md 6 章 2026-09-19 改定）。
+   *
+   * セッションに属さない操作（クローン）は cloneAbort が別に持つ。
+   */
+  const inFlight = new Map<string, Set<AbortController>>();
+
+  /** 1 回の操作に AbortController を 1 つ与え、終わったら必ず外す。 */
+  const withSignal = async <T>(id: string, run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    const controller = new AbortController();
+    let bucket = inFlight.get(id);
+    if (bucket === undefined) {
+      bucket = new Set();
+      inFlight.set(id, bucket);
+    }
+    bucket.add(controller);
+    try {
+      return await run(controller.signal);
+    } finally {
+      bucket.delete(controller);
+      if (bucket.size === 0) inFlight.delete(id);
+    }
+  };
+
+  /** そのタブの走行中を全部止める。タブを閉じたときに呼ぶ。 */
+  const abortSession = (id: string): void => {
+    const bucket = inFlight.get(id);
+    if (bucket === undefined) return;
+    inFlight.delete(id);
+    for (const controller of bucket) controller.abort();
+  };
+
+  /** 全部止める（アプリ終了時）。クローンも含む。 */
+  const abortEverything = (): void => {
+    cloneAbort?.abort();
+    const buckets = [...inFlight.values()];
+    inFlight.clear();
+    for (const bucket of buckets) {
+      for (const controller of bucket) controller.abort();
+    }
+  };
+
+  /**
+   * 壊れた `.git`（git が親リポジトリを返す）を UI に出せるエラーへ写す。
+   *
+   * core は ipc の型を知らないので、名前で判別して HandlerError に載せ替える
+   * （errors.ts の toDto と同じやり方）。素通しすると kind が 'internal' になり、
+   * 「内部エラーが発生しました。」としか出ない。
+   */
+  const asHandlerError = (err: unknown): unknown => {
+    if (err instanceof Error && err.name === 'BrokenRepositoryError') {
+      return new HandlerError({
+        kind: 'not-a-repository',
+        message: 'このフォルダの .git は読めません。壊れている可能性があります。',
+        detail: err.message,
+      });
+    }
+    return err;
+  };
 
   /**
    * クローンの入力検証（対応表 #37）。knownRemote と同じ趣旨で、renderer の値を git へ素通しにしない。
@@ -383,7 +484,7 @@ export function createService(deps: ServiceDeps): Service {
     return { url, parentDir, name, mode };
   };
 
-  return {
+  const service: Service = {
     appGetInfo: () => deps.appInfo(),
 
     appGetEnvironment: () => {
@@ -416,7 +517,8 @@ export function createService(deps: ServiceDeps): Service {
     },
 
     sessionLoad: async (id) => {
-      await requireSessions().load(id);
+      const sessions = requireSessions();
+      await withSignal(id, (signal) => sessions.load(id, signal));
       return null;
     },
 
@@ -480,6 +582,8 @@ export function createService(deps: ServiceDeps): Service {
       return null;
     },
 
+    abortAll: abortEverything,
+
     sessionList: () => {
       const sessions = deps.sessions();
       if (sessions === null) return { sessions: [], activeId: null };
@@ -487,13 +591,19 @@ export function createService(deps: ServiceDeps): Service {
     },
 
     sessionActivate: async (id) => {
+      const sessions = requireSessions();
       // 復元直後の未読み込みタブに切り替えたときだけ、その 1 つを読み込む
-      await requireSessions().activate(id);
+      await withSignal(id, (signal) => sessions.activate(id, signal));
       return null;
     },
 
     sessionClose: async (id) => {
       const sessions = requireSessions();
+      /*
+       * **閉じる前に走行中を止める。** タブが消えた後も git が走り続けると、
+       * 誰も結果を受け取らないまま孤児として残る（決定 26 の実行ログにも出口が無い）。
+       */
+      abortSession(id);
       sessions.close(id);
       await deps.updateSettings({ openRepositories: sessions.list().map((s) => s.root) });
       return null;
@@ -501,8 +611,9 @@ export function createService(deps: ServiceDeps): Service {
 
     sessionRefresh: async (id, scope) => {
       const sessions = requireSessions();
-      if (scope === 'full') await sessions.requestFullRefresh(id);
-      else await sessions.requestStatusRefresh(id);
+      await withSignal(id, (signal) =>
+        scope === 'full' ? sessions.requestFullRefresh(id, signal) : sessions.requestStatusRefresh(id, signal),
+      );
       return stateOf(requireSession(id));
     },
 
@@ -536,21 +647,31 @@ export function createService(deps: ServiceDeps): Service {
       };
     },
 
-    stage: async (id, target) => opsFor(id).stage(guardTarget(id, target)),
+    stage: async (id, target) => {
+      const ops = opsFor(id);
+      const guarded = guardTarget(id, target);
+      return withSignal(id, (signal) => ops.stage(guarded, signal));
+    },
 
-    unstage: async (id, target) => opsFor(id).unstage(guardTarget(id, target)),
+    unstage: async (id, target) => {
+      const ops = opsFor(id);
+      const guarded = guardTarget(id, target);
+      return withSignal(id, (signal) => ops.unstage(guarded, signal));
+    },
 
     discard: async (id, target, confirmed) => {
       const ops = opsFor(id);
       const guarded = guardTarget(id, target);
       const hasStaged = ops.targetHasStaged(guarded);
       requireConfirmed(SessionOperations.confirmationFor('discard', { hasStaged }), confirmed);
-      return ops.discard(guarded);
+      return withSignal(id, (signal) => ops.discard(guarded, signal));
     },
 
     deleteUntracked: async (id, target, confirmed) => {
       requireConfirmed(SessionOperations.confirmationFor('deleteUntracked'), confirmed);
-      return opsFor(id).deleteUntracked(guardTarget(id, target));
+      const ops = opsFor(id);
+      const guarded = guardTarget(id, target);
+      return withSignal(id, (signal) => ops.deleteUntracked(guarded, signal));
     },
 
     commit: async (id, req, confirmed) => {
@@ -558,17 +679,26 @@ export function createService(deps: ServiceDeps): Service {
         throw new HandlerError({ kind: 'internal', message: 'コミットメッセージが空です。' });
       }
       requireConfirmed(SessionOperations.confirmationFor('commit', { amend: req.amend }), confirmed);
-      return opsFor(id).commit(req.message, { amend: req.amend });
+      const ops = opsFor(id);
+      return withSignal(id, (signal) => ops.commit(req.message, { amend: req.amend }, signal));
     },
 
-    stageHunks: async (id, req) => opsFor(id).stageHunks(...guardHunks(id, req)),
+    stageHunks: async (id, req) => {
+      const ops = opsFor(id);
+      const [path, hunks] = guardHunks(id, req);
+      return withSignal(id, (signal) => ops.stageHunks(path, hunks, signal));
+    },
 
-    unstageHunks: async (id, req) => opsFor(id).unstageHunks(...guardHunks(id, req)),
+    unstageHunks: async (id, req) => {
+      const ops = opsFor(id);
+      const [path, hunks] = guardHunks(id, req);
+      return withSignal(id, (signal) => ops.unstageHunks(path, hunks, signal));
+    },
 
     diffGet: async (id, path, staged) => {
       const session = requireSession(id);
       assertInsideRoot(session.root, path);
-      const diff = await session.getDiff(path, staged);
+      const diff = await withSignal(id, (signal) => session.getDiff(path, staged, signal));
       if (diff === null) return null;
       // preamble は DTO に載せない（git の内部形式を renderer へ漏らさない）。
       // 代わりに「hunk 単位で操作できるか」だけを導出して渡す
@@ -700,4 +830,8 @@ export function createService(deps: ServiceDeps): Service {
         .recent(Math.min(Math.max(1, limit), 500))
         .map(toCommandLogEntryDto),
   };
+
+  // 終了時に index.ts から届く唯一の経路（上の currentService のコメント）
+  currentService = service;
+  return service;
 }

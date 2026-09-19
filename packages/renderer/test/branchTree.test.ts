@@ -6,6 +6,8 @@ import {
   expandKeys,
   isRepeatClick,
   isUnderPath,
+  planCurrentBranchSeed,
+  seedMark,
   toExpandedSet,
   withCollapsed,
   withExpanded,
@@ -152,6 +154,90 @@ describe('展開キーの操作', () => {
   it('現在のブランチの祖先だけを開く（ブランチ自身は開かない）', () => {
     expect(ancestorKeys('local', 'feature/ui/fix')).toEqual(['local:feature', 'local:feature/ui']);
     expect(ancestorKeys('local', 'main')).toEqual([]);
+  });
+});
+
+/**
+ * 現在ブランチへの経路の自動展開。
+ *
+ * ここを純関数にしてあるのは、**利用者が畳んだフォルダを勝手に開き直す**不具合が
+ * 実際に起きたため。原因は App.svelte が `<BranchPane />` を表示モードの分岐の両枝に
+ * 重複して書いていたことで、モード切替のたびにコンポーネントごと作り直され、
+ * シード済みの記録が初期化されていた。
+ *
+ * 記録（seeded）が生き続けていれば何もしない、という下の 2 つの期待が、
+ * 「コンポーネントを生かし続けること」の意味そのものになる。
+ */
+describe('現在ブランチへの自動展開の判断', () => {
+  const base = {
+    sessionId: 'session-1',
+    branch: 'feature/ui/fix',
+    settingsReady: true,
+    expanded: [] as readonly string[],
+    seeded: [] as readonly string[],
+  };
+
+  it('初回は祖先フォルダを開き、印を記録する', () => {
+    const decision = planCurrentBranchSeed(base);
+    expect(decision.mark).toBe(seedMark('session-1', 'feature/ui/fix'));
+    expect(decision.expanded).toEqual(['local:feature', 'local:feature/ui']);
+  });
+
+  it('すでに開いているぶんは足さず、印だけ記録する', () => {
+    const decision = planCurrentBranchSeed({
+      ...base,
+      expanded: ['local:feature', 'local:feature/ui', 'local:other'],
+    });
+    // 開く必要が無くても記録する。記録しないと、畳まれた直後にまた開きにいく
+    expect(decision.mark).toBe(seedMark('session-1', 'feature/ui/fix'));
+    expect(decision.expanded).toBeNull();
+  });
+
+  it('一度シードした組は、畳み直されても二度と開き直さない', () => {
+    const first = planCurrentBranchSeed(base);
+    expect(first.mark).not.toBeNull();
+
+    // 利用者がフォルダを畳んだ（expanded が空に戻った）状態で、同じ組をもう一度評価する
+    const again = planCurrentBranchSeed({ ...base, seeded: [first.mark ?? ''] });
+
+    expect(again.mark).toBeNull();
+    expect(again.expanded).toBeNull();
+  });
+
+  it('記録が失われると開き直してしまう（＝記録はモード切替をまたいで生き続ける必要がある）', () => {
+    // BranchPane が作り直されて seeded が空になった状況の再現。
+    // この期待が「App.svelte はモード分岐の両枝に BranchPane を置いてはいけない」の根拠
+    const afterRemount = planCurrentBranchSeed({ ...base, seeded: [] });
+    expect(afterRemount.expanded).toEqual(['local:feature', 'local:feature/ui']);
+  });
+
+  it('タブが変われば、そのタブのぶんを改めてシードする', () => {
+    const mark = seedMark('session-1', 'feature/ui/fix');
+    const other = planCurrentBranchSeed({ ...base, sessionId: 'session-2', seeded: [mark] });
+    expect(other.mark).toBe(seedMark('session-2', 'feature/ui/fix'));
+    expect(other.expanded).toEqual(['local:feature', 'local:feature/ui']);
+  });
+
+  it('同じタブでもブランチが変われば、その経路をシードする', () => {
+    const mark = seedMark('session-1', 'feature/ui/fix');
+    const moved = planCurrentBranchSeed({ ...base, branch: 'release/2026/09', seeded: [mark] });
+    expect(moved.expanded).toEqual(['local:release', 'local:release/2026']);
+  });
+
+  it('タブが無い・detached・設定未読み込みのときは何もしない', () => {
+    expect(planCurrentBranchSeed({ ...base, sessionId: null })).toEqual({ mark: null, expanded: null });
+    expect(planCurrentBranchSeed({ ...base, branch: null })).toEqual({ mark: null, expanded: null });
+    // 設定を読む前に保存すると、保存済みの展開状態を既定値で上書きしてしまう
+    expect(planCurrentBranchSeed({ ...base, settingsReady: false })).toEqual({
+      mark: null,
+      expanded: null,
+    });
+  });
+
+  it('階層の無いブランチでは開くものが無い（印だけ残る）', () => {
+    const decision = planCurrentBranchSeed({ ...base, branch: 'main' });
+    expect(decision.mark).toBe(seedMark('session-1', 'main'));
+    expect(decision.expanded).toBeNull();
   });
 });
 

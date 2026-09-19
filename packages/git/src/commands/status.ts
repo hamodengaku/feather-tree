@@ -1,6 +1,6 @@
 import { GitCommandError } from '../execution/errors.js';
 import { READ_PREFIX } from '../execution/gitEnvironment.js';
-import { runGitStream } from '../execution/spawnGit.js';
+import { STATUS_TIMEOUT_MS, runGitStream } from '../execution/spawnGit.js';
 import { StatusParser } from '../parsing/statusPorcelainV2.js';
 import type { StatusSnapshot } from '../model/types.js';
 import type { GitContext } from './context.js';
@@ -34,7 +34,9 @@ export async function getStatus(ctx: GitContext, options: StatusOptions = {}): P
 
   const parser = new StatusParser();
   const { exit, result } = await runGitStream(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args },
+    // 巨大リポジトリ（決定 10）でも誤爆しない余裕を取った上で、
+    // 何かに引っ掛かって返らなくなったときは必ず打ち切る。
+    { gitPath: ctx.gitPath, cwd: ctx.cwd, args, timeoutMs: STATUS_TIMEOUT_MS },
     parser,
     ctx.signal,
   );

@@ -1,6 +1,6 @@
 import { GitCommandError } from '../execution/errors.js';
 import { DIFF_EXTRA, READ_PREFIX } from '../execution/gitEnvironment.js';
-import { runGitText } from '../execution/spawnGit.js';
+import { DIFF_TIMEOUT_MS, runGitText } from '../execution/spawnGit.js';
 import { parseLog, parseNameStatus } from '../parsing/log.js';
 import { parseUnifiedDiff } from '../parsing/diff.js';
 import type { CommitFileChange, CommitSummary, FileDiff } from '../model/types.js';
@@ -34,7 +34,12 @@ export async function getLog(ctx: GitContext, options: LogOptions = {}): Promise
   if (options.skip !== undefined && options.skip > 0) args.push(`--skip=${options.skip}`);
   args.push('--all');
 
-  const { exit, stdout } = await runGitText({ gitPath: ctx.gitPath, cwd: ctx.cwd, args }, ctx.signal);
+  const { exit, stdout } = await runGitText(
+    // --max-count で打ち切っているので本来は短い。
+    // 壊れた object DB を引いたときに履歴タブが無反応にならないよう上限を置く。
+    { gitPath: ctx.gitPath, cwd: ctx.cwd, args, timeoutMs: DIFF_TIMEOUT_MS },
+    ctx.signal,
+  );
 
   // コミットが 1 つも無いリポジトリでは失敗する。空配列として扱う。
   if (exit.code !== 0) {
@@ -54,6 +59,7 @@ export async function getCommitFiles(ctx: GitContext, oid: string): Promise<Comm
       gitPath: ctx.gitPath,
       cwd: ctx.cwd,
       args: [...READ_PREFIX, 'show', ...DIFF_EXTRA, '--name-status', '-z', '--format=', oid],
+      timeoutMs: DIFF_TIMEOUT_MS,
     },
     ctx.signal,
   );
@@ -88,7 +94,10 @@ export async function getCommitFileDiff(
     path,
   ];
 
-  const { exit, stdout } = await runGitText({ gitPath: ctx.gitPath, cwd: ctx.cwd, args }, ctx.signal);
+  const { exit, stdout } = await runGitText(
+    { gitPath: ctx.gitPath, cwd: ctx.cwd, args, timeoutMs: DIFF_TIMEOUT_MS },
+    ctx.signal,
+  );
   if (exit.code !== 0) throw new GitCommandError(['show'], exit.code, exit.stderr);
 
   const files = parseUnifiedDiff(

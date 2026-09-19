@@ -18,6 +18,11 @@ export { DIFF_EXTRA, READ_PREFIX, WRITE_PREFIX } from './execution/gitEnvironmen
 export { runGitStream, runGitText, runGitWithProgress } from './execution/spawnGit.js';
 export type { ChunkSink, GitCommand, GitExit } from './execution/spawnGit.js';
 export { killTree } from './execution/killTree.js';
+export {
+  killAllGitProcesses,
+  registerGitProcess,
+  runningGitCount,
+} from './execution/childRegistry.js';
 export { withMessageFile, withPathspecFile } from './execution/pathspecFile.js';
 
 export { StatusParser, countEntries } from './parsing/statusPorcelainV2.js';

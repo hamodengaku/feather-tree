@@ -19,6 +19,14 @@ import {
 const TEST_ROOT = resolve(import.meta.dirname, '../../../.tmp/core-session-tests');
 const GIT_PATH = process.env['FT_TEST_GIT'] ?? 'git';
 
+/**
+ * git は / 区切り、Node は OS の区切りを返すので、そのまま比較すると食い違う。
+ * resolve() が区切りを揃えるので、あとは大小だけ揃えれば足りる（Windows は大小を区別しない）。
+ */
+function samePathish(a: string, b: string): boolean {
+  return resolve(a).toLowerCase() === resolve(b).toLowerCase();
+}
+
 function git(cwd: string, args: readonly string[]): Promise<void> {
   return new Promise((res, rej) => {
     const child = spawn(GIT_PATH, [...args], { cwd, shell: false, windowsHide: true, stdio: 'ignore' });
@@ -578,5 +586,69 @@ describe('起動時のタブ復元', () => {
     const again = await manager.restore(dirs);
     expect(again).toHaveLength(0);
     expect(manager.list()).toHaveLength(3);
+  });
+
+  /*
+   * 壊れた `.git` を持つフォルダを開くと、git のリポジトリ探索が**親へ遡って**
+   * 別のリポジトリのルートを返す（2026-09-19 実測: HEAD を消した .git で exit=0）。
+   * 検査が無いと、利用者は「壊れたフォルダを開いたのに別のリポジトリのタブが出る」
+   * ——既に開いていればタブが切り替わるだけ——という挙動に遭う。
+   */
+  it('壊れた .git を持つフォルダは、親リポジトリのタブにすり替わらない', async () => {
+    const outer = dirs[0] ?? "";
+    const broken = join(outer, 'broken-clone');
+    await mkdir(broken, { recursive: true });
+    await git(broken, ['init', '--initial-branch=main']);
+    await rm(join(broken, '.git', 'HEAD'));
+
+    // 前提の確認: git 自身は成功して親を返す（この前提が崩れたらテストの意味が変わる）
+    const restored = await manager.restore([broken]);
+
+    expect(restored).toHaveLength(0);
+    expect(manager.list()).toHaveLength(0);
+    const failure = manager.restoreFailures.find((f) => samePathish(f.root, broken));
+    expect(failure?.reason).toBe('broken');
+  });
+
+  it('リポジトリのサブディレクトリなら、従来どおりルートのタブが立つ（退行防止）', async () => {
+    const outer = dirs[0] ?? "";
+    const sub = join(outer, 'src', 'nested');
+    await mkdir(sub, { recursive: true });
+
+    const restored = await manager.restore([sub]);
+
+    expect(restored).toHaveLength(1);
+    expect(samePathish(manager.get(restored[0] ?? "")?.root ?? "", outer)).toBe(true);
+  });
+
+  it('ルート解決が時間内に終わらなければ、そのタブは諦めて次へ進む', async () => {
+    // git の起動だけで数十 ms かかるので、1ms では必ず間に合わない
+    const startedAt = Date.now();
+    const restored = await manager.restore(dirs, undefined, { rootTimeoutMs: 1 });
+    const elapsed = Date.now() - startedAt;
+
+    expect(restored).toHaveLength(0);
+    expect(manager.restoreFailures).toHaveLength(3);
+    /*
+     * 打ち切りは「signal を送る」と「時間で捨てる」の二重になっている（#resolveWithin）ので、
+     * どちらが先に立つかはレースで決まる。reason を 1 つに決め打つと偶発的に落ちるため、
+     * **諦めて次へ進んだこと**そのものを見る: 全件が失敗として残り、
+     * 実 git の所要時間（1 件あたり約 60ms）を素直に待った場合よりずっと速く返る。
+     */
+    expect(manager.restoreFailures.every((f) => f.reason === 'timeout' || f.reason === 'error')).toBe(true);
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  /*
+   * 1 件あたりの上限だけでは、タブが 20 枚あれば最悪 20 倍待つ。
+   * 全体の予算を使い切ったら残りは開かずに起動を進める——スプラッシュの保険タイマー
+   * （10 秒）を追い越すと、本体ウィンドウが生まれる前にアプリが終了しうるため。
+   */
+  it('全体の予算を使い切ったら、残りは開かずに起動を進める', async () => {
+    const restored = await manager.restore(dirs, undefined, { totalBudgetMs: 0 });
+
+    expect(restored).toHaveLength(0);
+    expect(manager.restoreFailures.every((f) => f.reason === 'skipped')).toBe(true);
+    expect(manager.restoreFailures).toHaveLength(3);
   });
 });

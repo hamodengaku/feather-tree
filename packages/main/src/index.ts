@@ -7,14 +7,17 @@ import {
   type FocusRefreshPromptEvent,
   type SessionChangedEvent,
 } from '@feathertree/ipc';
-import type { CommandLogEntry } from '@feathertree/core';
+import { killAllGitProcesses, runningGitCount, type CommandLogEntry } from '@feathertree/core';
 import { AppContext } from './appContext.js';
 import { toCommandLogEntryDto } from './handlers/commandLogDto.js';
 import { registerHandlers } from './handlers/register.js';
+import { abortAllServiceOperations } from './handlers/service.js';
 import { STARTUP_UPDATE_CHECK_DELAY_MS, registerUpdateHandlers } from './handlers/update.js';
 import { hardenWindow, titleBarOverlayOptions, writeStartupMetrics } from '@feathertree/base-electron';
 import { WINDOW_BACKGROUND, chromeFor } from './windowChrome.js';
 import {
+  HandoverLatch,
+  type HandoverTrigger,
   SPLASH_SAFETY_MS,
   createSplashWindow,
   delay,
@@ -63,7 +66,23 @@ let splashWindow: BrowserWindow | null = null;
 let splashShownAt = 0;
 let splashShownMs: number | undefined;
 let splashSafetyTimer: NodeJS.Timeout | null = null;
-let handedOver = false;
+
+/**
+ * 引き渡しのラッチ（splashWindow.ts）。
+ *
+ * **1 つの boolean にしてはいけない。** 「引き渡し済み」でまとめると、保険タイマーが
+ * 先に鳴ってスプラッシュだけを閉じた後、遅れて来た ready-to-show が即 return し、
+ * show: false のまま見えないウィンドウを抱えたプロセスが常駐する（2026-09-19 実測）。
+ */
+const handover = new HandoverLatch();
+
+/**
+ * 起動処理が走っている間は true。
+ *
+ * 本体ウィンドウが生まれる前にスプラッシュが閉じると window-all-closed が走るため、
+ * この間だけ app.quit() を抑える。抑えないと**起動が遅い環境で無言で終了する**。
+ */
+let startupInProgress = true;
 
 /**
  * スプラッシュから本体へ渡す。
@@ -72,25 +91,27 @@ let handedOver = false;
  * 逆にすると、本体が無い瞬間に `window-all-closed` が走ってアプリが終了する
  * （docs/01-architecture.md 11 章）。
  */
-async function handOverToMainWindow(): Promise<void> {
-  if (handedOver) return;
-  handedOver = true;
+async function handOverToMainWindow(trigger: HandoverTrigger): Promise<void> {
+  const window = mainWindow;
+  const hasMain = window !== null && !window.isDestroyed();
+  const { showMain, closeSplash } = handover.decide(trigger, hasMain);
+  if (!showMain && !closeSplash) return;
 
-  if (splashSafetyTimer !== null) {
+  // 保険タイマーは「起動が固まったまま板が残る」ための網なので、用が済んだら必ず止める
+  if (trigger !== "safety-timer" && splashSafetyTimer !== null) {
     clearTimeout(splashSafetyTimer);
     splashSafetyTimer = null;
   }
 
-  const splash = splashWindow;
-  splashWindow = null;
+  const splash = closeSplash ? splashWindow : null;
+  if (closeSplash) splashWindow = null;
 
   // スプラッシュを出していた時間が最低表示時間に届いていなければ、その分だけ待つ
   if (splash !== null && !splash.isDestroyed()) {
     await delay(remainingHoldMs(splashShownAt, Date.now()));
   }
 
-  const window = mainWindow;
-  if (window !== null && !window.isDestroyed()) {
+  if (showMain && window !== null) {
     window.show();
     const windowShownMs = Date.now() - processStart;
     writeStartupMetrics(context.userDataDir, {
@@ -158,7 +179,7 @@ function createWindow(): BrowserWindow {
    */
   window.once('ready-to-show', () => {
     readyToShowMs = Date.now() - processStart;
-    void handOverToMainWindow();
+    void handOverToMainWindow('main-ready');
   });
 
   /**
@@ -237,7 +258,43 @@ function notifyFocusRefreshPrompt(sessionId: string): void {
   mainWindow.webContents.send(CHANNELS.eventFocusRefreshPrompt, event);
 }
 
+/**
+ * 走行中の git を孫プロセスごと落とす（docs/01-architecture.md 11 章 2026-09-19 追加分）。
+ *
+ * これをせずに終了すると、クローン中の git clone が孤児として走り続け、
+ * **クローン先フォルダが「使用中」でエクスプローラから削除できなくなる。**
+ * child_process は detached: false だが、Windows では親の終了で子は落ちない。
+ *
+ * 順番: 先に AbortController を立てて git 層に「やめろ」と伝え、
+ * それでも残っているものを taskkill /T /F で刈る。
+ */
+let shuttingDown = false;
+
+async function stopRunningGit(): Promise<void> {
+  abortAllServiceOperations();
+  if (runningGitCount() === 0) return;
+  await killAllGitProcesses();
+}
+
+app.on('before-quit', (event) => {
+  // 再入で無限ループしない。2 回目はそのまま終わらせる
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (runningGitCount() === 0) {
+    abortAllServiceOperations();
+    return;
+  }
+  event.preventDefault();
+  void stopRunningGit().finally(() => app.quit());
+});
+
 app.on('window-all-closed', () => {
+  /*
+   * **起動中は終了しない。** 本体ウィンドウが生まれる前にスプラッシュが閉じると
+   * ここへ来てしまい、起動が遅い環境でアプリが無言で消える（2026-09-19 実測）。
+   * 起動処理が終われば本体があるので、この抑制は自然に外れる。
+   */
+  if (startupInProgress) return;
   app.quit();
 });
 
@@ -258,7 +315,7 @@ void app.whenReady().then(async () => {
   splashShownAt = Date.now();
   splashShownMs = splashShownAt - processStart;
   // 起動処理が固まっても、閉じるボタンの無い板が残り続けないようにする
-  splashSafetyTimer = setTimeout(() => void handOverToMainWindow(), SPLASH_SAFETY_MS);
+  splashSafetyTimer = setTimeout(() => void handOverToMainWindow('safety-timer'), SPLASH_SAFETY_MS);
 
   try {
     await context.initialize();
@@ -269,6 +326,14 @@ void app.whenReady().then(async () => {
     registerHandlers(context, () => mainWindow);
     runStartupUpdateCheck = registerUpdateHandlers(context, () => mainWindow).runStartupCheck;
     mainWindow = createWindow();
+    /*
+     * 'closed' では遅い（webContents が消えた後）。クローン中に × を押した場合、
+     * ここで止めないと git が孤児になる。閉じるのは止めず、後始末だけ走らせる
+     * （before-quit がもう一度面倒を見るので、ここで preventDefault はしない）。
+     */
+    mainWindow.on('close', () => {
+      abortAllServiceOperations();
+    });
     mainWindow.on('closed', () => {
       mainWindow = null;
     });
@@ -279,7 +344,10 @@ void app.whenReady().then(async () => {
      * 本体ウィンドウが無い状態で閉じるとアプリは終了するが、
      * 起動に失敗しているのだからそれが正しい振る舞い。
      */
-    await handOverToMainWindow();
+    await handOverToMainWindow('startup-failed');
     throw err;
+  } finally {
+    // 成功しても失敗しても、ここから先は window-all-closed を通常どおり働かせる
+    startupInProgress = false;
   }
 });

@@ -3,7 +3,6 @@ import {
   canBuildPatch,
   commit as gitCommit,
   createBranch as gitCreateBranch,
-  discardStagedAndWorktree,
   discardWorktree,
   fetchRemote,
   mergeBranch as gitMergeBranch,
@@ -165,27 +164,24 @@ export class SessionOperations {
   }
 
   /**
-   * 対応表 #7 / #8。**不可逆なので確認必須。**
-   * ステージ済みの変更も含まれる場合は #8 を使う。
+   * 対応表 #7。**不可逆なので確認必須。**
+   *
+   * **インデックスには触れない**（2026-09-19 改定、決定 16 の追記）。
+   * `restore --worktree` はインデックスから作業ツリーを復元するので、ステージ済みの内容は残る。
+   *
+   * 以前はステージ済みの変更があると #8（`restore --staged --worktree`）へ自動で切り替えて
+   * いたが、作業ツリーペインの「未ステージ」グループには**一部をステージした後さらに編集した
+   * ファイル**（`staged != .` かつ `worktree != .`）も入るため、「未ステージ分を捨てる」つもりの
+   * 操作がインデックスまで HEAD に戻していた。#8 は廃止（対応表では欠番）。
+   * HEAD まで戻したいときは #6（ステージから戻す）→ #7（破棄）の 2 段階を踏む。
    */
   async discard(target: OperationTarget, signal?: AbortSignal): Promise<OperationOutcome> {
-    const snapshot = this.#snapshot();
     const paths = this.#resolve(target);
     if (paths.length === 0) return { affected: 0, statusSeq: this.#session.statusSeq };
 
-    const targetSet = new Set(paths);
-    const hasStaged = snapshot.entries.some(
-      (e) => targetSet.has(e.path) && (e.kind === 'ordinary' || e.kind === 'renamed') && e.staged !== '.',
+    await this.#session.track(['restore', '--worktree'], () =>
+      discardWorktree(this.#session.context(signal), paths),
     );
-
-    const ctx = this.#session.context(signal);
-    if (hasStaged) {
-      await this.#session.track(['restore', '--staged', '--worktree'], () =>
-        discardStagedAndWorktree(ctx, paths),
-      );
-    } else {
-      await this.#session.track(['restore', '--worktree'], () => discardWorktree(ctx, paths));
-    }
 
     await this.#session.refreshStatus(signal);
     return { affected: paths.length, statusSeq: this.#session.statusSeq };
@@ -243,7 +239,12 @@ export class SessionOperations {
 
   /**
    * 対応表 #14。確認不要。作成して切替までを 1 git プロセスで行う（`switch -c`）。
-   * push は行わない。切替後は status のみ再取得する。
+   * push は行わない。
+   *
+   * 切替（#12）と違い、ブランチ一覧も取り直す
+   * （対応表の例外「ブランチ作成（作成して切替）後の反映: #14 → #2 → #3」）。
+   * **作ったブランチは #3 の結果にしか現れない**ので、取り直さないとブランチペインに
+   * 出ないまま現在ブランチの印だけが消える。
    */
   async createBranch(
     name: string,
@@ -254,6 +255,7 @@ export class SessionOperations {
       gitCreateBranch(this.#session.context(signal), name, startPoint),
     );
     await this.#session.refreshStatus(signal);
+    await this.#session.refreshBranches(signal);
     return { statusSeq: this.#session.statusSeq };
   }
 
@@ -315,14 +317,19 @@ export class SessionOperations {
     return { statusSeq: this.#session.statusSeq };
   }
 
-  /** この操作に必要な確認の種類。null なら確認不要。 */
+  /**
+   * この操作に必要な確認の種類。null なら確認不要。
+   *
+   * 破棄の確認は 1 種類だけになった（2026-09-19、#8 の廃止に伴う）。
+   * `hasStaged` は呼び出し側の互換のために受けるだけで、**判定には使わない**。
+   */
   static confirmationFor(
     operation: 'stage' | 'unstage' | 'discard' | 'deleteUntracked' | 'commit' | 'merge',
     context: { readonly amend?: boolean; readonly hasStaged?: boolean } = {},
   ): DestructiveAction | null {
     switch (operation) {
       case 'discard':
-        return context.hasStaged === true ? 'discard-staged-and-worktree' : 'discard-changes';
+        return 'discard-changes';
       case 'deleteUntracked':
         return 'delete-untracked';
       case 'commit':
@@ -335,7 +342,13 @@ export class SessionOperations {
     }
   }
 
-  /** 対象にステージ済みの変更が含まれるか（確認文言の選択に使う）。 */
+  /**
+   * 対象にステージ済みの変更が含まれるか。
+   *
+   * @deprecated 2026-09-19 に用途が無くなった（破棄の確認文言が 1 種類になったため）。
+   * まだ `packages/main/src/handlers/service.ts` の discard ハンドラが呼んでいるので残してある。
+   * 呼び出し側を消すのは統合時。結果は `confirmationFor` の判定に影響しない。
+   */
   targetHasStaged(target: OperationTarget): boolean {
     const snapshot = this.#session.snapshot;
     if (snapshot === null) return false;

@@ -1,6 +1,6 @@
 import { GitCommandError } from '../execution/errors.js';
 import { READ_PREFIX, WRITE_PREFIX } from '../execution/gitEnvironment.js';
-import { runGitText } from '../execution/spawnGit.js';
+import { REF_LIST_TIMEOUT_MS, runGitText } from '../execution/spawnGit.js';
 import { parseRefList } from '../parsing/refList.js';
 import type { BranchRef } from '../model/types.js';
 import type { GitContext } from './context.js';
@@ -22,6 +22,8 @@ export async function listBranches(ctx: GitContext): Promise<BranchRef[]> {
       gitPath: ctx.gitPath,
       cwd: ctx.cwd,
       args: [...READ_PREFIX, 'for-each-ref', `--format=${FORMAT}`, 'refs/heads', 'refs/remotes'],
+      // 所要時間は ref 数だけで決まる。数千 ref でも数秒なので、60 秒に達したら異常。
+      timeoutMs: REF_LIST_TIMEOUT_MS,
     },
     ctx.signal,
   );
@@ -29,6 +31,13 @@ export async function listBranches(ctx: GitContext): Promise<BranchRef[]> {
   if (exit.code !== 0) throw new GitCommandError(['for-each-ref'], exit.code, exit.stderr);
   return parseRefList(stdout);
 }
+
+/*
+ * ここから下（#12 / #14 / #35）は書き込み系なので**タイムアウトを付けない**。
+ * 作業ツリーの書き換えやマージは、巨大リポジトリでは分単位でかかりうる
+ * 「人が待つと決めた操作」であり、途中で打ち切ると中途半端な状態を残す。
+ * 中断は利用者の明示的なキャンセル（AbortSignal）だけで行う。
+ */
 
 /**
  * 対応表 #12: ブランチ切替。

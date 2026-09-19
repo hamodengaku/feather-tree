@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { GitCommandError } from '../execution/errors.js';
+import { GitCancelledError, GitCommandError } from '../execution/errors.js';
 import { DIFF_EXTRA, READ_PREFIX } from '../execution/gitEnvironment.js';
-import { runGitText } from '../execution/spawnGit.js';
+import { DIFF_TIMEOUT_MS, runGitText } from '../execution/spawnGit.js';
 import { buildAddedFileDiff, looksBinary, parseUnifiedDiff } from '../parsing/diff.js';
 import type { FileDiff } from '../model/types.js';
 import type { GitContext } from './context.js';
@@ -33,7 +33,12 @@ export async function getFileDiff(
   if (staged) args.push('--cached');
   args.push('--', path);
 
-  const { exit, stdout } = await runGitText({ gitPath: ctx.gitPath, cwd: ctx.cwd, args }, ctx.signal);
+  const { exit, stdout } = await runGitText(
+    // 1 ファイル分の diff なので本来は一瞬。LFS の smudge フィルタが絡むと
+    // 孫プロセス待ちで返らなくなることがあるため上限を置く。
+    { gitPath: ctx.gitPath, cwd: ctx.cwd, args, timeoutMs: DIFF_TIMEOUT_MS },
+    ctx.signal,
+  );
   if (exit.code !== 0) throw new GitCommandError(['diff'], exit.code, exit.stderr);
 
   const files = parseUnifiedDiff(stdout, options.maxLines === undefined ? {} : { maxLines: options.maxLines });
@@ -45,6 +50,11 @@ export async function getFileDiff(
  *
  * 未追跡ファイルには diff が存在しない。`git diff --no-index` は呼ばない
  * （プロセスが増え、挙動も不安定）。ファイルを直接読んで全行追加として扱う。
+ *
+ * **ここには timeoutMs が無い。** git を起動しないので spawnGit のタイマーが存在しない。
+ * 代わりに readFile へ AbortSignal を渡し、他の操作と同じように利用者のキャンセルで
+ * 抜けられるようにしている（切断されたネットワークドライブ上のファイルで固まらないため）。
+ * 中断時の例外は git 層の他の API と揃えて GitCancelledError に寄せる。
  */
 export async function getUntrackedFileDiff(
   ctx: GitContext,
@@ -52,7 +62,13 @@ export async function getUntrackedFileDiff(
   options: DiffOptions = {},
 ): Promise<FileDiff> {
   const absolute = join(ctx.cwd, path);
-  const buf = await readFile(absolute);
+  let buf: Buffer;
+  try {
+    buf = await readFile(absolute, ctx.signal === undefined ? {} : { signal: ctx.signal });
+  } catch (err) {
+    if (ctx.signal?.aborted === true) throw new GitCancelledError();
+    throw err;
+  }
 
   if (looksBinary(buf)) {
     return { path, oldPath: null, binary: true, hunks: [], truncated: false, preamble: [] };

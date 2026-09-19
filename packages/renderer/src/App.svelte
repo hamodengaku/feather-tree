@@ -30,6 +30,17 @@
 
   const gitMissing = $derived(app.environment !== null && app.environment.gitPath === null);
 
+  /**
+   * ペイン領域のモード（決定 27）。
+   *
+   * **ブランチペインは 2 つのモードで共通**で、左に居続ける（幅も折り畳み状態も同じ設定）。
+   * モードが替えるのはその右側だけで、差分モードは左右 2 分割（作業ツリー / 差分）、
+   * コミットログモードは上下 2 分割（コミットリスト / コミット詳細）になる。
+   *
+   * 列の定義（gridColumns）より前に置いてあるのは、そちらが参照するため。
+   */
+  const logMode = $derived(app.viewMode === 'log');
+
   // ---------------------------------------------------------------- center/diff の比率レイアウト
 
   let panesWidth = $state(0);
@@ -54,16 +65,23 @@
   const centerWidthPx = $derived(liveCenterWidth ?? Math.round(ratio * availableCD));
 
   /**
-   * 通常時は fr 単位で比率だけを指定し、ウィンドウ伸縮に応じたブラウザ側の再配分に任せる
-   * （center/diff がブランチペイン幅を保ったまま連動して伸縮し、diff は minmax で消えない）。
-   * ドラッグ中だけ px 値に切り替え、PaneSplitter の col-resize の感触を保つ。
+   * ペイン領域の列。**両モードで 1 つの grid**（＝ブランチペインは 1 インスタンス）。
+   *
+   * 左側（ブランチペイン + 分割線）の扱いはモードに依らず同じで、右側だけが替わる。
+   * コミットログモードの右側は 1 トラック（中を上下に割るのは .log-split の仕事）。
+   *
+   * 差分モードの右側は、通常時は fr 単位で比率だけを指定し、ウィンドウ伸縮に応じた
+   * ブラウザ側の再配分に任せる（center/diff がブランチペイン幅を保ったまま連動して伸縮し、
+   * diff は minmax で消えない）。ドラッグ中だけ px 値に切り替え、
+   * PaneSplitter の col-resize の感触を保つ。
    */
   const gridColumns = $derived.by(() => {
-    const centerDiff =
-      liveCenterWidth !== null
+    const right = logMode
+      ? 'minmax(0, 1fr)'
+      : liveCenterWidth !== null
         ? `${liveCenterWidth}px 6px minmax(200px, 1fr)`
         : `minmax(160px, ${ratio}fr) 6px minmax(200px, ${1 - ratio}fr)`;
-    return leftCollapsed ? centerDiff : `${leftWidth}px 6px ${centerDiff}`;
+    return leftCollapsed ? right : `${leftWidth}px 6px ${right}`;
   });
 
   function commitCenterWidth(nextPx: number): void {
@@ -113,20 +131,6 @@
   }
 
   // ---------------------------------------------------------------- コミットログモードの上下分割
-
-  /**
-   * ペイン領域のモード（決定 27）。
-   *
-   * **ブランチペインは 2 つのモードで共通**で、左に居続ける（幅も折り畳み状態も同じ設定）。
-   * モードが替えるのはその右側だけで、差分モードは左右 2 分割（作業ツリー / 差分）、
-   * コミットログモードは上下 2 分割（コミットリスト / コミット詳細）になる。
-   */
-  const logMode = $derived(app.viewMode === 'log');
-
-  /** コミットログモードの列。ブランチペインの扱いは差分モードとまったく同じ。 */
-  const logColumns = $derived(
-    leftCollapsed ? 'minmax(0, 1fr)' : `${leftWidth}px 6px minmax(0, 1fr)`,
-  );
 
   let liveDetailHeight = $state<number | null>(null);
   const detailHeight = $derived(liveDetailHeight ?? app.settings?.logDetailHeight ?? 260);
@@ -180,6 +184,16 @@
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     app.showOpenRepositoryMenu(Math.round(rect.left), Math.round(rect.bottom + 2));
   }
+
+  // ---------------------------------------------------------------- 失敗の導線（決定 26 の改定）
+
+  /**
+   * 失敗の件数。ログボタンの丸に出すだけで、画面は塞がない。
+   * 実体は「実行ログ」パネルの「エラー」タブ（CommandLogPanel）にある。
+   */
+  const errorCount = $derived(app.errorLog.length);
+  /** 3 桁以上は丸める（ボタンの幅が動くと押し間違いを招く）。 */
+  const errorBadge = $derived(errorCount > 99 ? '99+' : String(errorCount));
 
   let optionsOpen = $state(false);
   /** ようこそ画面の銘を押したときに出る、出典を見せるだけのダイアログ。 */
@@ -262,14 +276,27 @@
 
       <!-- 右: アプリ全体に効くもの（設定は縦帯の下端） -->
       <div class="toolbar-group">
-        <button onclick={() => void app.toggleCommandLog()}>ログ</button>
+        <!--
+          失敗はパネルの中にしまったので、**気づく導線をここに 1 つだけ残す**（決定 26 の改定）。
+          モーダルにはしない（操作を止めない）。件数の丸を出すだけで、開くかは利用者が決める。
+        -->
+        <button
+          class:has-errors={errorCount > 0}
+          title={errorCount > 0 ? `失敗が ${String(errorCount)} 件あります` : '実行ログを開く'}
+          onclick={() => void app.toggleCommandLog()}
+        >
+          ログ
+          {#if errorCount > 0}
+            <span class="log-badge">{errorBadge}</span>
+          {/if}
+        </button>
       </div>
     </div>
   </header>
 
   <!--
     アプリヘッダより下は、左に縦帯（常設）、右に本体。
-    警告帯・コマンドログ・エラー帯も本体側に入れる（縦帯はそれらより下まで通す）。
+    警告帯・実行ログパネルも本体側に入れる（縦帯はそれらより下まで通す）。
   -->
   <div class="body">
     <ActivityBar {optionsOpen} onopenoptions={() => (optionsOpen = true)} />
@@ -300,39 +327,16 @@
             <button aria-haspopup="menu" onclick={showOpenMenu}>リポジトリを開く</button>
           </div>
         </div>
-      {:else if logMode}
-        <!--
-          コミットログモード（決定 27）。
-          左のブランチペインは差分モードと共通（同じ幅・同じ折り畳み状態）で、
-          右が上＝グラフ付きコミットリスト／下＝選択コミットの詳細の上下 2 分割になる。
-        -->
-        <main class="panes" style:grid-template-columns={logColumns}>
-          {#if !leftCollapsed}
-            <BranchPane />
-            <PaneSplitter
-              value={leftWidth}
-              min={120}
-              max={1200}
-              onchange={(w) => (liveLeftWidth = w)}
-              oncommit={commitLeftWidth}
-            />
-          {/if}
-          <!-- 下の分割線は「下端パネルの上端」にあるので、上へ引くと大きくなる（invert）。 -->
-          <div class="log-split" style:grid-template-rows={logRows}>
-            <CommitLogPane />
-            <PaneSplitter
-              axis="y"
-              invert
-              value={detailHeight}
-              min={120}
-              max={2000}
-              onchange={(h) => (liveDetailHeight = h)}
-              oncommit={commitDetailHeight}
-            />
-            <CommitDetailPane />
-          </div>
-        </main>
       {:else}
+        <!--
+          ペイン領域（決定 27）。**2 つのモードで 1 つの grid**。
+
+          ブランチペインをモード分岐の外に出してあるのは、**同じインスタンスを生かし続ける**ため。
+          両枝に書くとモードを切り替えるたびに破棄・再生成され、BranchPane が持つ
+          「現在ブランチへの経路をシード済みか」の記録が初期化されて、
+          利用者が意図的に畳んだフォルダが開き直される（lib/branchTree.ts の
+          planCurrentBranchSeed の注記）。モードが替えるのは右側だけ。
+        -->
         <main class="panes" style:grid-template-columns={gridColumns} bind:clientWidth={panesWidth}>
           {#if !leftCollapsed}
             <BranchPane />
@@ -344,32 +348,46 @@
               oncommit={commitLeftWidth}
             />
           {/if}
-          <WorkingTreePane />
-          <PaneSplitter
-            value={centerWidthPx}
-            min={160}
-            max={Math.max(160, availableCD - 200)}
-            onchange={(w) => (liveCenterWidth = w)}
-            oncommit={commitCenterWidth}
-          />
-          <DiffPane />
+
+          {#if logMode}
+            <!--
+              右は上＝グラフ付きコミットリスト／下＝選択コミットの詳細の上下 2 分割。
+              下の分割線は「下端パネルの上端」にあるので、上へ引くと大きくなる（invert）。
+            -->
+            <div class="log-split" style:grid-template-rows={logRows}>
+              <CommitLogPane />
+              <PaneSplitter
+                axis="y"
+                invert
+                value={detailHeight}
+                min={120}
+                max={2000}
+                onchange={(h) => (liveDetailHeight = h)}
+                oncommit={commitDetailHeight}
+              />
+              <CommitDetailPane />
+            </div>
+          {:else}
+            <WorkingTreePane />
+            <PaneSplitter
+              value={centerWidthPx}
+              min={160}
+              max={Math.max(160, availableCD - 200)}
+              onchange={(w) => (liveCenterWidth = w)}
+              oncommit={commitCenterWidth}
+            />
+            <DiffPane />
+          {/if}
         </main>
       {/if}
 
+      <!--
+        失敗の表示先は「実行ログ」パネルの「エラー」タブ（決定 26 の 2026-09-19 改定）。
+        画面下端のエラー帯はここにあったが廃止した——1 件しか持てず、
+        手で閉じるまで消えないので、原因が解消した後も「今も壊れている」ように見えていた。
+      -->
       {#if app.showCommandLog}
         <CommandLogPanel />
-      {/if}
-
-      {#if app.error !== null}
-        <div class="error" role="alert">
-          <div class="error-body">
-            <strong>{app.error.message}</strong>
-            {#if app.error.detail !== undefined}
-              <pre>{app.error.detail}</pre>
-            {/if}
-          </div>
-          <button onclick={() => app.dismissError()}>閉じる</button>
-        </div>
       {/if}
     </div>
   </div>
@@ -721,32 +739,25 @@
     outline-offset: 0;
   }
 
-  .error {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--app-metric-gap);
-    padding: 8px 10px;
-    background: var(--app-bg-raised);
-    border-top: 1px solid var(--app-text-danger);
-  }
-
-  .error-body {
-    min-width: 0;
-  }
-
-  .error strong {
-    color: var(--app-text-danger);
-  }
-
-  .error pre {
-    margin: 6px 0 0;
-    max-height: 120px;
-    overflow: auto;
+  /*
+   * ログボタンの失敗バッジ（決定 26 の改定）。廃止したエラー帯の代わりの、唯一の導線。
+   * 見え方はタブのブランチ名の丸・ブランチペインの ahead/behind と同じ作法
+   * （角丸ピル・等幅・1 行）。色も寸法もトークンだけで決める。
+   */
+  .log-badge {
+    display: inline-block;
+    margin-left: 5px;
+    padding: 0 5px;
+    background: var(--app-text-danger);
+    border-radius: var(--app-metric-radius-pill);
+    color: var(--app-bg-surface);
     font-family: var(--app-font-mono);
     font-size: var(--app-font-size-mono);
-    color: var(--app-text-secondary);
-    white-space: pre-wrap;
-    word-break: break-all;
+    font-weight: 700;
+    line-height: 1.4;
+  }
+
+  .has-errors {
+    border-color: var(--app-text-danger);
   }
 </style>

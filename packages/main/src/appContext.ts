@@ -17,6 +17,42 @@ import { ensureDir, resolveTempDir, resolveUserDataDir, type AppPathOptions } fr
 const APP_PATHS: AppPathOptions = { dataDirName: 'FeatherTree-data' };
 
 /**
+ * `git --version`（対応表 #32）を待つ上限（ms）。
+ *
+ * ここは起動処理の直列の途中にあるので、返らなければウィンドウの読み込みも始まらない。
+ * バージョンは警告表示にしか使わないので、取れなければ null のまま先へ進む
+ * （docs/01-architecture.md 11 章 2026-09-19 追加分）。
+ */
+const GIT_VERSION_TIMEOUT_MS = 5_000;
+
+/** 上限を過ぎたら abort し、待つのをやめる。 */
+async function withDeadline<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  fallback: T,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  let settled: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      run(controller.signal),
+      new Promise<T>((resolve) => {
+        // signal を見ない実装でも必ず返るようにする最後の網
+        settled = setTimeout(() => resolve(fallback), timeoutMs + 500);
+        settled.unref?.();
+      }),
+    ]);
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timer);
+    if (settled !== undefined) clearTimeout(settled);
+  }
+}
+
+/**
  * main プロセスが持つ唯一の可変状態。
  * core 層の組み立てはここだけで行い、ハンドラは組み立て済みのものを使う。
  */
@@ -81,12 +117,13 @@ export class AppContext {
     });
 
     if (this.#git !== null) {
-      try {
-        this.#gitVersion = await checkGitVersion(this.#git.gitPath, app.getPath('home'));
-      } catch {
-        // バージョン取得の失敗で起動を止めない
-        this.#gitVersion = null;
-      }
+      const gitPath = this.#git.gitPath;
+      // バージョン取得の失敗でも、**返ってこないことでも**起動を止めない
+      this.#gitVersion = await withDeadline<GitVersionCheck | null>(
+        (signal) => checkGitVersion(gitPath, app.getPath('home'), signal),
+        GIT_VERSION_TIMEOUT_MS,
+        null,
+      );
     }
   }
 
@@ -95,13 +132,21 @@ export class AppContext {
    *
    * 各リポジトリはルート解決だけを行い、一覧を取得するのはアクティブな 1 つだけ
    * （docs/00-decisions.md やらないこと「起動時に全リポジトリの状態を先読みしない」）。
+   *
+   * **ここは投げない。** 1 件ずつの失敗もタイムアウトも SessionManager が飲み込み、
+   * 理由は `sessions.restoreFailures` とコマンドログに残る。
+   * 投げると index.ts の起動処理ごと落ちる（＝アプリが無言で消える）。
    */
   async restoreSessions(): Promise<void> {
     const roots = this.settings.current.openRepositories;
     if (roots.length === 0) return;
     const sessions = this.sessions();
     if (sessions === null) return;
-    await sessions.restore(roots);
+    try {
+      await sessions.restore(roots);
+    } catch {
+      // 復元の失敗で起動を止めない（restore 自体が投げない作りだが、二重に塞いでおく）
+    }
   }
 
   /** git が見つかっていなければ null。 */
@@ -129,9 +174,14 @@ export class AppContext {
       env: process.env,
       ...(configured === null ? {} : { configuredPath: configured }),
     });
+    const gitPath = this.#git?.gitPath ?? null;
     this.#gitVersion =
-      this.#git === null
+      gitPath === null
         ? null
-        : await checkGitVersion(this.#git.gitPath, app.getPath('home')).catch(() => null);
+        : await withDeadline<GitVersionCheck | null>(
+            (signal) => checkGitVersion(gitPath, app.getPath('home'), signal),
+            GIT_VERSION_TIMEOUT_MS,
+            null,
+          );
   }
 }

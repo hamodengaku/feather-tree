@@ -40,6 +40,12 @@ const PAGE_LIMIT = 200;
 const COMMAND_LOG_LIMIT = 500;
 
 /**
+ * 失敗の履歴を持つ件数（docs/01-architecture.md 5 章「操作の失敗も同じパネルに集める」）。
+ * 実行ログと違い main 側に正本が無く、遡って読みたいのは直近だけなので短くてよい。
+ */
+const ERROR_LOG_LIMIT = 50;
+
+/**
  * タブの読み込み帯の対象にしない実行（ラベルの先頭語）。
  *
  * どれも選択やスクロールに伴う読み取りで、タブに出ている状態は変わらない。
@@ -53,6 +59,40 @@ const VIEW_ONLY_COMMANDS: ReadonlySet<string> = new Set(['diff', 'read-untracked
 export interface SelectedFile {
   readonly path: string;
   readonly staged: boolean;
+}
+
+/**
+ * 失敗の履歴 1 件（docs/01-architecture.md 5 章）。
+ *
+ * エラー帯（`error`）は 1 件しか持てず、手で閉じるまで消えないので
+ * 「原因が解消した後も今も壊れているように見える」。履歴なら後から追える。
+ */
+export interface ErrorLogEntry {
+  /** 単調増加。リストの key に使う（同じミリ秒に 2 件出ても衝突しない）。 */
+  readonly id: number;
+  readonly at: number;
+  /** どのタブの失敗か。タブの外（クローン・設定）なら null。 */
+  readonly sessionId: string | null;
+  readonly message: string;
+  /** git の原文（あれば）。 */
+  readonly detail?: string;
+}
+
+/**
+ * `$state` のプロキシを剥がし、structured clone（contextBridge）を通る素の辞書に組み直す。
+ *
+ * `branchExpanded` の値（配列）はリポジトリごとに `$state` の中で育つので、
+ * `{ ...settings.branchExpanded }` の浅いコピーではプロキシ配列がそのまま残る。
+ * リポジトリを 2 つ以上開いて両方に展開状態があると、送るたびに他リポジトリの
+ * プロキシ配列が IPC 境界へ出ていき「An object could not be cloned.」で落ちる。
+ */
+function plainExpanded(source: Readonly<Record<string, readonly string[]>>): Record<string, string[]> {
+  const plain: Record<string, string[]> = {};
+  for (const key of Object.keys(source)) {
+    const value = source[key];
+    if (value !== undefined) plain[key] = Array.from(value);
+  }
+  return plain;
 }
 
 export interface PendingConfirmation {
@@ -134,6 +174,13 @@ export class AppState {
   selected = $state<SelectedFile | null>(null);
   diff = $state<FileDiffDto | null>(null);
   diffLoading = $state(false);
+  /**
+   * diff の取得に失敗したときの理由。成功なら null。
+   *
+   * 失敗で `diff` を null に戻すだけだと、画面には「差分はありません。」と出てしまい
+   * **取れなかったことと差分がゼロであることが区別できない**。描画の出し分けは View 層が持つ。
+   */
+  diffError = $state<FtErrorDto | null>(null);
 
   /* ---------------------------------------------------------------- コミットログモード（決定 27） */
 
@@ -170,8 +217,53 @@ export class AppState {
   commitMessage = $state('');
   amend = $state(false);
 
-  busy = $state(false);
+  /**
+   * 実行中の `#run` の本数。
+   *
+   * boolean で持つと、**並行する `#run` 同士が互いの busy を上書きする**
+   * （先に終わったほうが、まだ走っている操作の busy を解除してしまう）。
+   * 読む側（ボタンの disabled 等）の意味は boolean のままにするので、露出は `busy` の getter。
+   */
+  #busyCount = $state(0);
+
+  /** 何かしらの操作が実行中か。 */
+  get busy(): boolean {
+    return this.#busyCount > 0;
+  }
+
+  /**
+   * 直近の失敗（エラー帯）。**自動では消さない**——同期的に読む呼び出し元が多いため。
+   * 消える口は次の操作の開始（`#run` の冒頭）と `dismissError()`。履歴は `errorLog`。
+   */
   error = $state<FtErrorDto | null>(null);
+
+  /** 失敗の履歴（新しい順）。上限 ERROR_LOG_LIMIT 件。 */
+  #errorLog = $state<ErrorLogEntry[]>([]);
+  #errorSeq = 0;
+
+  get errorLog(): readonly ErrorLogEntry[] {
+    return this.#errorLog;
+  }
+
+  /**
+   * パネルに出す失敗。**実行ログと同じ表示範囲の規則に従う**（visibleCommandLog と対称）。
+   *
+   * 「開いているすべてのリポジトリ」を選んだときだけ、**タブに属さない失敗**（クローンは
+   * セッションが立つ前に走るので sessionId が null）と**閉じたタブの失敗**が出る。
+   * 既定（アクティブなタブの分だけ）では辿り着けないので、
+   * パネルは空のときの文言でチェックを入れるよう案内する。
+   */
+  get visibleErrorLog(): readonly ErrorLogEntry[] {
+    if (this.commandLogScope === 'all') return this.#errorLog;
+    const id = this.activeId;
+    if (id === null) return [];
+    return this.#errorLog.filter((e) => e.sessionId === id);
+  }
+
+  clearErrorLog(): void {
+    this.#errorLog = [];
+  }
+
   pendingConfirmation = $state<PendingConfirmation | null>(null);
   focusRefreshPrompt = $state<{ sessionId: string } | null>(null);
 
@@ -412,10 +504,18 @@ export class AppState {
    * コマンドバーも（実行中のセッションがアクティブでないため）何も映さない。
    * アプリが固まったようにしか見えなくなる。
    */
+  /*
+   * `#run` で包むのは 1 段目（フォルダ選択と #1）のため。ここが返らないと——切断された UNC や
+   * オフラインの OneDrive を選ぶと #1 はタイムアウトまで返らない——タブもまだ無く、
+   * コマンドバーにも映らない（#1 は track() を通らない）ので、**手がかりがひとつも無い**。
+   * busy が立てば少なくとも操作中だと分かる。2 段目の読み込み帯は `#addOpenedTab` が出す。
+   */
   async openRepository(): Promise<void> {
-    const picked = await this.#ft.sessionPickAndCreate();
-    if (!this.#check(picked) || picked.value === null) return;
-    await this.#addOpenedTab(picked.value);
+    await this.#run(async () => {
+      const picked = await this.#ft.sessionPickAndCreate();
+      if (!this.#check(picked) || picked.value === null) return;
+      await this.#addOpenedTab(picked.value);
+    });
   }
 
   /* ---------------------------------------------------------------- 開く口のポップアップとクローン */
@@ -504,7 +604,8 @@ export class AppState {
       // 結果の段階表が最終形。git を走らせなかった場合（既存タブ・git 未導入）は空なので、届いていた表を残す
       if (outcome.stages.length > 0) this.cloneStages = outcome.stages;
     } catch (err) {
-      this.error = { kind: 'internal', message: err instanceof Error ? err.message : '不明なエラー' };
+      // クローンはまだタブに属さないので sessionId は null
+      this.#setError({ kind: 'internal', message: err instanceof Error ? err.message : '不明なエラー' }, null);
     } finally {
       this.cloning = false;
       this.cancellingClone = false;
@@ -739,7 +840,19 @@ export class AppState {
       const result = await this.#ft.diffGet(id, file.path, file.staged);
       // 追い越された要求の応答は捨てる
       if (seq !== this.#diffSeq) return;
-      this.diff = result.ok ? result.value : null;
+      if (result.ok) {
+        this.diff = result.value;
+        this.diffError = null;
+        return;
+      }
+      /*
+       * 失敗を diff = null に畳むと「差分はありません。」と同じ見え方になる。
+       * エラー帯（error）には出さない——選択に伴う読み取りなので、操作を始めた覚えが
+       * 無いところで帯が出る。履歴と diffError に残して、描画側が出し分ける。
+       */
+      this.diff = null;
+      this.diffError = result.error;
+      this.#logError(result.error, id);
     } finally {
       // 新しい要求が走っているなら、その読み込み表示を消さない
       if (seq === this.#diffSeq) this.diffLoading = false;
@@ -750,6 +863,7 @@ export class AppState {
   #invalidateDiff(): void {
     this.#diffSeq += 1;
     this.diff = null;
+    this.diffError = null;
   }
 
   /** 実行ログを main の保持分（最大 500 件）から取り直す。パネルを開いたときに呼ぶ。 */
@@ -776,8 +890,7 @@ export class AppState {
   }
 
   async setViewMode(mode: 'diff' | 'log'): Promise<void> {
-    const result = await this.#ft.settingsUpdate({ viewMode: mode });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ viewMode: mode });
   }
 
   /**
@@ -822,7 +935,7 @@ export class AppState {
       // 追い越し（タブを替えた・1 ページ目から取り直した）の応答は捨てる
       if (id !== this.activeId || this.commits.length !== skip) return;
       if (!result.ok) {
-        this.error = result.error;
+        this.#setError(result.error, id);
         return;
       }
       this.commits = [...this.commits, ...result.value];
@@ -853,7 +966,7 @@ export class AppState {
       const result = await this.#ft.commitGetFiles(id, oid);
       if (seq !== this.#commitFilesSeq) return;
       this.commitFiles = result.ok ? [...result.value] : [];
-      if (!result.ok) this.error = result.error;
+      if (!result.ok) this.#setError(result.error, id);
     } finally {
       if (seq === this.#commitFilesSeq) this.commitFilesLoading = false;
     }
@@ -872,7 +985,7 @@ export class AppState {
       const result = await this.#ft.commitGetDiff(id, oid, path);
       if (seq !== this.#commitDiffSeq) return;
       this.commitDiff = result.ok ? result.value : null;
-      if (!result.ok) this.error = result.error;
+      if (!result.ok) this.#setError(result.error, id);
     } finally {
       if (seq === this.#commitDiffSeq) this.commitDiffLoading = false;
     }
@@ -881,23 +994,18 @@ export class AppState {
   /** コミット詳細ペインの高さの永続化。 */
   async setLogDetailHeight(px: number): Promise<void> {
     const clamped = Math.min(2000, Math.max(120, Math.round(px)));
-    const result = await this.#ft.settingsUpdate({ logDetailHeight: clamped });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ logDetailHeight: clamped });
   }
 
   /** 「変更」タブの左ファイルリスト幅の永続化。 */
   async setCommitFileListWidth(px: number): Promise<void> {
     const clamped = Math.min(1200, Math.max(120, Math.round(px)));
-    const result = await this.#ft.settingsUpdate({ commitFileListWidth: clamped });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ commitFileListWidth: clamped });
   }
 
   async setTheme(theme: SettingsDto['theme']): Promise<void> {
-    const result = await this.#ft.settingsUpdate({ theme });
-    if (result.ok) {
-      this.settings = result.value;
-      applyTheme(result.value.theme);
-    }
+    const applied = await this.#writeSettings({ theme });
+    if (applied !== null) applyTheme(applied.theme);
   }
 
   /**
@@ -908,10 +1016,9 @@ export class AppState {
   async setCenterRatio(ratio: number): Promise<void> {
     if (this.settings === null) return;
     const clamped = Math.min(0.9, Math.max(0.1, ratio));
-    const result = await this.#ft.settingsUpdate({
+    await this.#writeSettings({
       paneWidths: { ...this.settings.paneWidths, centerRatio: clamped },
     });
-    if (result.ok) this.settings = result.value;
   }
 
   /**
@@ -922,24 +1029,21 @@ export class AppState {
   async setLeftWidth(px: number): Promise<void> {
     if (this.settings === null) return;
     const clamped = Math.min(1200, Math.max(120, Math.round(px)));
-    const result = await this.#ft.settingsUpdate({
+    await this.#writeSettings({
       paneWidths: { ...this.settings.paneWidths, left: clamped },
     });
-    if (result.ok) this.settings = result.value;
   }
 
   /** ブランチペインの ローカル/リモート 分割高さの永続化。 */
   async setBranchLocalHeight(px: number): Promise<void> {
     if (this.settings === null) return;
     const clamped = Math.min(4000, Math.max(80, Math.round(px)));
-    const result = await this.#ft.settingsUpdate({ branchLocalHeight: clamped });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ branchLocalHeight: clamped });
   }
 
   /** ブランチペインの折り畳み状態の永続化。 */
   async setBranchPaneCollapsed(collapsed: boolean): Promise<void> {
-    const result = await this.#ft.settingsUpdate({ branchPaneCollapsed: collapsed });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ branchPaneCollapsed: collapsed });
   }
 
   /**
@@ -951,61 +1055,123 @@ export class AppState {
    */
   async setBranchExpanded(paths: readonly string[]): Promise<void> {
     const root = this.activeSession?.root ?? null;
-    if (root === null || this.settings === null) return;
-    const rest: Record<string, readonly string[]> = { ...this.settings.branchExpanded };
+    const settings = this.settings;
+    if (root === null || settings === null) {
+      /*
+       * 黙って抜けると「押しても三角が動かない」だけが残り、何も手がかりが無い。
+       * 起きるのは設定の読み込み前かタブが無いときだけなので、帯には出さず履歴に残す。
+       */
+      this.#logError({
+        kind: 'internal',
+        message: 'ブランチの展開状態を保存できませんでした（リポジトリまたは設定が未読込）。',
+      });
+      return;
+    }
+
+    /*
+     * 辞書は全体を送る（SettingsStore.update() は浅いマージ）。
+     * 使用中のリポジトリのキーを先頭に置き、上限（30 件）を超えたときに
+     * 今開いているリポジトリの状態が切り捨てられないようにする。
+     * plainExpanded / Array.from で $state のプロキシを剥がしてから組み立てる。
+     */
+    const rest = plainExpanded(settings.branchExpanded);
     delete rest[root];
-    const next = paths.length === 0 ? rest : { [root]: [...paths], ...rest };
+    const next: Record<string, string[]> = paths.length === 0 ? rest : { [root]: Array.from(paths), ...rest };
 
     // 先に画面へ反映する。IPC の往復を待つと、main が重い git を抱えている間
     // クリックしても三角マークすら変わらず「無反応」に見える。
-    const previous = this.settings.branchExpanded;
-    this.settings = { ...this.settings, branchExpanded: next };
+    const previous = settings.branchExpanded;
+    this.settings = { ...settings, branchExpanded: next };
 
-    const result = await this.#ft.settingsUpdate({ branchExpanded: next });
-    if (result.ok) {
-      this.settings = result.value;
-      return;
+    /*
+     * settingsUpdate が **reject** するとここから先に到達せず、下のロールバックが走らない。
+     * 呼び出し元（BranchPane）は void 呼び出しなので unhandled rejection として黙殺され、
+     * 画面だけが「展開されたまま」になって設定には何も保存されない
+     * （実機の settings.json で branchExpanded だけが {} のまま残っていた原因）。
+     */
+    try {
+      const result = await this.#ft.settingsUpdate({ branchExpanded: next });
+      if (result.ok) {
+        this.#mergeSettings({ branchExpanded: next }, result.value);
+        return;
+      }
+      this.#restoreBranchExpanded(previous);
+      this.#setError(result.error);
+    } catch (err) {
+      this.#restoreBranchExpanded(previous);
+      this.#setError({ kind: 'internal', message: err instanceof Error ? err.message : '不明なエラー' });
     }
-    // 保存できなかったら見た目も戻す。黙って捨てると原因が分からなくなる。
-    if (this.settings !== null) {
-      this.settings = { ...this.settings, branchExpanded: previous };
-    }
-    this.error = result.error;
+  }
+
+  /** 保存できなかったときに、楽観更新した展開状態だけを元へ戻す。 */
+  #restoreBranchExpanded(previous: Readonly<Record<string, readonly string[]>>): void {
+    if (this.settings === null) return;
+    this.settings = { ...this.settings, branchExpanded: previous };
   }
 
   /** 実行ログパネルの高さの永続化。 */
   async setCommandLogHeight(px: number): Promise<void> {
     if (this.settings === null) return;
     const clamped = Math.min(800, Math.max(120, Math.round(px)));
-    const result = await this.#ft.settingsUpdate({ commandLogHeight: clamped });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ commandLogHeight: clamped });
   }
 
   /** WorkingTreePane の ステージ済み/変更 分割高さの永続化。 */
   async setStagedHeight(px: number): Promise<void> {
     if (this.settings === null) return;
     const clamped = Math.min(4000, Math.max(80, Math.round(px)));
-    const result = await this.#ft.settingsUpdate({ stagedHeight: clamped });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ stagedHeight: clamped });
   }
 
   /** リポジトリタブに現在情報を出すかの永続化（決定 24）。 */
   async setTabShowCurrentInfo(show: boolean): Promise<void> {
-    const result = await this.#ft.settingsUpdate({ tabShowCurrentInfo: show });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ tabShowCurrentInfo: show });
   }
 
   async setRefocusUpdateMode(mode: SettingsDto['refocusUpdateMode']): Promise<void> {
-    const result = await this.#ft.settingsUpdate({ refocusUpdateMode: mode });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ refocusUpdateMode: mode });
   }
 
   /* ---------------------------------------------------------------- 更新通知（決定 29） */
 
   /** 起動時の自動確認オンオフの永続化。 */
   async setCheckForUpdates(enabled: boolean): Promise<void> {
-    const result = await this.#ft.settingsUpdate({ checkForUpdates: enabled });
-    if (result.ok) this.settings = result.value;
+    await this.#writeSettings({ checkForUpdates: enabled });
+  }
+
+  /* ---------------------------------------------------------------- 設定の書き込み（共通） */
+
+  /**
+   * 設定を 1 件書いて、**送った patch のキーだけ**を自分の `settings` へ重ねる。
+   *
+   * `result.value` は main がその patch を適用した時点のスナップショットなので、
+   * 丸ごと代入すると **それ以降に renderer 側で積んだローカルな変更が無条件に消える**。
+   * 実際の症状は「ペイン幅をドラッグするたびにブランチペインのフォルダが畳まれる」——
+   * `setLeftWidth` の応答が遅れている間に入れた `setBranchExpanded` の楽観更新を、
+   * 後から届いた応答が巻き戻していた。
+   *
+   * 値は patch ではなく応答から取る（main がクランプ・正規化した結果を正とするため）。
+   *
+   * @returns 成功したら重ねた後の設定、失敗したら null。
+   */
+  async #writeSettings(patch: Partial<SettingsDto>): Promise<SettingsDto | null> {
+    const result = await this.#ft.settingsUpdate(patch);
+    if (!result.ok) {
+      this.#setError(result.error);
+      return null;
+    }
+    return this.#mergeSettings(patch, result.value);
+  }
+
+  /** 応答のうち patch に含まれるキーだけを現在の settings に重ねる。 */
+  #mergeSettings(patch: Partial<SettingsDto>, applied: SettingsDto): SettingsDto {
+    const merged: Record<string, unknown> = { ...(this.settings ?? applied) };
+    for (const key of Object.keys(patch)) {
+      merged[key] = (applied as unknown as Record<string, unknown>)[key];
+    }
+    const next = merged as unknown as SettingsDto;
+    this.settings = next;
+    return next;
   }
 
   /**
@@ -1145,15 +1311,19 @@ export class AppState {
       () =>
         this.#operate(() => this.#ft.commit(this.#id(), { message, amend }, true), undefined, clear, {
           branches: true,
+          log: true,
         }),
       clear,
-      { branches: true },
+      { branches: true, log: true },
     );
   }
 
   /** ブランチのダブルクリックによる切替。確認不要（決定: ブランチ移動は無確認）。 */
   switchBranch(branchName: string): Promise<void> {
-    return this.#operate(() => this.#ft.branchSwitch(this.#id(), branchName));
+    // HEAD が動くので履歴も古くなる（対応表 #12）
+    return this.#operate(() => this.#ft.branchSwitch(this.#id(), branchName), undefined, undefined, {
+      log: true,
+    });
   }
 
   openCreateBranch(): void {
@@ -1168,23 +1338,37 @@ export class AppState {
   /**
    * ブランチの新規作成(起点から分岐して切替まで)。確認不要・push はしない。
    * 成功時だけ onSuccess を呼ぶ(呼び出し元はこれでダイアログを閉じるかどうかを判断する)。
+   *
+   * ブランチ一覧も取り直す（対応表の例外「ブランチ作成後の反映: #14 → #2 → #3」）。
+   * **作ったブランチは #3 の結果にしか現れない**ので、取り直さないとブランチペインに出ないまま
+   * 現在ブランチの印だけが消える。読むのは main のスナップショットなので git は増えない。
    */
   createBranch(name: string, startPoint: string, onSuccess?: () => void): Promise<void> {
     return this.#operate(
       () => this.#ft.branchCreate(this.#id(), { name, startPoint }),
       undefined,
       onSuccess,
+      { branches: true, log: true },
     );
   }
 
   /**
    * 現在のブランチへ branchName を取り込む。確認が必要（決定 16）。
    * 確認の判定は main が行うので、ここは needs-confirmation を受けて再送するだけ。
+   *
+   * 成功したときだけブランチ一覧も取り直す（例外「マージ後の反映: #35 → #2 → #3」）。
+   * HEAD が進み ahead/behind も変わるので、取り直さないとブランチペインが古いまま残る。
    */
   mergeBranch(branchName: string): Promise<void> {
     return this.#operate(
       (confirmed) => this.#ft.branchMerge(this.#id(), branchName, confirmed),
-      () => this.#operate(() => this.#ft.branchMerge(this.#id(), branchName, true)),
+      () =>
+        this.#operate(() => this.#ft.branchMerge(this.#id(), branchName, true), undefined, undefined, {
+          branches: true,
+          log: true,
+        }),
+      undefined,
+      { branches: true, log: true },
     );
   }
 
@@ -1246,11 +1430,17 @@ export class AppState {
    */
 
   async fetch(remote: string): Promise<void> {
-    await this.#operate(() => this.#ft.remoteFetch(this.#id(), remote), undefined, undefined, { branches: true });
+    await this.#operate(() => this.#ft.remoteFetch(this.#id(), remote), undefined, undefined, {
+      branches: true,
+      log: true,
+    });
   }
 
   async pull(): Promise<void> {
-    await this.#operate(() => this.#ft.remotePull(this.#id()), undefined, undefined, { branches: true });
+    await this.#operate(() => this.#ft.remotePull(this.#id()), undefined, undefined, {
+      branches: true,
+      log: true,
+    });
   }
 
   openPushDialog(): void {
@@ -1276,7 +1466,7 @@ export class AppState {
       () => this.#ft.remotePush(this.#id(), { remote, branch, setUpstream }),
       undefined,
       onSuccess,
-      { branches: true },
+      { branches: true, log: true },
     );
   }
 
@@ -1311,13 +1501,14 @@ export class AppState {
    * 読み込み帯と反映は操作を始めたタブに付く（#reflect）。確認待ちで止まったときは
    * ここで抜けるので、ダイアログを出している間は帯を出さない。
    *
-   * @param options.branches 成功したらブランチ一覧も取り直す（コミット・リモート操作）。
+   * @param options.branches 成功したらブランチ一覧も取り直す（コミット・ブランチ・リモート操作）。
+   * @param options.log HEAD や ahead/behind が動く操作。保持している履歴が古くなる。
    */
   async #operate<T>(
     call: (confirmed?: boolean) => Promise<Result<T>>,
     retry?: () => Promise<void>,
     onSuccess?: () => void,
-    options: { readonly branches?: boolean } = {},
+    options: { readonly branches?: boolean; readonly log?: boolean } = {},
   ): Promise<void> {
     const id = this.activeId;
     const body = async (): Promise<void> => {
@@ -1331,7 +1522,7 @@ export class AppState {
           this.pendingConfirmation = { confirmation: result.error.confirmation, retry };
           return;
         }
-        this.error = result.error;
+        this.#setError(result.error, id);
         return;
       }
       onSuccess?.();
@@ -1339,20 +1530,44 @@ export class AppState {
       await this.#reflect(id, async () => {
         await this.reloadActive();
         if (options.branches === true && this.activeId === id) await this.reloadBranches();
+        if (options.log === true && this.activeId === id) await this.#invalidateLog();
       });
     };
     // タブが無いときは call の中の #id() が投げ、#run がエラー帯に出す
     await this.#run(() => (id === null ? body() : this.#updating(id, body)));
   }
 
+  /**
+   * 書き込み操作で古くなった履歴を始末する
+   * （対応表の例外「書き込み操作後の履歴（コミットログモードのときだけ）」）。
+   *
+   * - コミットログモード: その場で取り直す（#20 を 1 回）
+   * - 差分モード: **保持分を捨てるだけで git は 0 回。** 見えていないもののために git を起動しない
+   *   （決定「やらないこと」）。モードに入った瞬間の ensureLog() が取り直す
+   */
+  async #invalidateLog(): Promise<void> {
+    if (this.viewMode === 'log') await this.loadLog();
+    else this.#clearLog();
+  }
+
   async #run(body: () => Promise<void>): Promise<void> {
-    this.busy = true;
+    /*
+     * 次の操作を始めた時点で前の失敗の帯を消す。履歴（errorLog）には残るので情報は失わない。
+     * **タイマーで自動消去にはしない**——error を同期的に読む呼び出し元が多く、
+     * 「いつの間にか消えている」ほうが扱いにくい。
+     */
+    this.error = null;
+    /*
+     * カウンタで数える。boolean だと並行する #run 同士が互いの busy を上書きし、
+     * 先に終わったほうがまだ走っている操作の busy を解除してしまう。
+     */
+    this.#busyCount += 1;
     try {
       await body();
     } catch (err) {
-      this.error = { kind: 'internal', message: err instanceof Error ? err.message : '不明なエラー' };
+      this.#setError({ kind: 'internal', message: err instanceof Error ? err.message : '不明なエラー' });
     } finally {
-      this.busy = false;
+      this.#busyCount -= 1;
     }
   }
 
@@ -1398,15 +1613,59 @@ export class AppState {
     this.#tabActivity.setGit(sessionId, running);
   }
 
+  /**
+   * 失敗を履歴へ積む。**エラー帯（error）には出さない。**
+   *
+   * 利用者が操作を始めた覚えの無い失敗（選択に伴う diff の読み取り、設定の保存）は
+   * これを使う。帯を出すと「何もしていないのに壊れた」と読まれるため。
+   * 履歴は実行ログパネルのエラータブから追える（docs/01-architecture.md 5 章）。
+   *
+   * @param sessionId 省略時はアクティブなタブ。タブの外の失敗なら null を明示する。
+   */
+  #logError(error: FtErrorDto, sessionId: string | null = this.activeId): void {
+    this.#errorSeq += 1;
+    const entry: ErrorLogEntry =
+      error.detail === undefined
+        ? { id: this.#errorSeq, at: Date.now(), sessionId, message: error.message }
+        : { id: this.#errorSeq, at: Date.now(), sessionId, message: error.message, detail: error.detail };
+    // 新しい順。上限を超えた分は古いほうから落とす（リングバッファと同じ考え）
+    this.#errorLog = [entry, ...this.#errorLog].slice(0, ERROR_LOG_LIMIT);
+  }
+
+  /**
+   * 失敗を履歴へ積み、**エラー帯にも出す**。
+   *
+   * 利用者が始めた操作が失敗したときはこちら。帯は次の操作の開始（#run の冒頭）で消えるが、
+   * 履歴には残るので情報は失わない。
+   */
+  #setError(error: FtErrorDto, sessionId: string | null = this.activeId): void {
+    this.#logError(error, sessionId);
+    this.error = error;
+  }
   #check<T>(result: Result<T>): result is { ok: true; value: T } {
     if (result.ok) return true;
-    this.error = result.error;
+    // 帯だけに出して履歴に残さないと、帯が消えた後に何が起きたか追えなくなる
+    this.#setError(result.error);
     return false;
   }
 
+  /**
+   * 選択中のファイルが、まだ一覧にあるか。
+   *
+   * **手元にあるのは読み込み済みのページだけ**（既定 200 件、スクロールで追加読み込み）なので、
+   * 「見つからない = 消えた」と断定してよいのは全件が手元にあるときだけ。
+   * 断定を急ぐと、201 件目以降を選んでいる利用者は更新のたびに選択が外れ、
+   * 差分ペインが「差分はありません。」に戻ってしまう。
+   *
+   * 迷ったら**選択を保つ**側に倒す。誤って選択を消すより、一瞬古い差分を見せるほうが害が小さい
+   * （どのみち直後の loadDiff で取り直す）。
+   */
   #stillPresent(file: SelectedFile): boolean {
     const section = file.staged ? this.staged : this.changes;
-    return section.entries.some((e) => e?.path === file.path);
+    if (section.entries.some((e) => e?.path === file.path)) return true;
+    // 追加読み込み（loadMore）は疎な配列を作るので、length ではなく実体の数を数える
+    const loaded = section.entries.reduce<number>((n, e) => (e === undefined ? n : n + 1), 0);
+    return loaded < section.total;
   }
 
   #saveCache(): void {

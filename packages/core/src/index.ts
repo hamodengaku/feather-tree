@@ -89,6 +89,10 @@ export type { OperationOutcome } from './session/operations.js';
 export { canBuildPatch } from '@feathertree/git';
 export type { PatchRefusal } from '@feathertree/git';
 
+// アプリ終了時の後始末（docs/01-architecture.md 11 章）。
+// main は @feathertree/git に依存していないので、core が素通しする。
+export { killAllGitProcesses, runningGitCount } from '@feathertree/git';
+
 // 更新通知（決定 29）。electron を知らない純関数だけをここに置く。
 export { compareVersions, isNewer, parseReleaseTag } from './update/version.js';
 export type { Version } from './update/version.js';

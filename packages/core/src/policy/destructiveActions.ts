@@ -7,7 +7,6 @@
  */
 export type DestructiveAction =
   | 'discard-changes'
-  | 'discard-staged-and-worktree'
   | 'delete-untracked'
   | 'force-push'
   | 'delete-unmerged-branch'
@@ -24,15 +23,16 @@ export interface ConfirmationSpec {
 }
 
 const SPECS: Record<DestructiveAction, ConfirmationSpec> = {
+  /*
+   * 破棄の確認はこの 1 種類だけ（2026-09-19、決定 16 の追記）。
+   * 打つのは対応表 #7（`restore --worktree`）だけで、インデックスには触れない。
+   * 「ステージ済みの内容は残る」ことを文言に明記するのは、ここが利用者にとって
+   * 直前の挙動（ステージ済みごと HEAD へ戻す）との違いを知る唯一の場所になるため。
+   */
   'discard-changes': {
-    title: '変更を破棄しますか？',
-    message: '作業ツリーの変更が失われます。git には残らないため復元できません。',
-    confirmLabel: '破棄する',
-    recoverable: false,
-  },
-  'discard-staged-and-worktree': {
-    title: 'ステージ済みの変更も含めて破棄しますか？',
-    message: 'インデックスと作業ツリーの両方が最後のコミットの状態に戻ります。復元できません。',
+    title: '未ステージの変更を破棄しますか？',
+    message:
+      '作業ツリーの変更が失われます（git には残らないため復元できません）。ステージ済みの内容はそのまま残ります。両方を戻すには、先に「ステージから戻す」を行ってください。',
     confirmLabel: '破棄する',
     recoverable: false,
   },

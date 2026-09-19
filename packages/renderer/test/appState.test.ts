@@ -206,7 +206,7 @@ describe('ペイン幅', () => {
       expect(app.visibleCommandLog.map((e) => e.seq)).toEqual([3, 2, 1]);
     });
 
-    it('タブが 1 つも無いとき、「このタブ」は空で、「すべて」ではクローンの記録が見える', async () => {
+    it('タブが 1 つも無いとき、既定では空で、すべてのリポジトリではクローンの記録が見える', async () => {
       const { app, bridge } = await boot((b) => {
         b.sessions = [];
         b.activeId = null;
@@ -216,6 +216,58 @@ describe('ペイン幅', () => {
       expect(app.visibleCommandLog).toEqual([]);
       app.setCommandLogScope('all');
       expect(app.visibleCommandLog.map((e) => e.seq)).toEqual([1]);
+    });
+
+    /*
+     * 表示範囲は実行ログと失敗の**両方**に効く（2026-09-19 改定）。
+     * 片方だけに効くと、押しても変わらないタブができて「効いていない」と読まれる。
+     */
+    it('表示範囲は失敗にも効き、すべてにすると他のタブとクローンの失敗も出る', async () => {
+      const { app } = await boot((b) => {
+        b.sessions = [
+          { id: 's1', root: 'C:/r1', displayName: 'r1' },
+          { id: 's2', root: 'C:/r2', displayName: 'r2' },
+        ];
+        b.activeId = 's1';
+      });
+
+      // 既定はアクティブなタブの分だけ（チェックボックスはオフ）
+      expect(app.commandLogScope).toBe('tab');
+
+      await app.activate('s2');
+      await app.fetch('origin-missing').catch(() => undefined);
+      const s2Failures = app.visibleErrorLog.length;
+
+      await app.activate('s1');
+      expect(app.visibleErrorLog).toHaveLength(0);
+
+      // 「開いているすべてのリポジトリ」にすると、他のタブの失敗も見える
+      app.setCommandLogScope('all');
+      expect(app.visibleErrorLog.length).toBeGreaterThanOrEqual(s2Failures);
+      expect(app.visibleErrorLog.length).toBe(app.errorLog.length);
+    });
+
+    /*
+     * クローンのようにセッションが立つ前の失敗は sessionId が null になる。
+     * 既定（アクティブなタブの分だけ）では**永久に辿り着けない**ので、パネルは空のときの文言で
+     * チェックを入れるよう案内している。その前提がここで崩れていないことを見る。
+     */
+    it('タブに属さない失敗は「開いているすべてのリポジトリ」にしたときだけ出る', async () => {
+      const { app } = await boot((b) => {
+        b.sessions = [];
+        b.activeId = null;
+      });
+
+      // タブが無い状態での失敗（ここでは設定の保存）は、どのタブにも属さない
+      await app.setBranchExpanded(['local:feature']);
+
+      expect(app.errorLog.length).toBeGreaterThan(0);
+      expect(app.errorLog.every((e) => e.sessionId === null)).toBe(true);
+
+      // タブが無いので既定では 1 件も出ない ＝ チェックを入れないと辿り着けない
+      expect(app.visibleErrorLog).toHaveLength(0);
+      app.setCommandLogScope('all');
+      expect(app.visibleErrorLog.length).toBe(app.errorLog.length);
     });
   });
 
@@ -463,6 +515,20 @@ describe('ブランチ操作', () => {
 
     expect(bridge.lastArgsOf('branchCreate')).toEqual(['s1', { name: 'obana/topic', startPoint: 'main' }]);
     expect(app.createBranchOpen).toBe(false);
+  });
+
+  /*
+   * 作ったブランチは対応表 #3 の結果にしか現れない。取り直さないと、
+   * ブランチペインに新しいブランチが出ないまま、現在ブランチの印だけがどこにも付かなくなる。
+   * main 側（operations.createBranch の refreshBranches）と両方揃って初めて直る。
+   */
+  it('ブランチ作成の成功後はブランチ一覧も取り直す（作ったブランチは #3 にしか出ない）', async () => {
+    const { app, bridge } = await boot();
+    const before = bridge.countOf('branchList');
+
+    await app.createBranch('obana/topic', 'main');
+
+    expect(bridge.countOf('branchList')).toBe(before + 1);
   });
 
   it('ブランチ作成が失敗したらダイアログを閉じずエラーを保持する', async () => {
@@ -915,6 +981,23 @@ describe('ブランチのマージ (対応表 #35)', () => {
 
     expect(bridge.confirmedCalls).toEqual(['branchMerge']);
     expect(app.pendingConfirmation).toBeNull();
+  });
+
+  /*
+   * マージは ahead/behind を動かすので一覧が古くなる。main 側は既に取り直しているのに
+   * renderer が読み直していなかったため、ブランチペインだけが古いまま残っていた。
+   * **確認の後に再送する経路**にも付いていないと意味が無いので、そちらで検証する。
+   */
+  it('マージの承認後はブランチ一覧も取り直す（ahead/behind が動くため）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.requireConfirmation = 'branchMerge';
+    });
+    await app.mergeBranch('topic');
+    const before = bridge.countOf('branchList');
+
+    await app.acceptConfirmation();
+
+    expect(bridge.countOf('branchList')).toBe(before + 1);
   });
 
   it('キャンセルすると再送しない', async () => {
@@ -1764,5 +1847,375 @@ describe('更新通知（決定 29）', () => {
 
     expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ checkForUpdates: false }]);
     expect(app.settings?.checkForUpdates).toBe(false);
+  });
+});
+
+/*
+ * 設定の書き込みが互いを巻き戻さないこと。
+ *
+ * settingsUpdate の応答（result.value）は **main がその patch を適用した時点のスナップショット**なので、
+ * 丸ごと `this.settings` に代入すると、それ以降に renderer 側で積んだローカルな変更が消える。
+ * 実際の症状は「ペイン幅をドラッグするたびにブランチペインのフォルダが畳まれる」。
+ */
+describe('設定の書き込み（送ったキーだけを重ねる）', () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('遅い setLeftWidth の応答が、後から来た setBranchExpanded の楽観更新を潰さない', async () => {
+    const { app, bridge } = await boot();
+    bridge.deferSettingsUpdate();
+
+    // 幅のドラッグ（応答は保留させる）→ その間にフォルダを展開する
+    const width = app.setLeftWidth(300);
+    await flush();
+    const expanded = app.setBranchExpanded(['local:obana']);
+    await flush();
+
+    // 楽観更新で三角はもう開いている
+    expect(app.branchExpanded).toEqual(['local:obana']);
+    expect(bridge.pendingSettingsUpdates).toBe(2);
+
+    // 先に投げた幅の応答が後から届く。main のスナップショットは展開状態をまだ知らない
+    bridge.resolveSettingsUpdate();
+    await width;
+
+    expect(app.branchExpanded).toEqual(['local:obana']);
+    expect(app.settings?.paneWidths.left).toBe(300);
+
+    bridge.resolveSettingsUpdate();
+    await expanded;
+
+    expect(app.branchExpanded).toEqual(['local:obana']);
+    expect(app.settings?.paneWidths.left).toBe(300);
+  });
+
+  it('setBranchExpanded が reject しても見た目が戻り、履歴に残る', async () => {
+    const { app, bridge } = await boot();
+    bridge.deferSettingsUpdate();
+
+    const pending = app.setBranchExpanded(['local:obana']);
+    await flush();
+    expect(app.branchExpanded).toEqual(['local:obana']);
+
+    bridge.rejectSettingsUpdate(new Error('設定を保存できませんでした'));
+    // reject を拾えていないと、ここで unhandled rejection になって以降へ進まない
+    await pending;
+
+    expect(app.branchExpanded).toEqual([]);
+    expect(app.error?.message).toContain('設定を保存できませんでした');
+    expect(app.errorLog.map((e) => e.message)).toContain('設定を保存できませんでした');
+  });
+
+  it('保存できなかった（ok: false）ときも見た目を戻して履歴に残す', async () => {
+    const bridge = new FakeBridge();
+    const failing: FeatherTreeBridge = {
+      ...bridge.build(),
+      settingsUpdate: () =>
+        Promise.resolve({ ok: false, error: { kind: 'internal', message: '設定ファイルを書けません' } }),
+    };
+    const app = await load(failing);
+
+    await app.setBranchExpanded(['local:obana']);
+
+    expect(app.branchExpanded).toEqual([]);
+    expect(app.errorLog.map((e) => e.message)).toEqual(['設定ファイルを書けません']);
+  });
+
+  /*
+   * 実アプリでは branchExpanded の値（配列）が $state の Proxy のまま入っている。
+   * リポジトリを 2 つ以上開いて両方に展開状態があると、他リポジトリの Proxy 配列が
+   * そのまま辞書にコピーされ、contextBridge の structured clone で落ちる。
+   * （クローン要求の Proxy と同じ問題。テストでは $state が Proxy にならないので自前で作る）
+   */
+  it('branchExpanded に $state の Proxy が混ざっても、IPC に送れる形に組み直して届ける', async () => {
+    const { app, bridge } = await boot();
+    const base = app.settings;
+    if (base === null) throw new Error('設定が読み込まれていない');
+
+    const otherRepo = new Proxy(['local:other'], {});
+    expect(() => structuredClone({ 'D:/repo-two': otherRepo })).toThrow();
+    app.settings = { ...base, branchExpanded: { 'D:/repo-two': otherRepo } };
+
+    await app.setBranchExpanded(new Proxy(['local:obana'], {}));
+
+    expect(app.error).toBeNull();
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([
+      { branchExpanded: { 'D:/repo-one': ['local:obana'], 'D:/repo-two': ['local:other'] } },
+    ]);
+    expect(app.branchExpanded).toEqual(['local:obana']);
+  });
+
+  it('展開状態を空にするとそのリポジトリのキーごと消す', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setBranchExpanded(['local:obana']);
+    await app.setBranchExpanded([]);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ branchExpanded: {} }]);
+    expect(app.branchExpanded).toEqual([]);
+  });
+});
+
+/*
+ * ブランチが増減・移動する操作の後はブランチ一覧も取り直す。
+ * renderer は main のスナップショットを読むだけなので git は増えない（#3 は main が済ませている）。
+ */
+describe('ブランチ操作のあとのブランチ一覧', () => {
+  it('ブランチ作成の成功後はブランチ一覧を取り直す（作ったブランチは #3 にしか現れない）', async () => {
+    const { app, bridge } = await boot();
+    const before = bridge.countOf('branchList');
+
+    await app.createBranch('obana/topic', 'main');
+
+    expect(bridge.countOf('branchList')).toBe(before + 1);
+  });
+
+  it('ブランチ作成が失敗したら取り直さない', async () => {
+    const bridge = new FakeBridge();
+    const failing: FeatherTreeBridge = {
+      ...bridge.build(),
+      branchCreate: () =>
+        Promise.resolve({ ok: false, error: { kind: 'git-failed', message: '同名のブランチが既に存在します' } }),
+    };
+    const app = await load(failing);
+    const before = bridge.countOf('branchList');
+
+    await app.createBranch('main', 'main');
+
+    expect(bridge.countOf('branchList')).toBe(before);
+  });
+
+  it('マージの成功後はブランチ一覧を取り直す（ahead/behind が動く）', async () => {
+    const { app, bridge } = await boot();
+    const before = bridge.countOf('branchList');
+
+    await app.mergeBranch('topic');
+
+    expect(bridge.countOf('branchList')).toBe(before + 1);
+  });
+
+  it('確認待ちで止まったマージでは取り直さない（承認して実行されたら取り直す）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.requireConfirmation = 'branchMerge';
+    });
+    const before = bridge.countOf('branchList');
+
+    await app.mergeBranch('topic');
+    expect(app.pendingConfirmation).not.toBeNull();
+    expect(bridge.countOf('branchList')).toBe(before);
+
+    await app.acceptConfirmation();
+    expect(bridge.countOf('branchList')).toBe(before + 1);
+  });
+});
+
+/*
+ * 書き込み操作の後の履歴（docs/02-git-command-map.md の例外表）。
+ * コミットログモードで見ているときだけ #20 を足す。差分モードでは保持分を捨てるだけ（git は 0 回）。
+ */
+describe('書き込み操作の後の履歴', () => {
+  it('差分モードでは pull のあとに履歴を取り直さない（見えていないものに git を使わない）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+    });
+
+    await app.pull();
+
+    expect(bridge.countOf('logGetPage')).toBe(0);
+  });
+
+  it('コミットログモードでは pull のあとに履歴を取り直す', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+    });
+    await app.setViewMode('log');
+    await app.ensureLog();
+    const before = bridge.countOf('logGetPage');
+
+    await app.pull();
+
+    expect(bridge.countOf('logGetPage')).toBe(before + 1);
+  });
+
+  it('差分モードでは保持している履歴を捨て、モードに入った瞬間に取り直す', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+    });
+    await app.setViewMode('log');
+    await app.ensureLog();
+    await app.setViewMode('diff');
+    const before = bridge.countOf('logGetPage');
+
+    app.commitMessage = 'コミットする';
+    app.amend = true;
+    await app.commit();
+
+    expect(bridge.countOf('logGetPage')).toBe(before);
+    expect(app.commits).toHaveLength(0);
+
+    // モードに戻った瞬間に取り直す
+    await app.ensureLog();
+    expect(bridge.countOf('logGetPage')).toBe(before + 1);
+  });
+});
+
+/*
+ * エラーは履歴にする（docs/01-architecture.md 5 章）。
+ * 帯（app.error）は残すが、次の操作を始めた時点で消す——原因が解消した後も出っぱなしにしないため。
+ */
+describe('エラーの履歴', () => {
+  const failingStage = async (): Promise<{ app: AppState; bridge: FakeBridge }> => {
+    const bridge = new FakeBridge();
+    bridge.changes = [entry('a.txt')];
+    const app = await load({
+      ...bridge.build(),
+      stage: () =>
+        Promise.resolve({
+          ok: false as const,
+          error: { kind: 'git-failed' as const, message: '失敗しました', detail: 'fatal: something' },
+        }),
+    });
+    return { app, bridge };
+  };
+
+  it('次の操作を始めると帯は消えるが、履歴には残る', async () => {
+    const { app } = await failingStage();
+
+    await app.stage({ kind: 'all' });
+    expect(app.error?.message).toBe('失敗しました');
+    expect(app.errorLog).toHaveLength(1);
+    expect(app.errorLog[0]?.sessionId).toBe('s1');
+    expect(app.errorLog[0]?.detail).toBe('fatal: something');
+    expect(typeof app.errorLog[0]?.at).toBe('number');
+
+    // 成功する別の操作を始める
+    await app.unstage({ kind: 'all' });
+
+    expect(app.error).toBeNull();
+    expect(app.errorLog.map((e) => e.message)).toEqual(['失敗しました']);
+  });
+
+  it('新しい順に並び、id は重ならない。上限を超えた分は捨てる', async () => {
+    const { app } = await failingStage();
+
+    for (let i = 0; i < 55; i += 1) await app.stage({ kind: 'all' });
+
+    expect(app.errorLog).toHaveLength(50);
+    const ids = app.errorLog.map((e) => e.id);
+    expect(new Set(ids).size).toBe(50);
+    // 新しい順（id が単調増加なので先頭が最大）
+    expect(ids[0]).toBeGreaterThan(ids[49] ?? 0);
+  });
+
+  it('履歴は明示的に消せる（帯とは独立）', async () => {
+    const { app } = await failingStage();
+
+    await app.stage({ kind: 'all' });
+    app.clearErrorLog();
+
+    expect(app.errorLog).toEqual([]);
+    expect(app.error?.message).toBe('失敗しました');
+  });
+});
+
+describe('busy（並行する操作）', () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('並行する 2 つの操作で busy が正しく上がり下がりする', async () => {
+    const { app, bridge } = await boot();
+    bridge.holdCall('remoteFetch');
+
+    const fetching = app.fetch('origin');
+    await flush();
+    expect(app.busy).toBe(true);
+
+    // 先に終わる別の操作が、まだ走っている fetch の busy を解除してはいけない
+    await app.openTerminal();
+    expect(app.busy).toBe(true);
+
+    bridge.releaseCall('remoteFetch');
+    await fetching;
+    expect(app.busy).toBe(false);
+  });
+
+  it('リポジトリを開いている間は busy になる（手がかりゼロで固まって見えないように）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.holdLoad = true;
+    });
+
+    const opening = app.openRepository();
+    await flush();
+    expect(app.busy).toBe(true);
+
+    bridge.releaseLoad();
+    await opening;
+    expect(app.busy).toBe(false);
+  });
+});
+
+describe('選択の維持（ページング）と diff の失敗', () => {
+  it('2 ページ目以降を選んでいても、更新で選択が外れない', async () => {
+    const { app } = await boot((b) => {
+      b.changes = Array.from({ length: 300 }, (_, i) => entry(`f${String(i).padStart(3, '0')}.txt`));
+    });
+    // 仮想リストのスクロールで 2 ページ目を読み、その中の 1 件を選ぶ
+    await app.loadMore('changes', 200);
+    await app.select({ path: 'f250.txt', staged: false });
+
+    await app.refresh('full');
+
+    expect(app.selected).toEqual({ path: 'f250.txt', staged: false });
+  });
+
+  it('全件が読めているときは、消えたファイルの選択を外す', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('a.txt'), entry('b.txt')];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+
+    // 外部（ターミナル）で a.txt の変更が無くなった
+    bridge.changes = [entry('b.txt')];
+    await app.refresh('full');
+
+    expect(app.selected).toBeNull();
+    expect(app.diff).toBeNull();
+  });
+
+  it('diff の取得失敗は「差分はありません」と区別できる形で持つ', async () => {
+    const bridge = new FakeBridge();
+    bridge.changes = [entry('a.txt')];
+    const app = await load({
+      ...bridge.build(),
+      diffGet: () =>
+        Promise.resolve({
+          ok: false as const,
+          error: { kind: 'git-failed' as const, message: '差分を取得できませんでした' },
+        }),
+    });
+
+    await app.select({ path: 'a.txt', staged: false });
+
+    expect(app.diff).toBeNull();
+    expect(app.diffError?.message).toBe('差分を取得できませんでした');
+    expect(app.errorLog.map((e) => e.message)).toContain('差分を取得できませんでした');
+  });
+
+  it('選択が外れると diff の失敗表示も消える', async () => {
+    const bridge = new FakeBridge();
+    bridge.changes = [entry('a.txt')];
+    const app = await load({
+      ...bridge.build(),
+      diffGet: () =>
+        Promise.resolve({
+          ok: false as const,
+          error: { kind: 'git-failed' as const, message: '差分を取得できませんでした' },
+        }),
+    });
+    await app.select({ path: 'a.txt', staged: false });
+    expect(app.diffError).not.toBeNull();
+
+    await app.stage({ kind: 'filtered', filter: { group: 'changes' } });
+
+    expect(app.selected).toBeNull();
+    expect(app.diffError).toBeNull();
   });
 });

@@ -57,6 +57,73 @@ export function delay(ms: number): Promise<void> {
 }
 
 /**
+ * スプラッシュから本体への引き渡しを起こす出来事。
+ *
+ * - `main-ready` — 本体の `ready-to-show`。正常な経路
+ * - `safety-timer` — 保険タイマー（SPLASH_SAFETY_MS）が鳴った。**スプラッシュしか閉じない**
+ * - `startup-failed` — 起動処理が投げた。板を残さず、出せるものは出す
+ */
+export type HandoverTrigger = 'main-ready' | 'safety-timer' | 'startup-failed';
+
+/** 今回の呼び出しで実際に行うこと。どちらも false なら何もしない。 */
+export interface HandoverActions {
+  /** 本体ウィンドウを `show()` するか。 */
+  readonly showMain: boolean;
+  /** スプラッシュをフェードアウトして閉じるか。 */
+  readonly closeSplash: boolean;
+}
+
+/**
+ * 引き渡しのラッチ（docs/01-architecture.md 11 章 2026-09-19 追加分）。
+ *
+ * **ラッチを 1 つにしてはいけない。** 「引き渡し済み」という 1 つのフラグにまとめると、
+ * 保険タイマーが先に鳴ってスプラッシュだけを閉じた後、遅れて来た `ready-to-show` が
+ * 即 return してしまい、`show: false` のまま**見えないウィンドウを抱えたプロセスが常駐**する。
+ *
+ * そこで「スプラッシュを閉じた」と「本体を出した」を別々に持ち、
+ * まだ済んでいないほうだけを、来た出来事に応じて実行する。
+ *
+ * index.ts は Electron に強く依存していてテストから叩けないので、
+ * **判断だけをここへ切り出す**（BrowserWindow を作らずに検証できる）。
+ */
+export class HandoverLatch {
+  #splashClosed = false;
+  #mainShown = false;
+
+  /** スプラッシュを閉じ終えた（あるいは閉じると決めた）か。 */
+  get splashClosed(): boolean {
+    return this.#splashClosed;
+  }
+
+  /** 本体を `show()` した（あるいは出すと決めた）か。 */
+  get mainShown(): boolean {
+    return this.#mainShown;
+  }
+
+  /**
+   * 今回行うことを決め、ラッチを立てる。同じことを二度返さない。
+   *
+   * @param trigger どの経路から来たか
+   * @param hasMainWindow 本体ウィンドウが存在して生きているか
+   *
+   * 保険タイマーは**本体を出さない**。まだ `ready-to-show` すら来ていない
+   * （＝中身が描けていない）ウィンドウを出しても白い板になるだけで、
+   * 出すべき瞬間は後から来る `main-ready` が知っている。
+   * 本体が無くてもスプラッシュは閉じる——閉じるボタンの無い板を残さないことが最優先で、
+   * 本体が無い状態で閉じればアプリは終了するが、起動に失敗しているならそれが正しい。
+   */
+  decide(trigger: HandoverTrigger, hasMainWindow: boolean): HandoverActions {
+    const showMain = !this.#mainShown && hasMainWindow && trigger !== 'safety-timer';
+    const closeSplash = !this.#splashClosed;
+
+    if (showMain) this.#mainShown = true;
+    if (closeSplash) this.#splashClosed = true;
+
+    return { showMain, closeSplash };
+  }
+}
+
+/**
  * スプラッシュを作って**即座に出す**。
  *
  * 本体と違い `show: false` + `ready-to-show` を待たない。待ったら出す意味が無い。

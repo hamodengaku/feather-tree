@@ -21,7 +21,7 @@ export interface CommandLogEntry {
  *
  * 土台としての意図: 確認ダイアログを減らす代わりに、
  * **何が実行されたかを完全に見せる**ことで信頼を担保する。
- * UI の「実行ログ」パネルがこれを表示する。引数は伏せずに全部記録する。
+ * UI の「実行ログ」パネル（「コマンド」タブ）がこれを表示する。引数は伏せずに全部記録する。
  */
 export class CommandLog {
   readonly #capacity: number;

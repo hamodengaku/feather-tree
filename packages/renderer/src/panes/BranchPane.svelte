@@ -5,9 +5,9 @@
   import FileContextMenu from '../components/FileContextMenu.svelte';
   import VirtualBranchList from '../components/VirtualBranchList.svelte';
   import {
-    ancestorKeys,
     buildBranchTree,
     isRepeatClick,
+    planCurrentBranchSeed,
     toExpandedSet,
     withCollapsed,
     withExpanded,
@@ -47,28 +47,44 @@
   const remoteRows = $derived(buildBranchTree(remotes, expanded, 'remote'));
 
   /**
-   * 現在のブランチへの経路だけは自動で開く。
-   * 「リポジトリ × ブランチ」の組ごとに一度きりにしてあるので、
-   * ユーザーが畳み直したものを開き直すことはない（次にそのブランチへ切り替えるまで畳んだまま）。
+   * 現在のブランチへの経路だけは自動で開く。判断そのものは純関数
+   * （lib/branchTree.ts の planCurrentBranchSeed）に置いてあり、ここはその適用だけ。
+   *
+   * 「リポジトリ × ブランチ」の組ごとに一度きりなので、ユーザーが畳み直したものを
+   * 開き直すことはない（次にそのブランチへ切り替えるまで畳んだまま）。
+   *
+   * **この記録はコンポーネントの生存期間に結びついている。** 作り直されれば空に戻り、
+   * 畳んだフォルダが開き直される。App.svelte が `<BranchPane />` を表示モードの分岐の
+   * 外に置いているのはそのため（両枝に書くとモード切替のたびに作り直される）。
    */
   const seeded: string[] = [];
   $effect(() => {
-    const id = app.activeId;
-    const branch = app.currentBranch;
-    if (id === null || branch === null || app.settings === null) return;
-    const mark = JSON.stringify([id, branch]);
-    if (seeded.includes(mark)) return;
-    seeded.push(mark);
-    const current = app.branchExpanded;
-    const missing = ancestorKeys('local', branch).filter((key) => !current.includes(key));
-    if (missing.length === 0) return;
-    void app.setBranchExpanded([...current, ...missing]);
+    const decision = planCurrentBranchSeed({
+      sessionId: app.activeId,
+      branch: app.currentBranch,
+      settingsReady: app.settings !== null,
+      expanded: app.branchExpanded,
+      seeded,
+    });
+    if (decision.mark === null) return;
+    seeded.push(decision.mark);
+    if (decision.expanded !== null) saveExpanded(decision.expanded);
   });
+
+  /**
+   * 展開状態の保存。**reject は必ず受ける。**
+   * `void` で捨てると unhandled rejection になり、失敗が誰にも見えないまま消える
+   * （保存に失敗しても表示は続けられるので、ここでは握って次の更新に任せる。
+   *   利用者向けの通知は appState 側が出す）。
+   */
+  function saveExpanded(paths: readonly string[]): void {
+    app.setBranchExpanded(paths).catch(() => undefined);
+  }
 
   /** 開くときは通過するすべての前置きを、畳むときは子孫までまとめて扱う。 */
   function toggleFolder(scope: BranchScope, row: BranchFolderRow): void {
     const current = app.branchExpanded;
-    void app.setBranchExpanded(
+    saveExpanded(
       row.expanded
         ? withCollapsed(current, scope, row.path)
         : withExpanded(current, scope, row.path),

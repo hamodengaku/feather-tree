@@ -24,6 +24,23 @@ function git(cwd: string, args: readonly string[]): Promise<void> {
   });
 }
 
+/** 検証用に git の出力を読む（アプリの層を通さず、実リポジトリの状態を直接確かめる）。 */
+function gitOut(cwd: string, args: readonly string[]): Promise<string> {
+  return new Promise((res, rej) => {
+    const child = spawn(GIT_PATH, [...args], {
+      cwd,
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let out = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => (out += chunk));
+    child.on('error', rej);
+    child.on('close', (code) => (code === 0 ? res(out) : rej(new Error(`git failed: ${String(code)}`))));
+  });
+}
+
 describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
   let dir: string;
   let manager: SessionManager;
@@ -53,6 +70,25 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
     const target = join(dir, rel);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content, 'utf8');
+  }
+
+  function lines(text: string): string[] {
+    return text.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+  }
+
+  /** index と HEAD の差があるパス（`git diff --cached --name-only`）。 */
+  async function diffCachedNames(): Promise<string[]> {
+    return lines(await gitOut(dir, ['diff', '--cached', '--name-only']));
+  }
+
+  /** 作業ツリーと index の差があるパス（`git diff --name-only`）。 */
+  async function diffNames(): Promise<string[]> {
+    return lines(await gitOut(dir, ['diff', '--name-only']));
+  }
+
+  /** index に載っている内容（`git show :<path>`）。 */
+  async function showIndex(rel: string): Promise<string> {
+    return await gitOut(dir, ['show', ':' + rel]);
   }
 
   it('kind all でパス配列を IPC に流さずに全件ステージできる', async () => {
@@ -95,7 +131,7 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
     expect(added.map((e) => e.args[0]).sort()).toEqual(['add', 'status']);
   });
 
-  it('破棄はステージ済みの有無で #7 と #8 を使い分ける', async () => {
+  it('破棄は常に #7 だけを打つ（ステージ済みの有無で切り替えない）', async () => {
     await write('a.txt', 'one');
     await git(dir, ['add', '-A']);
     await git(dir, ['commit', '-m', 'init']);
@@ -105,12 +141,39 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
 
     const session = await manager.open(dir);
     const ops = new SessionOperations(session);
-    expect(ops.targetHasStaged({ kind: 'paths', paths: ['a.txt'] })).toBe(true);
+    const before = commandLog.size;
 
     await ops.discard({ kind: 'paths', paths: ['a.txt'] });
 
-    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('one');
-    expect(session.getStatusSummary().counts.total).toBe(0);
+    // 打つのは restore（#7）と status の 2 本だけ
+    const added = commandLog.recent(10).slice(0, commandLog.size - before);
+    expect(added.map((e) => e.args[0]).sort()).toEqual(['restore', 'status']);
+    expect(added.find((e) => e.args[0] === 'restore')?.args).not.toContain('--staged');
+
+    // 作業ツリーは**インデックスの内容**（= ステージした 'staged'）に戻る。HEAD の 'one' ではない
+    expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('staged');
+    // ステージ済みの差分が残るので、status の件数も 0 にはならない
+    expect(session.getStatusSummary().counts.staged).toBe(1);
+  });
+
+  it('ステージ済みがあるファイルの変更を破棄しても、インデックスの内容は温存される', async () => {
+    await write('a.txt', 'one');
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', 'init']);
+    await write('a.txt', 'staged');
+    await git(dir, ['add', 'a.txt']);
+    await write('a.txt', 'worktree');
+
+    const session = await manager.open(dir);
+    const ops = new SessionOperations(session);
+
+    await ops.discard({ kind: 'paths', paths: ['a.txt'] });
+
+    // 実 git に訊く: index と HEAD の差（git diff --cached 相当）が残っていること
+    expect(await diffCachedNames()).toEqual(['a.txt']);
+    expect(await showIndex('a.txt')).toBe('staged');
+    // 作業ツリー側の差（未ステージ分）は消えていること
+    expect(await diffNames()).toEqual([]);
   });
 
   it('未追跡削除は未追跡エントリだけに絞る（追跡ファイルを誤って消さない）', async () => {
@@ -162,7 +225,7 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
     expect(added.map((e) => e.args[0]).sort()).toEqual(['status', 'switch']);
   });
 
-  it('ブランチ作成は起点から分岐して切替まで行う（対応表 #14 → #2）', async () => {
+  it('ブランチ作成は起点から分岐して切替まで行い、ブランチ一覧も取り直す（#14 → #2 → #3）', async () => {
     await write('a.txt', 'x');
     const session = await manager.open(dir);
     const ops = new SessionOperations(session);
@@ -175,7 +238,9 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
     expect(session.snapshot?.head.branch).toBe('feature');
     expect(result.statusSeq).toBe(session.statusSeq);
     const added = commandLog.recent(10).slice(0, commandLog.size - before);
-    expect(added.map((e) => e.args[0]).sort()).toEqual(['status', 'switch']);
+    expect(added.map((e) => e.args[0]).sort()).toEqual(['for-each-ref', 'status', 'switch']);
+    // 作ったブランチは #3 の結果にしか現れない。取り直さないと一覧に出ないまま印だけが消える
+    expect(session.branches.map((b) => b.shortName)).toContain('feature');
   });
 
   it('明示パスの上限を超えたら拒否する', async () => {
@@ -200,10 +265,9 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
     expect(SessionOperations.confirmationFor('unstage')).toBeNull();
     expect(SessionOperations.confirmationFor('commit')).toBeNull();
     expect(SessionOperations.confirmationFor('commit', { amend: true })).toBe('amend-pushed-commit');
+    // 破棄の確認は 1 種類だけ（#8 の廃止に伴い、ステージ済みの有無で変えない）
     expect(SessionOperations.confirmationFor('discard')).toBe('discard-changes');
-    expect(SessionOperations.confirmationFor('discard', { hasStaged: true })).toBe(
-      'discard-staged-and-worktree',
-    );
+    expect(SessionOperations.confirmationFor('discard', { hasStaged: true })).toBe('discard-changes');
     expect(SessionOperations.confirmationFor('deleteUntracked')).toBe('delete-untracked');
   });
 
