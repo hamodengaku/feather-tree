@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { READ_PREFIX } from '../execution/gitEnvironment.js';
 import { runGitStream } from '../execution/spawnGit.js';
@@ -34,7 +35,7 @@ export async function getStatus(ctx: GitContext, options: StatusOptions = {}): P
 
   const parser = new StatusParser();
   const { exit, result } = await runGitStream(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args },
+    commandFor(ctx, args),
     parser,
     ctx.signal,
   );

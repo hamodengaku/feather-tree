@@ -771,6 +771,136 @@ describe('main からの通知', () => {
   });
 });
 
+describe('設定ダイアログの Git / ssh 通信タブ', () => {
+  it('git.exe のパスを保存したら、検出結果を取り直す（表示が古いまま残らない）', async () => {
+    const { app, bridge } = await boot();
+    const mark = bridge.calls.length;
+
+    await app.setGitPath('C:/tools/git/cmd/git.exe');
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ gitPath: 'C:/tools/git/cmd/git.exe' }]);
+    expect(app.settings?.gitPath).toBe('C:/tools/git/cmd/git.exe');
+    // main は gitPath の変更で git を解決し直すので、環境も取り直していないと表示がずれる
+    expect(bridge.calls.slice(mark).map((c) => c.name)).toContain('appGetEnvironment');
+  });
+
+  it('自動探索に戻すときは null を送る', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setGitPath(null);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ gitPath: null }]);
+  });
+
+  it('git.exe を選ぶとそのまま保存する。キャンセルなら何も送らない', async () => {
+    const { app, bridge } = await boot();
+
+    bridge.pickFileResult = null;
+    const mark = bridge.calls.length;
+    await app.pickGitExecutable();
+    expect(bridge.calls.slice(mark).map((c) => c.name)).toEqual(['dialogPickFile']);
+
+    bridge.pickFileResult = 'C:/tools/git/cmd/git.exe';
+    await app.pickGitExecutable();
+    expect(bridge.lastArgsOf('dialogPickFile')).toEqual(['git-executable']);
+    expect(app.settings?.gitPath).toBe('C:/tools/git/cmd/git.exe');
+  });
+
+  it('SSH 秘密鍵のパスを保存する。git は動かさない', async () => {
+    const { app, bridge } = await boot();
+    const mark = bridge.calls.length;
+
+    bridge.pickFileResult = 'C:/Users/me/.ssh/id_ed25519';
+    await app.pickSshKey();
+
+    expect(bridge.lastArgsOf('dialogPickFile')).toEqual(['ssh-private-key']);
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([
+      { sshKeyPath: 'C:/Users/me/.ssh/id_ed25519' },
+    ]);
+    expect(app.settings?.sshKeyPath).toBe('C:/Users/me/.ssh/id_ed25519');
+    // 鍵の設定は次の git から効く。設定した時点では git を 1 本も起動しない
+    expect(bridge.calls.slice(mark).map((c) => c.name)).toEqual([
+      'dialogPickFile',
+      'settingsUpdate',
+    ]);
+  });
+
+  it('SSH 鍵を「使わない」に戻すときは null を送る', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setSshKeyPath(null);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ sshKeyPath: null }]);
+  });
+
+  it('コミット情報はアクティブなタブのものを読む', async () => {
+    const { app, bridge } = await boot();
+
+    await app.loadGitIdentity();
+
+    expect(bridge.lastArgsOf('gitConfigGetIdentity')).toEqual(['s1']);
+    expect(app.gitIdentity?.name.value).toBe('Local Name');
+  });
+
+  it('タブが無ければコミット情報を読まない（git を動かさない）', async () => {
+    const { app, bridge } = await boot();
+    app.activeId = null;
+    const mark = bridge.calls.length;
+
+    await app.loadGitIdentity();
+
+    expect(bridge.calls.slice(mark)).toEqual([]);
+    expect(app.gitIdentity).toBeNull();
+  });
+
+  it('変えたキーだけを送る（両方同じなら git を動かさない）', async () => {
+    const { app, bridge } = await boot();
+    await app.loadGitIdentity();
+    const mark = bridge.calls.length;
+
+    // 同じ値なら IPC を呼ばない
+    expect(await app.saveGitIdentity('Local Name', 'local@example.invalid')).toBe(true);
+    expect(bridge.calls.slice(mark)).toEqual([]);
+
+    // 名前だけ変えたら email は null（変更しない）
+    await app.saveGitIdentity('別の名前', 'local@example.invalid');
+    expect(bridge.lastArgsOf('gitConfigSetIdentity')).toEqual([
+      's1',
+      { name: '別の名前', email: null },
+    ]);
+  });
+
+  it('継承していた項目は、同じ文字でも変更として送る（ローカルに固定するため）', async () => {
+    const { app, bridge } = await boot();
+    bridge.gitIdentity = {
+      name: { value: 'Global Name', scope: 'inherited' },
+      email: { value: 'global@example.invalid', scope: 'inherited' },
+    };
+    await app.loadGitIdentity();
+
+    await app.saveGitIdentity('Global Name', 'global@example.invalid');
+
+    expect(bridge.lastArgsOf('gitConfigSetIdentity')).toEqual([
+      's1',
+      { name: 'Global Name', email: 'global@example.invalid' },
+    ]);
+    // 保存後は読み直さず、手元の状態をローカルとして進める
+    expect(app.gitIdentity?.name).toEqual({ value: 'Global Name', scope: 'local' });
+    expect(bridge.calls.filter((c) => c.name === 'gitConfigGetIdentity').length).toBe(1);
+  });
+
+  it('保存に失敗したら状態を進めずエラーを出す', async () => {
+    const { app, bridge } = await boot();
+    await app.loadGitIdentity();
+    bridge.gitIdentityError = { kind: 'internal', message: '名前を「-」で始めることはできません。' };
+
+    expect(await app.saveGitIdentity('-weird', 'local@example.invalid')).toBe(false);
+
+    expect(app.error?.message).toContain('-');
+    expect(app.gitIdentity?.name.value).toBe('Local Name');
+  });
+});
+
 describe('ウィンドウ復帰時の更新モード', () => {
   it('モードの変更を送信して設定に反映する', async () => {
     const { app, bridge } = await boot();

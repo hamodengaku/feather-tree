@@ -18,18 +18,19 @@ function fakeRoot(): { root: HTMLElement; get: (name: string) => string | undefi
 }
 
 describe('THEME_OPTIONS', () => {
-  it('4 テーマすべてを、指定された表記・順序で持つ', () => {
+  // 並びは設定画面の 2 列（左＝フェザー / 右＝クラシック）と直結している。
+  it('4 テーマすべてを、系統ごとに 2 つずつ、指定された表記・順序で持つ', () => {
     expect(THEME_OPTIONS.map((o) => o.value)).toEqual([
-      'classic-dark',
-      'classic-light',
       'phoenix-dark',
       'phoenix-light',
+      'classic-dark',
+      'classic-light',
     ]);
     expect(THEME_OPTIONS.map((o) => o.label)).toEqual([
-      'ダークモード（クラシック）',
-      'ライトモード（クラシック）',
       'ダークモード（フェザー）',
       'ライトモード（フェザー）',
+      'ダークモード（クラシック）',
+      'ライトモード（クラシック）',
     ]);
   });
 });

@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { WRITE_PREFIX } from '../execution/gitEnvironment.js';
 import { runGitText, runGitWithProgress, type GitExit } from '../execution/spawnGit.js';
@@ -17,11 +18,7 @@ export const FETCH_ALL_BRANCHES_REFSPEC = '+refs/heads/*:refs/remotes/origin/*';
  */
 export async function setFetchAllBranches(ctx: GitContext): Promise<GitExit> {
   const { exit } = await runGitText(
-    {
-      gitPath: ctx.gitPath,
-      cwd: ctx.cwd,
-      args: [...WRITE_PREFIX, 'config', 'remote.origin.fetch', FETCH_ALL_BRANCHES_REFSPEC],
-    },
+    commandFor(ctx, [...WRITE_PREFIX, 'config', 'remote.origin.fetch', FETCH_ALL_BRANCHES_REFSPEC]),
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['config'], exit.code, exit.stderr);
@@ -34,7 +31,7 @@ export async function setFetchAllBranches(ctx: GitContext): Promise<GitExit> {
  */
 export async function fetchUnshallow(ctx: GitContext, onProgress: (line: string) => void): Promise<GitExit> {
   const exit = await runGitWithProgress(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...WRITE_PREFIX, 'fetch', '--progress', '--unshallow', 'origin'] },
+    commandFor(ctx, [...WRITE_PREFIX, 'fetch', '--progress', '--unshallow', 'origin']),
     onProgress,
     ctx.signal,
   );

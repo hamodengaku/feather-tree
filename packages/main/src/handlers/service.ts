@@ -3,9 +3,11 @@ import {
   SessionOperations,
   canBuildPatch,
   describeAction,
+  describeIdentityRejection,
   displayNameOf,
   gitNotFoundHint,
   isExecutableFileName,
+  validateIdentityValue,
   type AppSettings,
   type CloneStage,
   type CommandLog,
@@ -35,8 +37,11 @@ import type {
   CommitSummaryDto,
   EnvironmentDto,
   FileDiffDto,
+  GitIdentityDto,
+  GitIdentityRequest,
   OperationResultDto,
   OperationTargetDto,
+  PickFileKindDto,
   PushRequest,
   RefreshScope,
   RemoteResultDto,
@@ -71,6 +76,27 @@ function hasControlChar(text: string): boolean {
 }
 
 /**
+ * 設定に保存するパスの検証（絶対パスであること）。
+ *
+ * `null` は「指定なし」なので通す。相対パス・bare 名を弾くのは、この値が
+ * そのまま spawn の実行ファイル（gitPath）や ssh の引数（sshKeyPath）になるため。
+ * normalizeSettings も同じことを見ているが、あちらは**黙って null に落とす**（起動を止めない）。
+ * 設定画面から来た値は、黙って捨てずにここで理由を返す。
+ */
+function assertAbsolutePathSetting(label: string, value: string | null | undefined): void {
+  if (value === undefined || value === null) return;
+  if (hasControlChar(value)) {
+    throw new HandlerError({ kind: 'internal', message: label + 'に使えない文字が含まれています。' });
+  }
+  if (!isAbsolute(value)) {
+    throw new HandlerError({
+      kind: 'invalid-path',
+      message: label + 'は絶対パスで指定してください（例: C:\\Program Files\\Git\\cmd\\git.exe）。',
+    });
+  }
+}
+
+/**
  * サービスが必要とするもの。
  *
  * electron の型を含めないことで **Electron を起動せずにテストできる**。
@@ -87,6 +113,8 @@ export interface ServiceDeps {
   readonly commandLog: () => CommandLog;
   /** フォルダ選択。キャンセルなら null。 */
   readonly pickDirectory: () => Promise<string | null>;
+  /** ファイル選択（設定画面の git.exe / SSH 秘密鍵）。キャンセルなら null。 */
+  readonly pickFile: (kind: PickFileKindDto) => Promise<string | null>;
   /** クローンの段階表を renderer へ送る（間引きはサービス側で済ませてから呼ぶ）。 */
   readonly notifyCloneProgress: (event: CloneProgressEvent) => void;
   /** OS 既定のアプリでファイル／フォルダを開く。失敗時はエラー文字列を返す（throw しない）。 */
@@ -111,6 +139,9 @@ export interface Service {
   appGetEnvironment(): EnvironmentDto;
   settingsGet(): SettingsDto;
   settingsUpdate(patch: Partial<SettingsDto>): Promise<SettingsDto>;
+  dialogPickFile(kind: PickFileKindDto): Promise<string | null>;
+  gitConfigGetIdentity(id: string): Promise<GitIdentityDto>;
+  gitConfigSetIdentity(id: string, req: GitIdentityRequest): Promise<null>;
   sessionPickAndCreate(): Promise<SessionDto | null>;
   sessionLoad(id: string): Promise<null>;
   sessionOpen(root: string): Promise<SessionDto>;
@@ -403,10 +434,50 @@ export function createService(deps: ServiceDeps): Service {
     settingsGet: () => deps.settings(),
 
     settingsUpdate: async (patch) => {
+      assertAbsolutePathSetting('git.exe のパス', patch.gitPath);
+      assertAbsolutePathSetting('SSH 秘密鍵のパス', patch.sshKeyPath);
       const before = deps.settings().gitPath;
       const updated = await deps.updateSettings(patch);
       if (updated.gitPath !== before) await deps.reloadGit();
       return updated;
+    },
+
+    dialogPickFile: (kind) => deps.pickFile(kind),
+
+    // async にしてあるのは、タブが無いときに**同期例外ではなく reject** で返すため
+    // （Service の型は Promise を返す約束なので、呼び出し側は catch ではなく .catch を書く）
+    gitConfigGetIdentity: async (id) => requireSession(id).getCommitIdentity(),
+
+    /*
+     * 対応表 #44。値の検証は**ここが実質の唯一の防壁**（git config の値は位置引数で、
+     * fetch / push のような `--` による守りが効かない。docs/02-git-command-map.md #42〜#44）。
+     * 検証に落ちたら git を 1 本も起動せずに返す。
+     *
+     * 空文字は拒否する。ローカルの設定を消すと全体設定の値に黙って戻るためで、
+     * 削除したい人にはターミナルのコマンドを案内する（決定 13 の追記）。
+     */
+    gitConfigSetIdentity: async (id, req) => {
+      const session = requireSession(id);
+      const patch: { name?: string; email?: string } = {};
+
+      for (const [key, label] of [
+        ['name', '名前'],
+        ['email', 'メールアドレス'],
+      ] as const) {
+        const raw = req[key];
+        if (raw === null || raw === undefined) continue;
+        const checked = validateIdentityValue(raw);
+        if (!checked.ok) {
+          throw new HandlerError({
+            kind: 'internal',
+            message: describeIdentityRejection(label, checked.reason),
+          });
+        }
+        patch[key] = checked.value;
+      }
+
+      await session.setLocalCommitIdentity(patch);
+      return null;
     },
 
     sessionPickAndCreate: async () => {

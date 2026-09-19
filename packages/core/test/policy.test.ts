@@ -4,6 +4,7 @@ import {
   describeAction,
   mapGitStderr,
   requiresConfirmation,
+  validateIdentityValue,
 } from '../src/index.js';
 
 describe('破壊的操作のポリシー (決定 16)', () => {
@@ -67,5 +68,41 @@ describe('エラーメッセージのマッピング', () => {
   it('リポジトリでない場合は専用の kind になる', () => {
     const mapped = mapGitStderr('fatal: not a git repository (or any of the parent directories): .git', 128);
     expect(mapped.kind).toBe('not-a-repository');
+  });
+});
+
+describe('コミット情報の値の検証 (対応表 #42〜#44)', () => {
+  const ok = (raw: string): string | null => {
+    const r = validateIdentityValue(raw);
+    return r.ok ? r.value : null;
+  };
+
+  it('前後の空白を落として通す', () => {
+    expect(ok('  山田 太郎  ')).toBe('山田 太郎');
+  });
+
+  it('日本語・記号入りのメールアドレスも通す（git 自身が形式を要求しない）', () => {
+    expect(ok('taro+ft@example.invalid')).toBe('taro+ft@example.invalid');
+    expect(ok('名前 (会社)')).toBe('名前 (会社)');
+  });
+
+  it('空・空白だけは拒否（--unset はしないので、空は保存しない）', () => {
+    expect(validateIdentityValue('')).toEqual({ ok: false, reason: 'empty' });
+    expect(validateIdentityValue('   ')).toEqual({ ok: false, reason: 'empty' });
+  });
+
+  it('先頭が - は拒否（他の git 版でオプションと解釈される余地を残さない）', () => {
+    expect(validateIdentityValue('-weird')).toEqual({ ok: false, reason: 'leading-dash' });
+  });
+
+  it('制御文字は拒否（.git/config の行構造を壊す）', () => {
+    for (const bad of ['a\nb', 'a\rb', 'a\tb', 'a\u0000b']) {
+      expect(validateIdentityValue(bad).ok).toBe(false);
+    }
+  });
+
+  it('255 文字までは通し、超えたら拒否', () => {
+    expect(ok('x'.repeat(255))).toHaveLength(255);
+    expect(validateIdentityValue('x'.repeat(256))).toEqual({ ok: false, reason: 'too-long' });
   });
 });

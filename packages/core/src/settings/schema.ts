@@ -9,6 +9,7 @@ import {
   stringArrayRecord,
   stringOrNull,
 } from '@feathertree/base-core';
+import { isAbsolute } from 'node:path';
 
 export type ThemeName = 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
 export type UntrackedMode = 'normal' | 'all';
@@ -28,6 +29,14 @@ export interface PaneWidths {
 export interface AppSettings {
   /** 設定画面で明示指定した git.exe のパス。null なら自動探索。 */
   readonly gitPath: string | null;
+  /**
+   * 設定画面で指定した SSH 秘密鍵のパス（決定 13 の追記）。
+   *
+   * **このアプリが spawn する git にだけ** `GIT_SSH_COMMAND` として渡す。
+   * null なら何も注入せず、ユーザー自身の `GIT_SSH_COMMAND` / `core.sshCommand` が効く。
+   * 鍵の中身もパスフレーズも保持しない（保持するのはパスだけ）。
+   */
+  readonly sshKeyPath: string | null;
   readonly theme: ThemeName;
   /** status の rename 検出を切る。巨大リポで所要時間に効く。 */
   readonly noRenames: boolean;
@@ -85,6 +94,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   gitPath: null,
+  sshKeyPath: null,
   theme: 'phoenix-light',
   noRenames: false,
   untrackedFiles: 'normal',
@@ -114,6 +124,28 @@ const UNTRACKED: readonly UntrackedMode[] = ['normal', 'all'];
 const REFOCUS_MODES: readonly RefocusUpdateMode[] = ['auto', 'modal', 'none'];
 const VIEW_MODES: readonly ViewMode[] = ['diff', 'log'];
 
+/** 絶対パスの上限。Windows の MAX_PATH は 260 だが、長パス有効時はもっと長くなりうる。 */
+const MAX_PATH_LENGTH = 4096;
+
+/**
+ * 「絶対パスか null」を保つ値。
+ *
+ * 相対パス・bare 名を弾くのは、そのまま spawn の実行ファイルや ssh の引数になるため。
+ * Windows の libuv は相対パスを cwd（＝リポジトリルート）から先に探すので、
+ * リポジトリ内に置かれた同名の実行ファイルを掴む余地が生まれる
+ * （`register.ts` の launchTerminal が同じ理由で isAbsolute を強制している）。
+ * 制御文字は、設定ファイルを手で壊したときに引数の途中で切れないよう弾く。
+ */
+function absolutePathOrNull(value: unknown): string | null {
+  const text = stringOrNull(value);
+  if (text === null || text.length > MAX_PATH_LENGTH || !isAbsolute(text)) return null;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return null;
+  }
+  return text;
+}
+
 /**
  * 設定ファイルは人間が手で編集しうるし、古いバージョンの残骸も入る。
  * 未知・不正な値は既定値で埋めて必ず有効な設定を返す（起動を止めない）。
@@ -123,7 +155,13 @@ export function normalizeSettings(raw: unknown): AppSettings {
   const o = record(raw);
 
   return {
+    /*
+     * gitPath は stringOrNull のまま（絶対パスを強制しない）。
+     * 既に相対パスを書いている利用者の設定を、更新しただけで黙って null（自動探索）へ
+     * 落とさないため。新しく保存される値は service.settingsUpdate 側で絶対パスを要求する。
+     */
     gitPath: stringOrNull(o['gitPath']),
+    sshKeyPath: absolutePathOrNull(o['sshKeyPath']),
     theme: pickFrom(o['theme'], THEMES, DEFAULT_SETTINGS.theme),
     noRenames: boolOr(o['noRenames'], DEFAULT_SETTINGS.noRenames),
     untrackedFiles: pickFrom(o['untrackedFiles'], UNTRACKED, DEFAULT_SETTINGS.untrackedFiles),

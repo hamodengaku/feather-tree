@@ -10,6 +10,8 @@ import type {
   CommandLogEntryDto,
   CommandStartEvent,
   FtErrorDto,
+  GitIdentityDto,
+  GitIdentityRequest,
   ProgressEvent,
   CommitFileChangeDto,
   CommitRequest,
@@ -19,6 +21,7 @@ import type {
   FocusRefreshPromptEvent,
   HeadInfoDto,
   OperationTargetDto,
+  PickFileKindDto,
   PushRequest,
   RefreshScope,
   Result,
@@ -37,6 +40,7 @@ export interface Call {
 
 const SETTINGS: SettingsDto = {
   gitPath: 'C:/git/git.exe',
+  sshKeyPath: null,
   theme: 'classic-dark',
   noRenames: false,
   untrackedFiles: 'normal',
@@ -165,6 +169,15 @@ export class FakeBridge {
 
   /** クローンの保存先選択の結果。null ならキャンセル。 */
   clonePickResult: string | null = 'D:/work';
+  /** 設定画面のファイル選択（git.exe / SSH 鍵）の結果。null ならキャンセル。 */
+  pickFileResult: string | null = null;
+  /** main が持っているコミット情報（対応表 #42〜#44）。 */
+  gitIdentity: GitIdentityDto = {
+    name: { value: 'Local Name', scope: 'local' },
+    email: { value: 'local@example.invalid', scope: 'local' },
+  };
+  /** 保存を失敗させる（値の検証違反の再現）。 */
+  gitIdentityError: FtErrorDto | null = null;
   /** sessionCloneAndCreate の結果。session が null でなければタブが立つ（main と同じ）。 */
   cloneOutcome: CloneOutcomeDto = {
     result: 'succeeded',
@@ -363,6 +376,24 @@ export class FakeBridge {
         this.record('settingsUpdate', patch);
         this.settings = { ...this.settings, ...patch };
         return Promise.resolve(ok(this.settings));
+      },
+      dialogPickFile: (kind: PickFileKindDto) => {
+        this.record('dialogPickFile', kind);
+        return Promise.resolve(ok(this.pickFileResult));
+      },
+      gitConfigGetIdentity: (id: string) => {
+        this.record('gitConfigGetIdentity', id);
+        return Promise.resolve(ok(this.gitIdentity));
+      },
+      gitConfigSetIdentity: (id: string, req: GitIdentityRequest) => {
+        this.record('gitConfigSetIdentity', id, structuredClone(req));
+        if (this.gitIdentityError !== null) return Promise.resolve({ ok: false as const, error: this.gitIdentityError });
+        // main と同じく、書いたキーはローカル値になる
+        const next = { ...this.gitIdentity };
+        if (req.name !== null) next.name = { value: req.name, scope: 'local' };
+        if (req.email !== null) next.email = { value: req.email, scope: 'local' };
+        this.gitIdentity = next;
+        return Promise.resolve(ok(null));
       },
       sessionPickAndCreate: () => {
         this.record('sessionPickAndCreate');

@@ -46,6 +46,12 @@ export interface CloneRunDeps {
   readonly gitPath: string;
   readonly tempDir: string;
   readonly commandLog: CommandLog;
+  /**
+   * この手順で実行する git すべてに足す環境変数（設定 sshKeyPath 由来の `GIT_SSH_COMMAND`）。
+   * セッションが立つ前なので RepositorySession.context() を通れない。
+   * **SSH の URL をクローンする場面こそ鍵が要る**ので、ここにも流す。
+   */
+  readonly env?: Readonly<Record<string, string>>;
   /** 段階の時刻。テストで固定できるように注入する。 */
   readonly now?: () => number;
 }
@@ -118,6 +124,7 @@ export async function runClone(
     gitPath: deps.gitPath,
     cwd,
     tempDir: deps.tempDir,
+    ...(deps.env === undefined || Object.keys(deps.env).length === 0 ? {} : { env: deps.env }),
     ...(signal === undefined ? {} : { signal }),
   });
 

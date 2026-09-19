@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { WRITE_PREFIX } from '../execution/gitEnvironment.js';
 import { runGitWithProgress, type GitCommand, type GitExit } from '../execution/spawnGit.js';
@@ -26,10 +27,9 @@ export interface CloneOptions {
 
 /** #37 の実行内容。引数と環境の組み立てを検査できるように切り出してある。 */
 export function buildCloneCommand(ctx: GitContext, opts: CloneOptions): GitCommand {
-  return {
-    gitPath: ctx.gitPath,
-    cwd: ctx.cwd,
-    args: [
+  return commandFor(
+    ctx,
+    [
       ...WRITE_PREFIX,
       'clone',
       '--progress',
@@ -38,8 +38,8 @@ export function buildCloneCommand(ctx: GitContext, opts: CloneOptions): GitComma
       opts.url,
       opts.directory,
     ],
-    ...(opts.skipLfsSmudge === true ? { env: { GIT_LFS_SKIP_SMUDGE: '1' } } : {}),
-  };
+    opts.skipLfsSmudge === true ? { GIT_LFS_SKIP_SMUDGE: '1' } : undefined,
+  );
 }
 
 /**

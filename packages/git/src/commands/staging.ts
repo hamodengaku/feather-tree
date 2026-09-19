@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { WRITE_PREFIX } from '../execution/gitEnvironment.js';
 import { withMessageFile, withPathspecFile } from '../execution/pathspecFile.js';
@@ -8,7 +9,7 @@ import type { GitContext } from './context.js';
 const CLEAN_CHUNK = 200;
 
 async function runWrite(ctx: GitContext, args: readonly string[], label: readonly string[]): Promise<void> {
-  const { exit } = await runGitText({ gitPath: ctx.gitPath, cwd: ctx.cwd, args }, ctx.signal);
+  const { exit } = await runGitText(commandFor(ctx, args), ctx.signal);
   if (exit.code !== 0) throw new GitCommandError(label, exit.code, exit.stderr);
 }
 
@@ -107,7 +108,7 @@ export async function commit(
   });
 
   const { exit, stdout } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: ['--no-pager', 'rev-parse', 'HEAD'] },
+    commandFor(ctx, ['--no-pager', 'rev-parse', 'HEAD']),
     ctx.signal,
   );
   return exit.code === 0 ? stdout.trim() : null;

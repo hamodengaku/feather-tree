@@ -11,6 +11,7 @@ import type {
   CommitSummaryDto,
   ConfirmationDto,
   EnvironmentDto,
+  GitIdentityDto,
   FileDiffDto,
   FileEntryDto,
   HunkSelectionDto,
@@ -98,6 +99,13 @@ export class AppState {
   settings = $state<SettingsDto | null>(null);
   /** 設定ダイアログの「更新」節で現在のバージョンを出すためだけに持つ。 */
   appInfo = $state<AppInfoDto | null>(null);
+
+  /**
+   * 設定ダイアログの Git タブが出すコミット情報（対応表 #42〜#44）。
+   * null は「まだ読んでいない」か「対象のタブが無い」。
+   */
+  gitIdentity = $state<GitIdentityDto | null>(null);
+  gitIdentityLoading = $state(false);
 
   /**
    * 更新通知（決定 29）。既定は 'unknown'（まだ 1 度も確認結果を受け取っていない）。
@@ -998,6 +1006,102 @@ export class AppState {
   async setRefocusUpdateMode(mode: SettingsDto['refocusUpdateMode']): Promise<void> {
     const result = await this.#ft.settingsUpdate({ refocusUpdateMode: mode });
     if (result.ok) this.settings = result.value;
+  }
+
+  /* ---------------------------------------------------------------- Git / ssh 通信の設定 */
+
+  /**
+   * git.exe のパスの永続化（決定 7）。null で自動探索に戻す。
+   *
+   * main は gitPath が変わると git を解決し直すので、**検出結果（environment）も取り直す**。
+   * 取り直さないと「どの git を使っているか」の表示が古いまま残り、
+   * 指定したのに効いていないように見える。
+   * 失敗（絶対パスでない等）はエラー帯に出す——黙って捨てない。
+   */
+  async setGitPath(path: string | null): Promise<void> {
+    const result = await this.#ft.settingsUpdate({ gitPath: path });
+    if (!this.#check(result)) return;
+    this.settings = result.value;
+    await this.refreshEnvironment();
+  }
+
+  /** SSH 秘密鍵のパスの永続化（決定 13 の追記）。null で「使わない」。git は動かない。 */
+  async setSshKeyPath(path: string | null): Promise<void> {
+    const result = await this.#ft.settingsUpdate({ sshKeyPath: path });
+    if (this.#check(result)) this.settings = result.value;
+  }
+
+  /** git の検出結果を取り直す。git は動かない（main が持っている解決済みの情報を読むだけ）。 */
+  async refreshEnvironment(): Promise<void> {
+    const result = await this.#ft.appGetEnvironment();
+    if (result.ok) this.environment = result.value;
+  }
+
+  /** git.exe を選んで保存する。キャンセルなら何もしない。 */
+  async pickGitExecutable(): Promise<void> {
+    const picked = await this.#ft.dialogPickFile('git-executable');
+    if (!this.#check(picked) || picked.value === null) return;
+    await this.setGitPath(picked.value);
+  }
+
+  /** SSH 秘密鍵を選んで保存する。キャンセルなら何もしない。 */
+  async pickSshKey(): Promise<void> {
+    const picked = await this.#ft.dialogPickFile('ssh-private-key');
+    if (!this.#check(picked) || picked.value === null) return;
+    await this.setSshKeyPath(picked.value);
+  }
+
+  /**
+   * 対応表 #42（→ 必要なら #43）: アクティブなタブのコミット情報を読む。
+   *
+   * 設定ダイアログの Git タブを開いたとき・対象のタブが変わったときだけ呼ぶ。
+   * タブが無ければ git を動かさずに状態を空にする。
+   */
+  async loadGitIdentity(): Promise<void> {
+    const id = this.activeId;
+    if (id === null) {
+      this.gitIdentity = null;
+      return;
+    }
+    this.gitIdentityLoading = true;
+    try {
+      const result = await this.#ft.gitConfigGetIdentity(id);
+      // 読んでいる間にタブが変わったら、古い応答は捨てる
+      if (this.activeId !== id) return;
+      this.gitIdentity = this.#check(result) ? result.value : null;
+    } finally {
+      this.gitIdentityLoading = false;
+    }
+  }
+
+  /**
+   * 対応表 #44: コミット情報をこのリポジトリの .git/config に保存する。
+   *
+   * **変えたキーだけ**を送る（両方同じなら git を 1 本も動かさない）。
+   * main は保存後に読み直さないので、手元の状態をローカル値として進める
+   * （書いたキーがローカル値になるのは確実）。
+   */
+  async saveGitIdentity(name: string, email: string): Promise<boolean> {
+    const id = this.activeId;
+    if (id === null) return false;
+
+    const current = this.gitIdentity;
+    const changed = (key: 'name' | 'email', value: string): string | null => {
+      const field = current?.[key];
+      // 継承値と同じ文字でも、ローカルに固定する意味があるので「変更」と見なす
+      return field?.scope === 'local' && field.value === value ? null : value;
+    };
+    const req = { name: changed('name', name), email: changed('email', email) };
+    if (req.name === null && req.email === null) return true;
+
+    const result = await this.#ft.gitConfigSetIdentity(id, req);
+    if (!this.#check(result)) return false;
+
+    this.gitIdentity = {
+      name: req.name === null ? (current?.name ?? { value: null, scope: 'unset' }) : { value: req.name, scope: 'local' },
+      email: req.email === null ? (current?.email ?? { value: null, scope: 'unset' }) : { value: req.email, scope: 'local' },
+    };
+    return true;
   }
 
   /* ---------------------------------------------------------------- 更新通知（決定 29） */

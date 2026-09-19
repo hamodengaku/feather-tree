@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { RefreshCoordinator } from '@feathertree/base-core';
 import { runClone, type CloneProgressListener, type CloneRunRequest, type CloneRunResult } from '../clone/cloneRunner.js';
+import { gitSshEnv } from '../env/sshCommand.js';
 import { RepositorySession, type SessionDeps } from './repositorySession.js';
 
 export interface SessionInfo {
@@ -113,7 +114,13 @@ export class SessionManager {
 
     const run = await runClone(
       req,
-      { gitPath: this.#deps.gitPath, tempDir: this.#deps.tempDir, commandLog: this.#deps.commandLog },
+      {
+        gitPath: this.#deps.gitPath,
+        tempDir: this.#deps.tempDir,
+        commandLog: this.#deps.commandLog,
+        // SSH の URL をクローンするときに鍵が要る（決定 13 の追記）。セッションはまだ無い
+        env: gitSshEnv(this.#deps.settings()),
+      },
       onProgress,
       signal,
     );

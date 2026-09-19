@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { DIFF_EXTRA, READ_PREFIX } from '../execution/gitEnvironment.js';
 import { runGitText } from '../execution/spawnGit.js';
@@ -33,7 +34,7 @@ export async function getFileDiff(
   if (staged) args.push('--cached');
   args.push('--', path);
 
-  const { exit, stdout } = await runGitText({ gitPath: ctx.gitPath, cwd: ctx.cwd, args }, ctx.signal);
+  const { exit, stdout } = await runGitText(commandFor(ctx, args), ctx.signal);
   if (exit.code !== 0) throw new GitCommandError(['diff'], exit.code, exit.stderr);
 
   const files = parseUnifiedDiff(stdout, options.maxLines === undefined ? {} : { maxLines: options.maxLines });

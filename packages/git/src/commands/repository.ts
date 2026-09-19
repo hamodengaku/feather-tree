@@ -1,3 +1,4 @@
+import { commandFor } from '../execution/gitCommand.js';
 import { GitCommandError } from '../execution/errors.js';
 import { READ_PREFIX } from '../execution/gitEnvironment.js';
 import { runGitText } from '../execution/spawnGit.js';
@@ -10,11 +11,7 @@ import type { GitContext } from './context.js';
  */
 export async function resolveRepository(ctx: GitContext): Promise<RepositoryLocation> {
   const { exit, stdout } = await runGitText(
-    {
-      gitPath: ctx.gitPath,
-      cwd: ctx.cwd,
-      args: [...READ_PREFIX, 'rev-parse', '--show-toplevel', '--absolute-git-dir'],
-    },
+    commandFor(ctx, [...READ_PREFIX, 'rev-parse', '--show-toplevel', '--absolute-git-dir']),
     ctx.signal,
   );
 
@@ -35,7 +32,7 @@ export async function resolveRepository(ctx: GitContext): Promise<RepositoryLoca
 /** 対応表 #4: リモート名の一覧。 */
 export async function listRemotes(ctx: GitContext): Promise<string[]> {
   const { exit, stdout } = await runGitText(
-    { gitPath: ctx.gitPath, cwd: ctx.cwd, args: [...READ_PREFIX, 'remote'] },
+    commandFor(ctx, [...READ_PREFIX, 'remote']),
     ctx.signal,
   );
   if (exit.code !== 0) throw new GitCommandError(['remote'], exit.code, exit.stderr);

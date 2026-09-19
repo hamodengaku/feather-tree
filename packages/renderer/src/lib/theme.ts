@@ -218,12 +218,18 @@ export interface ThemeOption {
   readonly label: string;
 }
 
-/** テーマ選択メニューに出す並び。 */
+/**
+ * テーマ選択に出す並び。**系統ごとに 2 つずつ**（フェザー → クラシック）。
+ *
+ * 設定画面はこれを 2 列に、**列の向きに流し込む**ので、この順序がそのまま
+ * 「左列＝フェザー 2 種 / 右列＝クラシック 2 種」になる。
+ * 並べ替えるときは列の割れ方が変わることに注意（OptionsEnvironmentTab.svelte の .grid）。
+ */
 export const THEME_OPTIONS: readonly ThemeOption[] = [
-  { value: 'classic-dark', label: 'ダークモード（クラシック）' },
-  { value: 'classic-light', label: 'ライトモード（クラシック）' },
   { value: 'phoenix-dark', label: 'ダークモード（フェザー）' },
   { value: 'phoenix-light', label: 'ライトモード（フェザー）' },
+  { value: 'classic-dark', label: 'ダークモード（クラシック）' },
+  { value: 'classic-light', label: 'ライトモード（クラシック）' },
 ];
 
 /** ダーク系かどうか。アイコンの出し分けに使う。 */
