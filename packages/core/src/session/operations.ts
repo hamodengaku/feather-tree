@@ -9,10 +9,12 @@ import {
   pullCurrent,
   pushBranch,
   removeUntracked,
+  resolveConflictBlock,
   stagePaths,
   switchBranch as gitSwitchBranch,
   unstagePaths,
   PatchBuildError,
+  type ConflictChoice,
   type PatchDirection,
 } from '@feathertree/git';
 import type { DestructiveAction } from '../policy/destructiveActions.js';
@@ -46,10 +48,32 @@ export class NoSnapshotError extends Error {
  * 適用の直前に取り直して照合する。
  */
 export class StaleDiffError extends Error {
-  constructor() {
-    super('表示中の差分が古くなっています。一覧を更新してからやり直してください。');
+  constructor(message = '表示中の差分が古くなっています。一覧を更新してからやり直してください。') {
+    super(message);
     this.name = 'StaleDiffError';
   }
+}
+
+/**
+ * マーカーの形が読めないので採用できない（入れ子・閉じていない・バイナリ）。
+ *
+ * 表示側もこの条件ではボタンを出さないので、ここへ来るのは食い違いが起きたときだけ。
+ * 中途半端に書き戻すと本文を壊すため、**何も書かずに断る**。
+ */
+export class ConflictUnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConflictUnsupportedError';
+  }
+}
+
+/** renderer から届く「どの衝突か」。行番号と各側の行数は、表示していたものと同じかの指紋。 */
+export interface ConflictSelection {
+  readonly index: number;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly ourCount: number;
+  readonly theirCount: number;
 }
 
 /** renderer から届く hunk / 行の指定。header と lineCount はズレ検出用の指紋。 */
@@ -161,6 +185,58 @@ export class SessionOperations {
 
     await this.#session.refreshStatus(signal);
     return { affected, statusSeq: this.#session.statusSeq };
+  }
+
+  /**
+   * 衝突 1 件を採用して作業ツリーへ書き戻す（対応表の対象外。**git は 0 プロセス**）。
+   *
+   * hunk の適用（#33 / #34）と同じ手順を踏む:
+   *   1. 書く直前にファイルを読み直す
+   *   2. 表示していたものと同じ形か照合する（違えば StaleDiffError）
+   *   3. **読み直した側**から新しい本文を作る
+   *
+   * renderer から本文を受け取らないのは hunk と同じ理由（決定「やらないこと」の
+   * 「パッチ文字列を renderer で組み立てない」）。届くのは座標と指紋だけ。
+   *
+   * インデックスには触れないので status は変わらない。**`git status` を打ち直さない**
+   * （変わらないと分かっているものを取り直すのは、決定「やらないこと」に反する）。
+   *
+   * @returns このファイルに残っている衝突の数。
+   */
+  async resolveConflict(
+    path: string,
+    selection: ConflictSelection,
+    choice: ConflictChoice,
+    signal?: AbortSignal,
+  ): Promise<{ readonly remaining: number }> {
+    const fresh = await this.#session.readConflict(path, signal);
+    if (fresh === null) {
+      throw new StaleDiffError('対象のファイルが作業ツリーにありません。一覧を更新してください。');
+    }
+    if (fresh.binary) throw new ConflictUnsupportedError('バイナリファイルは採用できません。');
+    if (fresh.malformed) {
+      throw new ConflictUnsupportedError(
+        'コンフリクトマーカーの対応が取れていません。外部ツールで解決してください。',
+      );
+    }
+
+    const block = fresh.blocks[selection.index];
+    // 行番号と各側の行数が一致しなければ、表示してから誰かがファイルを書き換えている
+    if (
+      block === undefined ||
+      block.startLine !== selection.startLine ||
+      block.endLine !== selection.endLine ||
+      block.ourCount !== selection.ourCount ||
+      block.theirCount !== selection.theirCount
+    ) {
+      throw new StaleDiffError(
+        '表示中のコンフリクトがファイルの現在の内容と食い違っています。差分を取り直してからやり直してください。',
+      );
+    }
+
+    await this.#session.writeConflict(path, resolveConflictBlock(fresh.lines, block, choice), signal);
+    // 消したのは 1 ブロックだけで、他のブロックの中身は動かない
+    return { remaining: fresh.blocks.length - 1 };
   }
 
   /**

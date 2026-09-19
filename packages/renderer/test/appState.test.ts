@@ -433,6 +433,47 @@ describe('ステージングとコミット', () => {
     expect(app.selected?.path).toBe('a.txt');
     expect(bridge.lastArgsOf('diffGet')).toEqual(['s1', 'a.txt', false]);
   });
+
+  /*
+   * 未マージのファイルだけは行き先が違う。`git diff` は結合 diff しか出さず、
+   * 利用者が読みたいマーカーの中身が出ないため（contract の conflictGet の注記）。
+   */
+  it('未マージのファイルを選ぶと diff ではなくコンフリクトを取得する', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('c.txt', { kind: 'unmerged', staged: 'U', worktree: 'U' })];
+    });
+
+    await app.select({ path: 'c.txt', staged: false });
+
+    expect(app.selectedUnmerged).toBe(true);
+    expect(bridge.lastArgsOf('conflictGet')).toEqual(['s1', 'c.txt']);
+    expect(bridge.countOf('diffGet')).toBe(0);
+    expect(app.diff).toBeNull();
+    expect(app.conflict?.sections).toHaveLength(1);
+  });
+
+  it('コンフリクトの採用では、表示していた座標と行数を指紋として送る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = [entry('c.txt', { kind: 'unmerged', staged: 'U', worktree: 'U' })];
+    });
+
+    await app.select({ path: 'c.txt', staged: false });
+    const section = app.conflict?.sections[0];
+    if (section === undefined) throw new Error('衝突が取れていない');
+
+    await app.resolveConflict(section, 'ours-theirs');
+
+    expect(bridge.lastArgsOf('conflictResolve')).toEqual([
+      's1',
+      {
+        path: 'c.txt',
+        section: { index: 0, startLine: 1, endLine: 5, ourCount: 1, theirCount: 1 },
+        choice: 'ours-theirs',
+      },
+    ]);
+    // 採用の後は取り直して、マーカーが減った表示になる
+    expect(app.conflict?.sections).toHaveLength(0);
+  });
 });
 
 describe('更新（リロード）の対象', () => {

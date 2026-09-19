@@ -32,6 +32,15 @@ export { parseRefList } from './parsing/refList.js';
 export { parseLog, parseNameStatus } from './parsing/log.js';
 export { buildAddedFileDiff, looksBinary, parseUnifiedDiff } from './parsing/diff.js';
 export type { DiffParseOptions } from './parsing/diff.js';
+export {
+  blockRanges,
+  buildConflictFile,
+  joinLines,
+  parseConflictMarkers,
+  resolveConflictBlock,
+  splitLines,
+} from './parsing/conflict.js';
+export type { ConflictParse, ConflictViewOptions, TextLine } from './parsing/conflict.js';
 export { buildHunkPatch, canBuildPatch, hunkAllowsLineSelection, PatchBuildError } from './parsing/patch.js';
 export type { BuiltPatch, HunkPick, PatchDirection, PatchRefusal } from './parsing/patch.js';
 
@@ -52,6 +61,7 @@ export { getCommitFileDiff, getCommitFiles, getLog } from './commands/history.js
 export type { LogOptions } from './commands/history.js';
 export { getFileDiff, getUntrackedFileDiff } from './commands/diff.js';
 export type { DiffOptions } from './commands/diff.js';
+export { readConflictFile, readConflictText, writeConflictText } from './commands/conflict.js';
 export { applyHunks } from './commands/apply.js';
 export type { ApplyHunksOptions } from './commands/apply.js';
 

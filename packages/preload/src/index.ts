@@ -14,6 +14,7 @@ import {
   type CommandEndEvent,
   type CommandLogEntryDto,
   type CommandStartEvent,
+  type ConflictResolveRequest,
   type HunkStageRequest,
   type CommitRequest,
   type FeatherTreeBridge,
@@ -78,6 +79,9 @@ const bridge: FeatherTreeBridge = {
 
   diffGet: (id: string, path: string, staged: boolean) =>
     ipcRenderer.invoke(CHANNELS.diffGet, id, path, staged),
+  conflictGet: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.conflictGet, id, path),
+  conflictResolve: (id: string, req: ConflictResolveRequest) =>
+    ipcRenderer.invoke(CHANNELS.conflictResolve, id, req),
   logGetPage: (id: string, skip: number) => ipcRenderer.invoke(CHANNELS.logGetPage, id, skip),
   commitGetFiles: (id: string, oid: string) => ipcRenderer.invoke(CHANNELS.commitGetFiles, id, oid),
   commitGetDiff: (id: string, oid: string, path: string) =>

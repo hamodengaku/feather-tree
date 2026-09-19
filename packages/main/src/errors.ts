@@ -22,6 +22,9 @@ function toDto(err: unknown): FtErrorDto {
   if (err instanceof Error && err.name === 'NoSnapshotError') {
     return { kind: 'internal', message: err.message };
   }
+  if (err instanceof Error && err.name === 'ConflictUnsupportedError') {
+    return { kind: 'internal', message: err.message };
+  }
   if (err instanceof Error && err.name === 'PathOutsideRootError') {
     return { kind: 'invalid-path', message: err.message };
   }

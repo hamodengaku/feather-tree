@@ -10,15 +10,21 @@ import {
   getUntrackedFileDiff,
   listBranches,
   listRemotes,
+  readConflictFile,
+  readConflictText,
   readUserIdentity,
   resolveRepository,
   setLocalUserIdentity,
+  writeConflictText,
   type BranchRef,
   type CommitFileChange,
   type CommitSummary,
+  type ConflictFile,
+  type ConflictParse,
   type FileDiff,
   type GitContext,
   type StatusSnapshot,
+  type TextLine,
   type UserIdentity,
 } from '@feathertree/git';
 import type { CommandLog } from '@feathertree/base-core';
@@ -209,6 +215,43 @@ export class RepositorySession {
     }
 
     return this.track(['diff', path], () => getFileDiff(this.context(signal), path, staged, options));
+  }
+
+  /**
+   * 未マージファイルのマーカー表示（対応表の対象外。**git は 0 プロセス**）。
+   *
+   * `git diff` は未マージのファイルに結合 diff を出すだけでマーカーの中身を返さないため、
+   * 作業ツリーのファイルを直接読む。文脈行数・行数上限は diff の表示と同じ設定に従う。
+   * ファイルが作業ツリーに無ければ（削除との衝突）null。
+   */
+  async getConflict(path: string, signal?: AbortSignal): Promise<ConflictFile | null> {
+    const settings = this.#deps.settings();
+    return this.track(['read-conflict', path], () =>
+      readConflictFile(this.context(signal), path, {
+        contextLines: settings.diffContextLines,
+        maxLines: settings.diffMaxLines,
+      }),
+    );
+  }
+
+  /**
+   * 採用の直前に読み直す解析結果（表示用の組み替えをしない生の形）。
+   *
+   * diff の `getDiffForPatch` と同じ理由でここだけ別口にしてある。表示は行数上限で
+   * 切り詰められうるが、**書き戻す対象は欠けの無い全行**でなければならない。
+   */
+  async readConflict(
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<(ConflictParse & { readonly binary: boolean }) | null> {
+    return this.track(['read-conflict', path], () => readConflictText(this.context(signal), path));
+  }
+
+  /** 採用の結果を作業ツリーへ書き戻す（インデックスには触れない）。 */
+  async writeConflict(path: string, lines: readonly TextLine[], signal?: AbortSignal): Promise<void> {
+    return this.track(['write-conflict', path], () =>
+      writeConflictText(this.context(signal), path, lines),
+    );
   }
 
   /** パッチ生成に使う文脈行数。diff の取得と apply のフラグを揃えるために公開する。 */

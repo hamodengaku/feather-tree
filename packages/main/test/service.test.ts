@@ -767,6 +767,142 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     }
   });
 
+  /*
+   * コンフリクトの表示と採用。**git を 1 プロセスも起動しない**経路なので、
+   * git 自身の検証が効かない。main 側の門（未マージ照合・パス検証・採り方の白名簿）を
+   * ここで確かめる。
+   */
+  describe('コンフリクト (マーカーの表示と採用)', () => {
+    /** 1 箇所だけ衝突しているリポジトリを開く。 */
+    async function openConflicted(): Promise<string> {
+      await write('f.txt', ['a', 'b', 'c'].join('\n') + '\n');
+      await git(dir, ['add', '-A']);
+      await git(dir, ['commit', '-m', 'base']);
+      await git(dir, ['switch', '-c', 'feature']);
+      await write('f.txt', ['a', 'THEIRS', 'c'].join('\n') + '\n');
+      await git(dir, ['commit', '-am', 'theirs']);
+      await git(dir, ['switch', 'main']);
+      await write('f.txt', ['a', 'OURS', 'c'].join('\n') + '\n');
+      await git(dir, ['commit', '-am', 'ours']);
+      // 衝突するので exit != 0。ここでは失敗が期待値
+      await git(dir, ['merge', 'feature']).catch(() => undefined);
+      return (await service.sessionOpen(dir)).id;
+    }
+
+    it('マーカーの中身を行番号つきで返す（git は動かない）', async () => {
+      const id = await openConflicted();
+      const before = commandLog.size;
+
+      const file = await service.conflictGet(id, 'f.txt');
+
+      expect(file?.malformed).toBe(false);
+      expect(file?.sections).toHaveLength(1);
+      expect(file?.sections[0]?.ourLabel).toBe('HEAD');
+      expect(file?.sections[0]?.theirLabel).toBe('feature');
+      // 記録されるのはファイルの読み取りだけ
+      const added = commandLog.recent(10).slice(0, commandLog.size - before);
+      expect(added.map((e) => e.args[0])).toEqual(['read-conflict']);
+    });
+
+    it('採用すると作業ツリーが書き換わり、ステージして初めて解決済みになる', async () => {
+      const id = await openConflicted();
+      const section = (await service.conflictGet(id, 'f.txt'))?.sections[0];
+      if (section === undefined) throw new Error('衝突が取れていない');
+
+      const result = await service.conflictResolve(id, {
+        path: 'f.txt',
+        section: {
+          index: section.index,
+          startLine: section.startLine,
+          endLine: section.endLine,
+          ourCount: section.ourCount,
+          theirCount: section.theirCount,
+        },
+        choice: 'ours-theirs',
+      });
+
+      expect(result.remaining).toBe(0);
+      expect(await readFile(join(dir, 'f.txt'), 'utf8')).toBe(
+        ['a', 'OURS', 'THEIRS', 'c'].join('\n') + '\n',
+      );
+      // インデックスは触っていないので、まだ未マージ
+      expect(service.statusGetSummary(id).counts.unmerged).toBe(1);
+
+      await service.stage(id, { kind: 'paths', paths: ['f.txt'] });
+      expect(service.statusGetSummary(id).counts.unmerged).toBe(0);
+      expect(service.statusGetSummary(id).counts.staged).toBe(1);
+    });
+
+    it('未マージでないファイルは読むことも書くこともできない', async () => {
+      const id = await openConflicted();
+      await write('other.txt', 'x');
+      await service.sessionRefresh(id, 'status');
+
+      const selection = { index: 0, startLine: 1, endLine: 5, ourCount: 1, theirCount: 1 };
+      await expect(service.conflictGet(id, 'other.txt')).rejects.toThrow();
+      await expect(
+        service.conflictResolve(id, { path: 'other.txt', section: selection, choice: 'ours' }),
+      ).rejects.toThrow();
+      // 書かれていないこと
+      expect(await readFile(join(dir, 'other.txt'), 'utf8')).toBe('x');
+    });
+
+    it('リポジトリ外のパスと、知らない採り方は拒否する', async () => {
+      const id = await openConflicted();
+      const selection = { index: 0, startLine: 1, endLine: 5, ourCount: 1, theirCount: 1 };
+
+      await expect(service.conflictGet(id, '../外.txt')).rejects.toMatchObject({
+        name: 'PathOutsideRootError',
+      });
+      await expect(
+        service.conflictResolve(id, { path: '../外.txt', section: selection, choice: 'ours' }),
+      ).rejects.toMatchObject({ name: 'PathOutsideRootError' });
+
+      await expect(
+        service.conflictResolve(id, {
+          path: 'f.txt',
+          section: selection,
+          // renderer が勝手な文字列を送ってきた場合（白名簿で弾く）
+          choice: 'both' as 'ours',
+        }),
+      ).rejects.toMatchObject({ dto: { kind: 'internal' } });
+    });
+
+    it('座標が壊れている指定は git も書き込みもせずに拒否する', async () => {
+      const id = await openConflicted();
+      const broken = [
+        { index: -1, startLine: 1, endLine: 5, ourCount: 1, theirCount: 1 },
+        { index: 0, startLine: 5, endLine: 5, ourCount: 1, theirCount: 1 },
+        { index: 0, startLine: 1, endLine: 5, ourCount: 1.5, theirCount: 1 },
+      ];
+      for (const section of broken) {
+        await expect(
+          service.conflictResolve(id, { path: 'f.txt', section, choice: 'ours' }),
+        ).rejects.toMatchObject({ dto: { kind: 'internal' } });
+      }
+    });
+
+    it('表示していたものと形が違えば diff-stale で断る', async () => {
+      const id = await openConflicted();
+      const section = (await service.conflictGet(id, 'f.txt'))?.sections[0];
+      if (section === undefined) throw new Error('衝突が取れていない');
+
+      await expect(
+        service.conflictResolve(id, {
+          path: 'f.txt',
+          section: {
+            index: section.index,
+            startLine: section.startLine,
+            endLine: section.endLine,
+            ourCount: section.ourCount + 1,
+            theirCount: section.theirCount,
+          },
+          choice: 'ours',
+        }),
+      ).rejects.toMatchObject({ name: 'StaleDiffError' });
+    });
+  });
+
   it('コミットの差分でも、リポジトリ外のパスは拒否する', async () => {
     const id = await openDemo();
     const log = await service.logGetPage(id, 0);

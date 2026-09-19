@@ -185,6 +185,10 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.diffGet, (id: string, path: string, staged: boolean) =>
     service.diffGet(id, path, staged),
   );
+  bind(CHANNELS.conflictGet, (id: string, path: string) => service.conflictGet(id, path));
+  bind(CHANNELS.conflictResolve, (id: string, req: Parameters<Service['conflictResolve']>[1]) =>
+    service.conflictResolve(id, req),
+  );
   bind(CHANNELS.logGetPage, (id: string, skip: number) => service.logGetPage(id, skip));
   bind(CHANNELS.commitGetFiles, (id: string, oid: string) => service.commitGetFiles(id, oid));
   bind(CHANNELS.commitGetDiff, (id: string, oid: string, path: string) =>

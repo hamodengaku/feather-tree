@@ -83,18 +83,28 @@ export type {
 } from './session/statusView.js';
 
 export {
+  ConflictUnsupportedError,
   NoSnapshotError,
   SessionOperations,
   StaleDiffError,
   TooManyPathsError,
 } from './session/operations.js';
-export type { HunkSelection } from './session/operations.js';
+export type { ConflictSelection, HunkSelection } from './session/operations.js';
 export type { OperationOutcome } from './session/operations.js';
 
 // hunk / 行単位の可否判定（対応表 #33 / #34）。
 // main はボタンの出し分けのためにこれを DTO へ写す。git 層の関数をそのまま通す。
 export { canBuildPatch } from '@feathertree/git';
 export type { PatchRefusal } from '@feathertree/git';
+
+// コンフリクトの表示と採用。main は git 層に依存しないので、core が素通しする。
+export type {
+  ConflictChoice,
+  ConflictFile,
+  ConflictLine,
+  ConflictLineKind,
+  ConflictSection,
+} from '@feathertree/git';
 
 // アプリ終了時の後始末（docs/01-architecture.md 11 章）。
 // main は @feathertree/git に依存していないので、core が素通しする。

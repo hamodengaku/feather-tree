@@ -132,6 +132,74 @@ export interface FileDiff {
   readonly preamble: readonly string[];
 }
 
+/* ------------------------------------------------ コンフリクト（マーカーの表示と採用） */
+
+/**
+ * 1 つの衝突ブロック（`<<<<<<<` 〜 `>>>>>>>`）の骨格。
+ *
+ * 本文そのものは持たず、**行番号だけ**を持つ（1 始まり）。本文は同じ解析結果の
+ * `lines` から切り出す。二重に持つと、採用のときにどちらが正かが曖昧になる。
+ */
+export interface ConflictBlock {
+  /** ファイル内で何番目の衝突か（0 始まり）。 */
+  readonly index: number;
+  /** `<<<<<<<` の行番号。 */
+  readonly startLine: number;
+  /** `|||||||` の行番号。diff3 スタイルでなければ null。 */
+  readonly baseLine: number | null;
+  /** `=======` の行番号。 */
+  readonly separatorLine: number;
+  /** `>>>>>>>` の行番号。 */
+  readonly endLine: number;
+  /** `<<<<<<< HEAD` の `HEAD`。ラベルが無ければ空文字。 */
+  readonly ourLabel: string;
+  readonly baseLabel: string | null;
+  readonly theirLabel: string;
+  readonly ourCount: number;
+  readonly baseCount: number;
+  readonly theirCount: number;
+}
+
+/**
+ * 1 ブロックの採り方。
+ * `ours-theirs` / `theirs-ours` は**両方を残す**（違いは挿入の順序だけ）。
+ */
+export type ConflictChoice = 'ours' | 'theirs' | 'ours-theirs' | 'theirs-ours';
+
+export type ConflictLineKind = 'context' | 'marker' | 'ours' | 'base' | 'theirs';
+
+export interface ConflictLine {
+  readonly kind: ConflictLineKind;
+  readonly text: string;
+  /** 作業ツリーのファイル内の行番号（1 始まり）。 */
+  readonly lineNo: number;
+}
+
+/** 画面に出す 1 衝突分。diff の hunk に相当する。 */
+export interface ConflictSection {
+  readonly index: number;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly ourLabel: string;
+  readonly theirLabel: string;
+  readonly baseLabel: string | null;
+  readonly ourCount: number;
+  readonly theirCount: number;
+  /** 文脈行・マーカー行・各側の本文を並べたもの。 */
+  readonly lines: readonly ConflictLine[];
+  /** 行数上限で途中から落とした。 */
+  readonly truncated: boolean;
+}
+
+export interface ConflictFile {
+  readonly path: string;
+  readonly binary: boolean;
+  /** マーカーが閉じていない／入れ子。採用は行わせない（外部ツールに委ねる）。 */
+  readonly malformed: boolean;
+  readonly sections: readonly ConflictSection[];
+  readonly truncated: boolean;
+}
+
 /** git show --name-status の 1 行。 */
 export interface CommitFileChange {
   /** A / M / D / R / C / T など。 */

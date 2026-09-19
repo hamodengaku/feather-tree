@@ -6,13 +6,75 @@
    * コミットの差分を見るだけなら components/ReadonlyDiffView.svelte を使う。
    * あちらには操作の口が無い（過去のコミットからはステージできないため）。
    */
-  import type { DiffHunkDto, DiffLineDto } from '@feathertree/ipc';
+  import type {
+    ConflictChoiceDto,
+    ConflictLineDto,
+    ConflictSectionDto,
+    DiffHunkDto,
+    DiffLineDto,
+  } from '@feathertree/ipc';
   import { app } from '../lib/appState.svelte.js';
   import { hunkAllowsLines, singleLineSelection, wholeHunkSelection } from '../lib/diffSelection.js';
 
   const diff = $derived(app.diff);
   const lineCount = $derived(diff?.hunks.reduce((n, h) => n + h.lines.length, 0) ?? 0);
   const staged = $derived(app.selected?.staged === true);
+
+  /* ---------------------------------------------------------------- コンフリクト */
+
+  /**
+   * 未マージのファイルを選んでいるとき、この右ペインは diff ではなく
+   * **作業ツリーに書かれたコンフリクトマーカー**を出す（`git diff` は未マージに
+   * 結合 diff しか出さず、マーカーの中身が読めないため）。
+   */
+  const conflict = $derived(app.conflict);
+  const unmerged = $derived(app.selectedUnmerged);
+  const conflictCount = $derived(conflict?.sections.length ?? 0);
+
+  /**
+   * 採用のボタンを出してよいか。
+   *
+   * マーカーの対応が取れない（入れ子・閉じていない）ファイルは読めたところまでを
+   * 表示するだけにして、**採用はさせない**。中途半端に書き戻すと本文が壊れるので、
+   * そこは外部ツールの仕事にする。main 側も同じ条件で断る。
+   */
+  const canResolve = $derived(conflict !== null && !conflict.malformed && !conflict.binary);
+
+  /**
+   * 採り方は 4 つだけ。「片側を採る」2 つと「両方を残す」2 つ（違いは挿入の順序）。
+   * これより込み入った解決（片側の一部だけを採る等）はアプリでは扱わない。
+   */
+  const CHOICES: readonly {
+    readonly choice: ConflictChoiceDto;
+    readonly label: string;
+    readonly title: string;
+  }[] = [
+    { choice: 'ours', label: 'ours', title: '自分の側（現在のブランチ）だけを残す' },
+    { choice: 'theirs', label: 'theirs', title: '相手の側（取り込む側）だけを残す' },
+    { choice: 'ours-theirs', label: '両方 ours→theirs', title: '両方を残す。ours を先に置く' },
+    { choice: 'theirs-ours', label: '両方 theirs→ours', title: '両方を残す。theirs を先に置く' },
+  ];
+
+  /** ラベルはマーカーの後ろの文字列。git が付けなかった場合（空）は側の名前で代用する。 */
+  function sideLabel(label: string, fallback: string): string {
+    return label.length === 0 ? fallback : label;
+  }
+
+  /**
+   * 衝突の見出し。
+   *
+   * **1 行の文字列として組み立てる。** 置き場の `.hunk-text` は横スクロールに耐えるため
+   * `white-space: pre` なので、テンプレート側で改行して書くとその改行がそのまま描画される。
+   */
+  function sectionTitle(section: ConflictSectionDto, position: number, total: number): string {
+    const sides = `${sideLabel(section.ourLabel, 'ours')} ↔ ${sideLabel(section.theirLabel, 'theirs')}`;
+    return `衝突 ${String(position)}/${String(total)}・${String(section.startLine)}〜${String(section.endLine)} 行 ／ ${sides}`;
+  }
+
+  async function resolve(section: ConflictSectionDto, choice: ConflictChoiceDto): Promise<void> {
+    if (app.busy) return;
+    await app.resolveConflict(section, choice);
+  }
 
   /** hunk / 行の操作ができるか。判定は main（canBuildPatch）に任せて、ここでは結果を見るだけ。 */
   const hunkOps = $derived(diff !== null && diff.hunkStageable);
@@ -90,10 +152,20 @@
   <span class="text">{line.text}</span>
 {/snippet}
 
+<!-- コンフリクトは「どちらの側か」だけが要るので、行番号は作業ツリーの 1 列だけ -->
+{#snippet conflictCells(line: ConflictLineDto)}
+  <span class="no">{line.lineNo}</span>
+  <span class="text">{line.text}</span>
+{/snippet}
+
 <div class="pane">
   <header>
     <h2>{app.selected?.path ?? '差分'}</h2>
-    {#if diff !== null}
+    {#if unmerged}
+      <span class="meta conflict">
+        コンフリクト{#if conflictCount > 0}・{conflictCount} 件{/if}
+      </span>
+    {:else if diff !== null}
       <span class="meta">
         {staged ? 'ステージ済み' : '未ステージ'}
         {#if diff.truncated}・打ち切り{/if}
@@ -107,6 +179,64 @@
       <p class="empty">読み込み中…</p>
     {:else if app.selected === null}
       <p class="empty">ファイルを選択すると差分を表示します。</p>
+    {:else if unmerged}
+      {#if conflict === null}
+        <p class="empty">
+          ファイルが作業ツリーにありません（削除との衝突）。残すならステージ、消すなら破棄してください。
+        </p>
+      {:else if conflict.binary}
+        <p class="empty">バイナリファイルのコンフリクトです。外部ツールで解決してください。</p>
+      {:else if conflict.sections.length === 0}
+        <p class="empty">
+          コンフリクトマーカーは残っていません。ステージすると解決済みとして記録されます。
+        </p>
+      {:else}
+        <p class="notice" class:warn={conflict.malformed}>
+          {#if conflict.malformed}
+            マーカーの対応が取れていません（入れ子か、閉じていないマーカーがあります）。
+            このファイルは外部ツールで解決してください。
+          {:else}
+            マージで衝突しています。採る側を選ぶと作業ツリーのファイルを書き換えます。
+            これより細かい解決が要るときは外部ツールを使ってください。
+            <strong>ステージするまで解決済みにはなりません。</strong>
+          {/if}
+        </p>
+
+        <div class="diff">
+          {#each conflict.sections as section, i (section.index)}
+            <div class="hunk conflict">
+              <div class="hunk-header">
+                <span class="hunk-text">{sectionTitle(section, i + 1, conflict.sections.length)}</span>
+                {#if canResolve}
+                  <div class="hunk-buttons">
+                    {#each CHOICES as pick (pick.choice)}
+                      <button
+                        class="hunk-action"
+                        disabled={app.busy}
+                        title={pick.title}
+                        onclick={() => void resolve(section, pick.choice)}
+                      >
+                        {pick.label}
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+              <div class="hunk-lines">
+                {#each section.lines as line, k (k)}
+                  <div class="line c-{line.kind}">{@render conflictCells(line)}</div>
+                {/each}
+                {#if section.truncated}
+                  <div class="line c-context">
+                    <span class="no"></span>
+                    <span class="text">（行数上限によりここから省略されました）</span>
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {:else if diff === null}
       <p class="empty">差分はありません。</p>
     {:else if diff.binary}
@@ -233,6 +363,31 @@
     color: var(--app-text-muted);
   }
 
+  .meta.conflict {
+    color: var(--app-text-conflict);
+    font-weight: 700;
+  }
+
+  /*
+    コンフリクトの説明帯。ペインの先頭に 1 回だけ出す。
+    横スクロールしても読めるよう、幅は表示領域に合わせて折り返す（.diff の max-content に載せない）。
+  */
+  .notice {
+    /* 横スクロールしても読めるよう、表示領域の左端に貼り付ける（.hunk-text と同じ理由） */
+    position: sticky;
+    left: 0;
+    margin: 0;
+    padding: 6px 8px;
+    color: var(--app-text-secondary);
+    background: var(--app-bg-raised);
+    border-bottom: 1px solid var(--app-border-subtle);
+    line-height: 1.5;
+  }
+
+  .notice.warn {
+    color: var(--app-text-conflict);
+  }
+
   .diff {
     font-family: var(--app-font-mono);
     font-size: var(--app-font-size-mono);
@@ -306,11 +461,54 @@
     visibility: hidden;
   }
 
-  /* 行モード中はマウスを外してもボタンを出したままにする（解除する手段を隠さない） */
+  /*
+    行モード中はマウスを外してもボタンを出したままにする（解除する手段を隠さない）。
+    コンフリクトの採用ボタンも常に出す——衝突の解消はこの画面の主目的であり、
+    マウスを乗せるまで気づけない作りにはしない。
+  */
   .hunk:hover .hunk-buttons button,
   .hunk:focus-within .hunk-buttons button,
-  .hunk.line-mode .hunk-buttons button {
+  .hunk.line-mode .hunk-buttons button,
+  .hunk.conflict .hunk-buttons button {
     visibility: visible;
+  }
+
+  /* 衝突の箱は、触っていなくてもひとかたまりだと分かるよう常に枠を出す */
+  .hunk.conflict {
+    outline-color: var(--app-text-conflict);
+  }
+
+  .hunk.conflict .hunk-header {
+    color: var(--app-text-conflict);
+  }
+
+  /*
+    衝突の各側。追加・削除（緑／赤）とは別の色にする——
+    どちらも「消える側」ではないので、diff の色を流用すると意味を読み違える。
+  */
+  .line.c-ours {
+    background: var(--app-conflict-ours-bg);
+  }
+
+  .line.c-theirs {
+    background: var(--app-conflict-theirs-bg);
+  }
+
+  .line.c-base {
+    background: var(--app-bg-raised);
+  }
+
+  .line.c-base .text {
+    color: var(--app-text-muted);
+  }
+
+  .line.c-marker {
+    background: var(--app-bg-raised);
+  }
+
+  .line.c-marker .text {
+    color: var(--app-text-conflict);
+    font-weight: 700;
   }
 
   .hunk-line-mode.active {

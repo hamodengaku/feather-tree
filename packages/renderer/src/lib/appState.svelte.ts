@@ -9,6 +9,9 @@ import type {
   CommandStartEvent,
   CommitFileChangeDto,
   CommitSummaryDto,
+  ConflictChoiceDto,
+  ConflictFileDto,
+  ConflictSectionDto,
   ConfirmationDto,
   EnvironmentDto,
   GitIdentityDto,
@@ -55,7 +58,13 @@ const ERROR_LOG_LIMIT = 50;
  * 「帯が出ない」失敗にならないようにするため（逆の失敗＝ちらつきは目で気づける）。
  * `read-untracked` は git ではないが、track() を通るので同じラベル体系に載っている。
  */
-const VIEW_ONLY_COMMANDS: ReadonlySet<string> = new Set(['diff', 'read-untracked', 'show', 'log']);
+const VIEW_ONLY_COMMANDS: ReadonlySet<string> = new Set([
+  'diff',
+  'read-untracked',
+  'read-conflict',
+  'show',
+  'log',
+]);
 
 export interface SelectedFile {
   readonly path: string;
@@ -189,6 +198,17 @@ export class AppState {
    * **取れなかったことと差分がゼロであることが区別できない**。描画の出し分けは View 層が持つ。
    */
   diffError = $state<FtErrorDto | null>(null);
+
+  /**
+   * 未マージファイルを選んでいるときの、コンフリクトマーカーの中身。
+   *
+   * `diff` とは**排他**。未マージのファイルに `git diff` を打っても結合 diff
+   * （`diff --cc`）しか返らず、利用者が読みたいマーカーの中身が出ないため、
+   * 選んだファイルが未マージなら diff ではなくこちらを取りに行く。
+   */
+  conflict = $state<ConflictFileDto | null>(null);
+  /** 選択中のファイルが未マージか（差分ペインの出し分け）。 */
+  selectedUnmerged = $state(false);
 
   /* ---------------------------------------------------------------- コミットログモード（決定 27） */
 
@@ -839,39 +859,110 @@ export class AppState {
     await this.loadDiff(file);
   }
 
+  /**
+   * 選択中のファイルの中身を取りに行く。
+   *
+   * **未マージのファイルだけは行き先が違う**（`diff:get` ではなく `conflict:get`）。
+   * `git diff` は未マージに結合 diff しか出さず、マーカーの中身が読めないため。
+   * どちらも世代番号は `#diffSeq` を共有する——同じ「選択に伴う読み取り」であり、
+   * 別々に持つと片方の古い応答がもう片方を上書きしうる。
+   */
   async loadDiff(file: SelectedFile): Promise<void> {
     const id = this.activeId;
     if (id === null) return;
     const seq = (this.#diffSeq += 1);
+    const unmerged = this.#isUnmerged(file);
+    this.selectedUnmerged = unmerged;
     this.diffLoading = true;
     try {
+      if (unmerged) {
+        const result = await this.#ft.conflictGet(id, file.path);
+        // 追い越された要求の応答は捨てる
+        if (seq !== this.#diffSeq) return;
+        if (result.ok) {
+          this.diff = null;
+          this.conflict = result.value;
+          this.diffError = null;
+          return;
+        }
+        this.#failDiff(result.error, id);
+        return;
+      }
+
       const result = await this.#ft.diffGet(id, file.path, file.staged);
-      // 追い越された要求の応答は捨てる
       if (seq !== this.#diffSeq) return;
       if (result.ok) {
         this.diff = result.value;
+        this.conflict = null;
         this.diffError = null;
         return;
       }
-      /*
-       * 失敗を diff = null に畳むと「差分はありません。」と同じ見え方になる。
-       * エラー帯（error）には出さない——選択に伴う読み取りなので、操作を始めた覚えが
-       * 無いところで帯が出る。履歴と diffError に残して、描画側が出し分ける。
-       */
-      this.diff = null;
-      this.diffError = result.error;
-      this.#logError(result.error, id);
+      this.#failDiff(result.error, id);
     } finally {
       // 新しい要求が走っているなら、その読み込み表示を消さない
       if (seq === this.#diffSeq) this.diffLoading = false;
     }
   }
 
+  /**
+   * 取得の失敗。
+   *
+   * 失敗を diff = null に畳むと「差分はありません。」と同じ見え方になる。
+   * エラー帯（error）には出さない——選択に伴う読み取りなので、操作を始めた覚えが
+   * 無いところで帯が出る。履歴と diffError に残して、描画側が出し分ける。
+   */
+  #failDiff(error: FtErrorDto, id: string): void {
+    this.diff = null;
+    this.conflict = null;
+    this.diffError = error;
+    this.#logError(error, id);
+  }
+
+  /**
+   * そのファイルが未マージか。一覧のエントリから見る。
+   *
+   * 未マージは「変更」側にしか現れない（statusView の `changes` グループ）ので、
+   * ステージ済み側の選択は見るまでもない。まだページを取っていない位置の行は
+   * `undefined` なので、その場合は通常の diff として扱う（取り直せば直る）。
+   */
+  #isUnmerged(file: SelectedFile): boolean {
+    if (file.staged) return false;
+    return this.changes.entries.some((e) => e?.path === file.path && e.kind === 'unmerged');
+  }
+
   /** 飛んでいる diff 要求を無効にしてから差分を消す。 */
   #invalidateDiff(): void {
     this.#diffSeq += 1;
     this.diff = null;
+    this.conflict = null;
+    this.selectedUnmerged = false;
     this.diffError = null;
+  }
+
+  /**
+   * コンフリクト 1 件を採用する（conflict:resolve）。git は動かない。
+   *
+   * 送るのは座標と採り方だけ。本文は main が読み直した側から作る
+   * （hunk のステージと同じ。決定「やらないこと」のパッチ文字列の項）。
+   * 書き戻してもインデックスは変わらないので status は動かないが、
+   * `#operate` の取り直しで**マーカーが 1 つ減った表示**に更新される。
+   */
+  resolveConflict(section: ConflictSectionDto, choice: ConflictChoiceDto): Promise<void> {
+    const path = this.selected?.path;
+    if (path === undefined) return Promise.resolve();
+    return this.#operate(() =>
+      this.#ft.conflictResolve(this.#id(), {
+        path,
+        section: {
+          index: section.index,
+          startLine: section.startLine,
+          endLine: section.endLine,
+          ourCount: section.ourCount,
+          theirCount: section.theirCount,
+        },
+        choice,
+      }),
+    );
   }
 
   /** 実行ログを main の保持分（最大 500 件）から取り直す。パネルを開いたときに呼ぶ。 */

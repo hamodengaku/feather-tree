@@ -33,6 +33,8 @@ const CLASSIC_DARK: ThemeTokens = {
   '--app-accent': '#5b9dd9',
   '--app-diff-added-bg': '#1e2f22',
   '--app-diff-removed-bg': '#33211f',
+  '--app-conflict-ours-bg': '#1d2a38',
+  '--app-conflict-theirs-bg': '#2d2740',
   '--app-bg-app-image': 'none',
   '--app-scheme': 'dark',
 };
@@ -57,6 +59,8 @@ const CLASSIC_LIGHT: ThemeTokens = {
   '--app-accent': '#2b6cb0',
   '--app-diff-added-bg': '#e6f6ea',
   '--app-diff-removed-bg': '#fdeceb',
+  '--app-conflict-ours-bg': '#e8f0f9',
+  '--app-conflict-theirs-bg': '#efeaf8',
   '--app-bg-app-image': 'none',
   '--app-scheme': 'light',
 };
@@ -88,6 +92,8 @@ const PHOENIX_DARK: ThemeTokens = {
   '--app-accent': '#f2582c',
   '--app-diff-added-bg': '#23291d',
   '--app-diff-removed-bg': '#3d211f',
+  '--app-conflict-ours-bg': '#232630',
+  '--app-conflict-theirs-bg': '#2e2434',
   '--app-bg-app-image': 'none',
   '--app-scheme': 'dark',
 };
@@ -113,6 +119,8 @@ const PHOENIX_LIGHT: ThemeTokens = {
   '--app-accent': '#d8441c',
   '--app-diff-added-bg': '#e9f4e6',
   '--app-diff-removed-bg': '#fbe6e0',
+  '--app-conflict-ours-bg': '#eaf0f7',
+  '--app-conflict-theirs-bg': '#f1eaf6',
   '--app-bg-app-image': 'none',
   '--app-scheme': 'light',
 };

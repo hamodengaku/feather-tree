@@ -26,6 +26,9 @@
   --app-accent: #d8441c;
   --app-diff-added-bg: #e9f4e6;
   --app-diff-removed-bg: #fbe6e0;
+  /* コンフリクトの各側。追加・削除（緑／赤）とは別系統の色にする（意味が違うため）。 */
+  --app-conflict-ours-bg: #eaf0f7;
+  --app-conflict-theirs-bg: #f1eaf6;
   /* マーブル模様は起動時に JS が乱数で決める（lib/theme.ts）。CSS では固定できないので none。 */
   --app-bg-app-image: none;
 

@@ -50,6 +50,8 @@ export const CHANNELS = {
   commit: 'op:commit',
 
   diffGet: 'diff:get',
+  conflictGet: 'conflict:get',
+  conflictResolve: 'conflict:resolve',
   logGetPage: 'log:getPage',
   commitGetFiles: 'commit:getFiles',
   commitGetDiff: 'commit:getDiff',
@@ -344,6 +346,75 @@ export interface FileDiffDto {
    * ボタンの出し分けと apply 前のガードで同じ結果を使う。
    */
   readonly hunkStageable: boolean;
+}
+
+/* ------------------------------------------------ コンフリクト（マーカーの表示と採用） */
+
+/**
+ * 1 行の役割。
+ *  - marker: `<<<<<<<` / `|||||||` / `=======` / `>>>>>>>` の行そのもの
+ *  - base: diff3 スタイルの共通祖先（設定していなければ現れない）
+ */
+export type ConflictLineKindDto = 'context' | 'marker' | 'ours' | 'base' | 'theirs';
+
+export interface ConflictLineDto {
+  readonly kind: ConflictLineKindDto;
+  readonly text: string;
+  /** 作業ツリーのファイル内の行番号（1 始まり）。 */
+  readonly lineNo: number;
+}
+
+/** 画面に出す 1 衝突分。diff の hunk に相当し、操作のボタンもここに付く。 */
+export interface ConflictSectionDto {
+  readonly index: number;
+  readonly startLine: number;
+  readonly endLine: number;
+  /** `<<<<<<< HEAD` の `HEAD`。ラベルが無ければ空文字。 */
+  readonly ourLabel: string;
+  readonly theirLabel: string;
+  readonly baseLabel: string | null;
+  readonly ourCount: number;
+  readonly theirCount: number;
+  readonly lines: readonly ConflictLineDto[];
+  readonly truncated: boolean;
+}
+
+export interface ConflictFileDto {
+  readonly path: string;
+  readonly binary: boolean;
+  /**
+   * マーカーの対応が取れていない（入れ子・閉じていない）。
+   * 読めたところまでは `sections` に入るが、**採用のボタンは出さない**（外部ツールに委ねる）。
+   */
+  readonly malformed: boolean;
+  readonly sections: readonly ConflictSectionDto[];
+  readonly truncated: boolean;
+}
+
+/**
+ * 1 ブロックの採り方。`ours-theirs` / `theirs-ours` は**両方を残す**（違いは順序だけ）。
+ * これより込み入った解決（片側の一部だけを採る等）はアプリでは行わない。
+ */
+export type ConflictChoiceDto = 'ours' | 'theirs' | 'ours-theirs' | 'theirs-ours';
+
+/** どの衝突か。行番号と各側の行数は「表示していたものと同じか」の指紋。 */
+export interface ConflictSelectionDto {
+  readonly index: number;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly ourCount: number;
+  readonly theirCount: number;
+}
+
+export interface ConflictResolveRequest {
+  readonly path: string;
+  readonly section: ConflictSelectionDto;
+  readonly choice: ConflictChoiceDto;
+}
+
+export interface ConflictResolveResultDto {
+  /** そのファイルに残っている衝突の数。0 ならステージして解決済みにできる。 */
+  readonly remaining: number;
 }
 
 /** hunk / 行の指定。header と lineCount は「表示していたものと同じか」の指紋。 */
@@ -662,6 +733,21 @@ export interface FeatherTreeBridge {
   commit(id: string, req: CommitRequest, confirmed?: boolean): Promise<Result<CommitResultDto>>;
 
   diffGet(id: string, path: string, staged: boolean): Promise<Result<FileDiffDto | null>>;
+  /**
+   * 未マージファイルのコンフリクトマーカーを読む。**git は 1 度も動かない**
+   * （`git diff` は未マージに結合 diff を出すだけでマーカーの中身を返さないため、
+   * 作業ツリーのファイルを直接読む。未追跡ファイルの diff と同じ考え方）。
+   *
+   * 作業ツリーにファイルが無ければ（削除との衝突）null。
+   */
+  conflictGet(id: string, path: string): Promise<Result<ConflictFileDto | null>>;
+  /**
+   * 衝突 1 件を採用して作業ツリーへ書き戻す。**git は 1 度も動かない。**
+   *
+   * インデックスには触れないので、解決済みにするには利用者がステージする（素の git と同じ手順）。
+   * 書く直前にファイルを読み直し、指紋が食い違えば `diff-stale` で断る。
+   */
+  conflictResolve(id: string, req: ConflictResolveRequest): Promise<Result<ConflictResolveResultDto>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
   /** 対応表 #21。マージコミットでは空配列（`git show` の既定）。 */
   commitGetFiles(id: string, oid: string): Promise<Result<readonly CommitFileChangeDto[]>>;

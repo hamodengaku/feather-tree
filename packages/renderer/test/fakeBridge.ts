@@ -9,6 +9,9 @@ import type {
   CommandEndEvent,
   CommandLogEntryDto,
   CommandStartEvent,
+  ConflictFileDto,
+  ConflictResolveRequest,
+  ConflictSectionDto,
   FtErrorDto,
   GitIdentityDto,
   GitIdentityRequest,
@@ -289,6 +292,36 @@ export class FakeBridge {
 
   /** diffGet の応答を遅らせる（世代番号による競合排除の検証用）。 */
   diffDelayMs = 0;
+
+  /**
+   * conflictGet が返す衝突。テストから差し替えられるようにしてある
+   * （既定は 1 件。採用すると conflictResolve がここから取り除く）。
+   */
+  conflictSections: readonly ConflictSectionDto[] = [
+    {
+      index: 0,
+      startLine: 1,
+      endLine: 5,
+      ourLabel: 'HEAD',
+      theirLabel: 'feature',
+      baseLabel: null,
+      ourCount: 1,
+      theirCount: 1,
+      lines: [],
+      truncated: false,
+    },
+  ];
+
+  /** conflictGet が返す中身。パスが分かるようにしておく。 */
+  conflictFor(path: string): ConflictFileDto {
+    return {
+      path,
+      binary: false,
+      malformed: false,
+      sections: this.conflictSections,
+      truncated: false,
+    };
+  }
 
   /** diffGet が返す中身。パスが分かるようにしておく。 */
   diffFor(path: string): FileDiffDto {
@@ -571,6 +604,20 @@ export class FakeBridge {
           : new Promise((resolve) => {
               setTimeout(() => resolve(ok(diff)), this.diffDelayMs);
             });
+      },
+      conflictGet: (id: string, path: string) => {
+        this.record('conflictGet', id, path);
+        const file: ConflictFileDto = this.conflictFor(path);
+        return this.diffDelayMs === 0
+          ? Promise.resolve(ok(file))
+          : new Promise((resolve) => {
+              setTimeout(() => resolve(ok(file)), this.diffDelayMs);
+            });
+      },
+      conflictResolve: (id: string, req: ConflictResolveRequest) => {
+        this.record('conflictResolve', id, req);
+        this.conflictSections = this.conflictSections.filter((s) => s.index !== req.section.index);
+        return Promise.resolve(ok({ remaining: this.conflictSections.length }));
       },
       stageHunks: (id: string, req: HunkStageRequest) => {
         this.record('stageHunks', id, req);

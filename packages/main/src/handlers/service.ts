@@ -11,6 +11,8 @@ import {
   type AppSettings,
   type CloneStage,
   type CommandLog,
+  type ConflictChoice,
+  type ConflictSelection,
   type DestructiveAction,
   type GitLocation,
   type GitVersionCheck,
@@ -35,6 +37,9 @@ import type {
   CommitFileChangeDto,
   CommitResultDto,
   CommitSummaryDto,
+  ConflictFileDto,
+  ConflictResolveRequest,
+  ConflictResolveResultDto,
   EnvironmentDto,
   FileDiffDto,
   GitIdentityDto,
@@ -65,6 +70,14 @@ const MAX_PAGE_LIMIT = 1000;
 
 /** クローンの進捗を renderer へ送る間隔（docs/01-architecture.md 6 章）。 */
 const CLONE_PROGRESS_INTERVAL_MS = 200;
+
+/** コンフリクトの採り方。renderer から来た文字列をそのまま core へ渡さないための白名簿。 */
+const CONFLICT_CHOICES: ReadonlySet<string> = new Set([
+  'ours',
+  'theirs',
+  'ours-theirs',
+  'theirs-ours',
+]);
 
 /** 制御文字（改行・NUL など）を含むか。正規表現に書くと no-control-regex に掛かるので文字コードで見る。 */
 function hasControlChar(text: string): boolean {
@@ -167,6 +180,8 @@ export interface Service {
   ): Promise<OperationResultDto>;
   commit(id: string, req: CommitRequest, confirmed?: boolean): Promise<CommitResultDto>;
   diffGet(id: string, path: string, staged: boolean): Promise<FileDiffDto | null>;
+  conflictGet(id: string, path: string): Promise<ConflictFileDto | null>;
+  conflictResolve(id: string, req: ConflictResolveRequest): Promise<ConflictResolveResultDto>;
   logGetPage(id: string, skip: number): Promise<readonly CommitSummaryDto[]>;
   commitGetFiles(id: string, oid: string): Promise<readonly CommitFileChangeDto[]>;
   commitGetDiff(id: string, oid: string, path: string): Promise<FileDiffDto | null>;
@@ -271,6 +286,54 @@ export function createService(deps: ServiceDeps): Service {
       }
     }
     return [req.path, req.hunks];
+  };
+
+  /**
+   * 採用（conflictResolve）の入力検証。
+   *
+   * **この操作だけは作業ツリーのファイルを直接書く**ので、他より厳しく見る:
+   *  1. パスがリポジトリ配下（文字列）
+   *  2. **実体パスもリポジトリ配下**（ジャンクション越えの禁止。shell 系 API と同じ理由）
+   *  3. **status のスナップショットで未マージと報告されているファイルだけ**
+   *  4. 座標が非負整数、採り方が 4 種のいずれか
+   *
+   * 3 が要。これが無いと、renderer のバグや細工で**リポジトリ内の任意のファイル**を
+   * 書き換えられてしまう（git 経由の操作と違い、git 自身の検証が働かないため）。
+   */
+  const guardConflict = async (
+    id: string,
+    req: ConflictResolveRequest,
+  ): Promise<[string, ConflictSelection, ConflictChoice]> => {
+    const session = requireSession(id);
+    assertInsideRoot(session.root, req.path);
+    await assertRealPathInsideRoot(session.root, join(session.root, req.path));
+    requireUnmerged(id, req.path);
+
+    const s = req.section;
+    const numbers = [s.index, s.startLine, s.endLine, s.ourCount, s.theirCount];
+    if (numbers.some((n) => !Number.isInteger(n) || n < 0) || s.endLine <= s.startLine) {
+      throw new HandlerError({ kind: 'internal', message: 'コンフリクトの指定が不正です。' });
+    }
+    if (!CONFLICT_CHOICES.has(req.choice)) {
+      throw new HandlerError({ kind: 'internal', message: 'コンフリクトの採り方が不正です。' });
+    }
+    return [req.path, s, req.choice];
+  };
+
+  /**
+   * そのパスが status のスナップショットで未マージと報告されているか。
+   *
+   * 表示（conflictGet）にも掛ける。**画面がマーカー表示に切り替わる条件と、main が
+   * 読み書きを許す条件を同じスナップショットから取る**ことで、両者がずれない。
+   */
+  const requireUnmerged = (id: string, path: string): void => {
+    const entry = requireSession(id).snapshot?.entries.find((e) => e.path === path);
+    if (entry?.kind !== 'unmerged') {
+      throw new HandlerError({
+        kind: 'internal',
+        message: 'このファイルは未マージではありません。一覧を更新してください。',
+      });
+    }
   };
 
   /**
@@ -781,6 +844,23 @@ export function createService(deps: ServiceDeps): Service {
         truncated: diff.truncated,
         hunkStageable: canBuildPatch(diff) === null,
       };
+    },
+
+    /*
+     * 未マージファイルのマーカー表示。git は動かない（作業ツリーのファイルを読むだけ）。
+     * モデルと DTO が同形なので、diff と違って写し替えるものが無い。
+     */
+    conflictGet: async (id, path) => {
+      const session = requireSession(id);
+      assertInsideRoot(session.root, path);
+      requireUnmerged(id, path);
+      return withSignal(id, (signal) => session.getConflict(path, signal));
+    },
+
+    conflictResolve: async (id, req) => {
+      const ops = opsFor(id);
+      const [path, section, choice] = await guardConflict(id, req);
+      return withSignal(id, (signal) => ops.resolveConflict(path, section, choice, signal));
     },
 
     logGetPage: async (id, skip) => requireSession(id).getLogPage(Math.max(0, skip)),
