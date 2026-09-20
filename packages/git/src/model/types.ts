@@ -200,6 +200,37 @@ export interface ConflictFile {
   readonly truncated: boolean;
 }
 
+/**
+ * stash スタックの 1 件（対応表 #28、決定 31）。
+ *
+ * **参照の渡し方を読み書きで違える**ので、同じ 1 件について 2 つの識別子を持つ:
+ *  - `ref`（`stash@{0}`）は `apply` / `pop` / `drop` へ渡すもの。**番号は drop / pop のたびにずれる**
+ *  - `oid` は `stash show` / `diff` へ渡すもの。一覧が古くても別の stash を読まない
+ *
+ * `pop` / `drop` が生の oid を受け付けない（`is not a stash reference`）ので、
+ * 片方だけでは足りない（docs/02-git-command-map.md の #27〜#31 の注記）。
+ */
+export interface StashEntry {
+  /** `stash@{n}` の n。新しいものが 0。 */
+  readonly index: number;
+  /** `stash@{n}`（`%gd`）。書き込み系に渡す参照。 */
+  readonly ref: string;
+  /** stash コミットの oid（`%H`）。読み取り系に渡す参照。 */
+  readonly oid: string;
+  /**
+   * 親の oid（`%P`）。
+   *
+   * **2 つ**なら HEAD と index コミット（このアプリが作る `--staged` の stash）。
+   * **3 つ**なら 3 番目が未追跡コミット（外部で `-u` 付きに作られたもの）で、
+   * そこにしか無いファイルは `<oid>^ <oid>` の diff に現れない（#46 の注記）。
+   */
+  readonly parents: readonly string[];
+  /** ISO 8601。 */
+  readonly authoredAt: string;
+  /** reflog の件名（`%gs`）。`On main: 退避のメモ` の形。 */
+  readonly message: string;
+}
+
 /** git show --name-status の 1 行。 */
 export interface CommitFileChange {
   /** A / M / D / R / C / T など。 */

@@ -30,6 +30,7 @@ export { withMessageFile, withPathspecFile } from './execution/pathspecFile.js';
 export { StatusParser, countEntries } from './parsing/statusPorcelainV2.js';
 export { parseRefList } from './parsing/refList.js';
 export { parseLog, parseNameStatus } from './parsing/log.js';
+export { parseStashList } from './parsing/stash.js';
 export { buildAddedFileDiff, looksBinary, parseUnifiedDiff } from './parsing/diff.js';
 export type { DiffParseOptions } from './parsing/diff.js';
 export {
@@ -61,6 +62,15 @@ export { getCommitFileDiff, getCommitFiles, getLog } from './commands/history.js
 export type { LogOptions } from './commands/history.js';
 export { getFileDiff, getUntrackedFileDiff } from './commands/diff.js';
 export type { DiffOptions } from './commands/diff.js';
+export {
+  applyStash,
+  dropStash,
+  getStashFileDiff,
+  getStashFiles,
+  listStashes,
+  pushStagedStash,
+} from './commands/stash.js';
+export type { StashDiffOptions } from './commands/stash.js';
 export { readConflictFile, readConflictText, writeConflictText } from './commands/conflict.js';
 export { applyHunks } from './commands/apply.js';
 export type { ApplyHunksOptions } from './commands/apply.js';

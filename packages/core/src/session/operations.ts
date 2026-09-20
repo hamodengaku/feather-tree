@@ -1,13 +1,16 @@
 import {
   applyHunks,
+  applyStash as gitApplyStash,
   canBuildPatch,
   commit as gitCommit,
   createBranch as gitCreateBranch,
   discardWorktree,
+  dropStash as gitDropStash,
   fetchRemote,
   mergeBranch as gitMergeBranch,
   pullCurrent,
   pushBranch,
+  pushStagedStash,
   removeUntracked,
   resolveConflictBlock,
   stagePaths,
@@ -16,6 +19,7 @@ import {
   PatchBuildError,
   type ConflictChoice,
   type PatchDirection,
+  type StashEntry,
 } from '@feathertree/git';
 import type { DestructiveAction } from '../policy/destructiveActions.js';
 import type { RepositorySession } from './repositorySession.js';
@@ -24,6 +28,24 @@ import { MAX_EXPLICIT_PATHS, filterEntries, resolveTarget, type OperationTarget 
 export interface OperationOutcome {
   readonly affected: number;
   readonly statusSeq: number;
+}
+
+/** renderer から届く「どの stash か」。oid は「一覧に出していたものと同じか」の指紋。 */
+export interface StashSelection {
+  /** `stash@{n}` の n。 */
+  readonly index: number;
+  readonly oid: string;
+}
+
+/**
+ * stash を動かす操作の結果。
+ *
+ * **取り直した一覧をそのまま返す**のは、renderer に往復をもう 1 回させないため
+ * （どの操作でも一覧は必ず取り直すので、返さないと必ず 2 回目の IPC が要る）。
+ */
+export interface StashOutcome {
+  readonly statusSeq: number;
+  readonly stashes: readonly StashEntry[];
 }
 
 export class TooManyPathsError extends Error {
@@ -51,6 +73,23 @@ export class StaleDiffError extends Error {
   constructor(message = '表示中の差分が古くなっています。一覧を更新してからやり直してください。') {
     super(message);
     this.name = 'StaleDiffError';
+  }
+}
+
+/**
+ * renderer が指した stash が、いま git が持っているものと食い違っている（決定 31）。
+ *
+ * `StaleDiffError` と同じ思想だが、**取り違えたときの被害が段違い**なので独立させてある:
+ * `stash@{n}` の n は drop / pop のたびにずれるので、一覧が古いまま `drop` を打つと
+ * **別の stash が不可逆に消える**。適用の直前に #28 を打ち直し、
+ * 「n 番目の oid が renderer の言う oid と同じか」を照合してから git を起動する。
+ */
+export class StaleStashError extends Error {
+  constructor(
+    message = '表示中の stash 一覧が古くなっています。一覧を更新してからやり直してください。',
+  ) {
+    super(message);
+    this.name = 'StaleStashError';
   }
 }
 
@@ -393,6 +432,151 @@ export class SessionOperations {
     return { statusSeq: this.#session.statusSeq };
   }
 
+  /* ---------------------------------------------------------------- stash（決定 31） */
+
+  /**
+   * 対応表 #27: **ステージした差分だけ**を stash に退避する。確認不要
+   * （退避した内容は stash に残るので不可逆ではない）。
+   *
+   * **失敗しても #2 を打ち直す。** ステージした差分と未ステージの差分が近接していると、
+   * git は stash を積んだ後に「退避分を作業ツリーから取り除く」段で失敗する
+   * （`Cannot remove worktree changes`、exit 1）。このとき stash だけができているので、
+   * 取り直さないと画面が嘘になる（docs/02-git-command-map.md #27 の実測表 5 行目）。
+   *
+   * 失敗時の #28 は呼び出し側が打つ——例外で返る経路に一覧を載せられないため。
+   *
+   * メッセージの検証（制御文字・長さ）は main が済ませている前提
+   * （`policy/stashMessage.ts`。`git config` の値と同じで、ここが実質の唯一の防壁）。
+   */
+  async saveStash(message: string, signal?: AbortSignal): Promise<StashOutcome> {
+    try {
+      await this.#session.track(['stash', 'push', '--staged'], () =>
+        pushStagedStash(this.#session.context(signal), message),
+      );
+    } catch (err) {
+      // 取り直しの失敗で本来の理由を隠さない（利用者が読むべきなのは git の言い分）
+      await this.#session.refreshStatus(signal).catch(() => undefined);
+      throw err;
+    }
+
+    await this.#session.refreshStatus(signal);
+    return { statusSeq: this.#session.statusSeq, stashes: await this.#session.listStashes(signal) };
+  }
+
+  /**
+   * 対応表 #29 / #30: stash をブランチへ展開する。確認不要。
+   *
+   * `drop` が真なら `pop`（展開して一覧から消す）、偽なら `apply`（展開して残す）。
+   * **どちらも `--index` は付けない**（理由は決定 31 と git 層の `applyStash` のコメント）。
+   * そのうえで **`#unstageRestored` で未ステージに揃える**——素の git は新規ファイルだけを
+   * ステージ済みで戻すので、そこだけ食い違うため。
+   *
+   * 展開すると作業ツリーが動くので #2 は必須。一覧が変わるのは `pop` のときだけなので、
+   * `apply` では #28 を打ち直さず**照合で取った一覧をそのまま返す**
+   * （「変わらないと分かっているものを取り直さない」）。
+   */
+  async applyStash(
+    selection: StashSelection,
+    drop: boolean,
+    signal?: AbortSignal,
+  ): Promise<StashOutcome> {
+    const verified = await this.#verifyStash(selection, signal);
+    // 揃え直す対象を決めるには、展開の**前**のステージ済み集合が要る
+    const stagedBefore = this.#stagedPaths();
+
+    await this.#session.track(['stash', drop ? 'pop' : 'apply'], () =>
+      gitApplyStash(this.#session.context(signal), selection.index, drop),
+    );
+
+    await this.#session.refreshStatus(signal);
+    await this.#unstageRestored(stagedBefore, signal);
+
+    const stashes = drop ? await this.#session.listStashes(signal) : verified;
+    return { statusSeq: this.#session.statusSeq, stashes };
+  }
+
+  /**
+   * 展開で**新しくステージ済みになったパスだけ**を未ステージへ戻す（決定 31 の追記）。
+   *
+   * 素の `stash pop` / `apply` は、変更（`M`）と削除（`D`）は未ステージで戻すが、
+   * **新規ファイル（`A`）だけはステージ済みで戻す**（index に載せないと「新規ファイルがある」ことを
+   * 表現できないという git の都合。実測は docs/02-git-command-map.md の表）。
+   * そのままだと「セーブモードでステージしたものが、解放すると一部だけステージ済みで返る」
+   * という食い違いになるので、#6 を 1 回だけ打って揃える。
+   *
+   * **全ステージ済みを対象にしてはいけない。** 展開の前から利用者が自分でステージしていた分は
+   * pop を跨いでもそのまま残る（実測）ので、まとめて戻すと**他人の作業を巻き戻す**ことになる。
+   * 前後の差を取って、増えた分だけに絞る。
+   *
+   * 増えていなければ git は 1 プロセスも増えない（変更だけの stash が該当する）。
+   */
+  async #unstageRestored(stagedBefore: ReadonlySet<string>, signal?: AbortSignal): Promise<void> {
+    const restored = [...this.#stagedPaths()].filter((p) => !stagedBefore.has(p));
+    if (restored.length === 0) return;
+
+    await this.#session.track(['restore', '--staged'], () =>
+      unstagePaths(this.#session.context(signal), restored),
+    );
+    await this.#session.refreshStatus(signal);
+  }
+
+  /**
+   * いまステージ済みのパス。
+   *
+   * 判定は `targetHasStaged` と同じ（`ordinary` / `renamed` で `staged !== '.'`）。
+   * 未追跡・無視・未マージは「ステージ済み」の対象にしない——未追跡はそもそも index に無く、
+   * 未マージは `restore --staged` の相手として意味が違う（解決は利用者の仕事。決定 30）。
+   */
+  #stagedPaths(): ReadonlySet<string> {
+    const snapshot = this.#session.snapshot;
+    if (snapshot === null) return new Set();
+    return new Set(
+      snapshot.entries
+        .filter((e) => (e.kind === 'ordinary' || e.kind === 'renamed') && e.staged !== '.')
+        .map((e) => e.path),
+    );
+  }
+
+  /**
+   * 対応表 #31: stash を破棄。**不可逆なので確認必須。**
+   *
+   * **#2 は打たない。** `drop` は reflog から 1 件外すだけで、index も作業ツリーも動かない
+   * （取り直しても同じ status が返る）。一覧からは消えるので #28 だけ取り直す。
+   */
+  async dropStash(selection: StashSelection, signal?: AbortSignal): Promise<StashOutcome> {
+    await this.#verifyStash(selection, signal);
+
+    await this.#session.track(['stash', 'drop'], () =>
+      gitDropStash(this.#session.context(signal), selection.index),
+    );
+
+    return { statusSeq: this.#session.statusSeq, stashes: await this.#session.listStashes(signal) };
+  }
+
+  /**
+   * 打つ直前に #28 を取り直し、renderer が指した `stash@{n}` が本当にその stash かを確かめる。
+   *
+   * hunk 適用の前に diff を取り直すのと同じ手順だが、**こちらは外さないと不可逆**である点が違う。
+   * 決定 14 によりファイル監視もポーリングもしないので、手元の一覧は
+   * 「別のターミナルで stash を積んだ／落とした」だけで簡単に古くなる。
+   * 番号はそのたびにずれるので、番号だけを信じると**別の stash を pop / drop する**。
+   *
+   * @returns 取り直した一覧（呼び出し側が結果として使い回せる）。
+   */
+  async #verifyStash(
+    selection: StashSelection,
+    signal?: AbortSignal,
+  ): Promise<readonly StashEntry[]> {
+    if (!Number.isSafeInteger(selection.index) || selection.index < 0) {
+      throw new StaleStashError('stash の指定が不正です。');
+    }
+
+    const stashes = await this.#session.listStashes(signal);
+    const found = stashes.find((s) => s.index === selection.index);
+    if (found === undefined || found.oid !== selection.oid) throw new StaleStashError();
+    return stashes;
+  }
+
   /**
    * この操作に必要な確認の種類。null なら確認不要。
    *
@@ -400,7 +584,16 @@ export class SessionOperations {
    * `hasStaged` は呼び出し側の互換のために受けるだけで、**判定には使わない**。
    */
   static confirmationFor(
-    operation: 'stage' | 'unstage' | 'discard' | 'deleteUntracked' | 'commit' | 'merge',
+    operation:
+      | 'stage'
+      | 'unstage'
+      | 'discard'
+      | 'deleteUntracked'
+      | 'commit'
+      | 'merge'
+      | 'stashSave'
+      | 'stashApply'
+      | 'stashDrop',
     context: { readonly amend?: boolean; readonly hasStaged?: boolean } = {},
   ): DestructiveAction | null {
     switch (operation) {
@@ -412,6 +605,15 @@ export class SessionOperations {
         return context.amend === true ? 'amend-pushed-commit' : null;
       case 'merge':
         return 'merge-branch';
+      /*
+       * stash（決定 31）。確認が要るのは破棄だけ。
+       * 保存は内容が stash に残り、展開は作業ツリーへ足すだけなので、どちらも不可逆ではない
+       * （決定 16 —「不可逆なもの、および履歴が動くもののみ確認する」）。
+       */
+      case 'stashDrop':
+        return 'stash-drop';
+      case 'stashSave':
+      case 'stashApply':
       case 'stage':
       case 'unstage':
         return null;

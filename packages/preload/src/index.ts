@@ -27,6 +27,8 @@ import {
   type RefreshScope,
   type SessionChangedEvent,
   type SettingsDto,
+  type StashApplyRequest,
+  type StashRefDto,
   type StatusPageRequest,
   type UpdateAvailableEvent,
 } from '@feathertree/ipc';
@@ -94,6 +96,16 @@ const bridge: FeatherTreeBridge = {
   branchCreate: (id: string, req: BranchCreateRequest) => ipcRenderer.invoke(CHANNELS.branchCreate, id, req),
   branchMerge: (id: string, branchName: string, confirmed?: boolean) =>
     ipcRenderer.invoke(CHANNELS.branchMerge, id, branchName, confirmed),
+  stashList: (id: string) => ipcRenderer.invoke(CHANNELS.stashList, id),
+  stashSave: (id: string, message: string) => ipcRenderer.invoke(CHANNELS.stashSave, id, message),
+  stashApply: (id: string, req: StashApplyRequest) => ipcRenderer.invoke(CHANNELS.stashApply, id, req),
+  stashDrop: (id: string, stash: StashRefDto, confirmed?: boolean) =>
+    ipcRenderer.invoke(CHANNELS.stashDrop, id, stash, confirmed),
+  stashGetFiles: (id: string, stash: StashRefDto) =>
+    ipcRenderer.invoke(CHANNELS.stashGetFiles, id, stash),
+  stashGetDiff: (id: string, stash: StashRefDto, path: string) =>
+    ipcRenderer.invoke(CHANNELS.stashGetDiff, id, stash, path),
+
   remoteList: (id: string) => ipcRenderer.invoke(CHANNELS.remoteList, id),
   remoteFetch: (id: string, remote: string) => ipcRenderer.invoke(CHANNELS.remoteFetch, id, remote),
   remotePull: (id: string) => ipcRenderer.invoke(CHANNELS.remotePull, id),

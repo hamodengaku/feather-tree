@@ -31,6 +31,9 @@ import type {
   SessionChangedEvent,
   SessionDto,
   SettingsDto,
+  StashApplyRequest,
+  StashEntryDto,
+  StashRefDto,
   StatusPageRequest,
   UpdateAvailableEvent,
   UpdateStateDto,
@@ -53,6 +56,8 @@ const SETTINGS: SettingsDto = {
   viewMode: 'diff',
   logDetailHeight: 260,
   commitFileListWidth: 260,
+  stashDetailHeight: 260,
+  stashFileListWidth: 260,
   tabShowCurrentInfo: true,
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
@@ -96,6 +101,21 @@ export function commit(oid: string, over: Partial<CommitSummaryDto> = {}): Commi
     committedAt: '2026-09-10T12:00:00+09:00',
     subject: `件名 ${oid}`,
     body: '',
+    ...over,
+  };
+}
+
+/** stash 1 件の組み立て（決定 31）。番号と oid を別に持つのは実物と同じ。 */
+export function stash(index: number, over: Partial<StashEntryDto> = {}): StashEntryDto {
+  const oid = `stash-oid-${String(index)}`;
+  return {
+    index,
+    ref: `stash@{${String(index)}}`,
+    oid,
+    shortOid: oid.slice(0, 7),
+    authoredAt: '2026-09-20T12:00:00+09:00',
+    message: `On main: 退避 ${String(index)}`,
+    staged: true,
     ...over,
   };
 }
@@ -259,6 +279,15 @@ export class FakeBridge {
   commits: CommitSummaryDto[] = [];
   /** commitGetFiles が返す変更ファイル。マージコミットを再現するときは空にする。 */
   commitFiles: CommitFileChangeDto[] = [];
+
+  /* ---------------------------------------------------------------- stash（決定 31） */
+
+  stashes: StashEntryDto[] = [];
+  stashFiles: CommitFileChangeDto[] = [];
+  /** stashSave をエラーにする（`Cannot remove worktree changes` の再現）。 */
+  stashSaveError: FtErrorDto | null = null;
+  /** 環境が報告する「`stash push --staged` が使えるか」。 */
+  supportsStagedStash = true;
   /**
    * main が保持している設定。settingsUpdate で書き換わり、次の settingsGet に反映される（実物と同じ）。
    * logPageSize のような「取得の振る舞いを変える設定」をテストから差し替えられるように可変にしてある。
@@ -414,6 +443,13 @@ export class FakeBridge {
     return { ok: true, value };
   }
 
+  /** 1 件抜いて番号を詰め直す（実物の git と同じく、drop / pop で番号がずれる）。 */
+  #withoutStash(target: StashRefDto): StashEntryDto[] {
+    return this.stashes
+      .filter((s) => s.oid !== target.oid)
+      .map((s, i) => ({ ...s, index: i, ref: `stash@{${String(i)}}` }));
+  }
+
   build(): FeatherTreeBridge {
     return {
       appGetInfo: () => {
@@ -437,6 +473,7 @@ export class FakeBridge {
             gitSource: 'path' as const,
             gitVersion: 'git version 2.40.0',
             sshPath: this.sshPath,
+            supportsStagedStash: this.supportsStagedStash,
             warning: null,
           }),
         );
@@ -676,9 +713,62 @@ export class FakeBridge {
         if (result.ok) this.seq += 1;
         return Promise.resolve(result);
       },
+      /* ------------------------------------------------ stash（決定 31） */
+
+      stashList: (id: string) => {
+        this.record('stashList', id);
+        return Promise.resolve(ok(this.stashes));
+      },
+      stashSave: (id: string, message: string) => {
+        this.record('stashSave', id, message);
+        if (this.stashSaveError !== null) {
+          /*
+           * 実物と同じく、**失敗しても stash は積まれていることがある**
+           * （対応表 #27 の実測表）。失敗の側でも一覧が増えるようにしておかないと、
+           * 「失敗時に取り直す」実装が正しいかを検証できない。
+           */
+          this.stashes = [
+            stash(0, { message: `On main: ${message}` }),
+            ...this.stashes.map((s) => ({ ...s, index: s.index + 1, ref: `stash@{${String(s.index + 1)}}` })),
+          ];
+          return Promise.resolve({ ok: false as const, error: this.stashSaveError });
+        }
+        this.seq += 1;
+        this.stashes = [
+          stash(0, { message: `On main: ${message}` }),
+          ...this.stashes.map((s) => ({ ...s, index: s.index + 1, ref: `stash@{${String(s.index + 1)}}` })),
+        ];
+        this.staged = [];
+        return Promise.resolve(ok({ statusSeq: this.seq, stashes: this.stashes }));
+      },
+      stashApply: (id: string, req: StashApplyRequest) => {
+        this.record('stashApply', id, req);
+        this.seq += 1;
+        if (req.drop) this.stashes = this.#withoutStash(req.stash);
+        return Promise.resolve(ok({ statusSeq: this.seq, stashes: this.stashes }));
+      },
+      stashDrop: (id: string, stashRef: StashRefDto, confirmed?: boolean) => {
+        this.record('stashDrop', id, stashRef, confirmed);
+        const result = this.guard('stashDrop', 'stash-drop', confirmed, {
+          statusSeq: this.seq,
+          stashes: this.stashes,
+        });
+        if (!result.ok) return Promise.resolve(result);
+        this.stashes = this.#withoutStash(stashRef);
+        return Promise.resolve(ok({ statusSeq: this.seq, stashes: this.stashes }));
+      },
+      stashGetFiles: (id: string, stashRef: StashRefDto) => {
+        this.record('stashGetFiles', id, stashRef);
+        return Promise.resolve(ok(this.stashFiles));
+      },
+      stashGetDiff: (id: string, stashRef: StashRefDto, path: string) => {
+        this.record('stashGetDiff', id, stashRef, path);
+        // stash からはステージできない（main 側が必ず false を入れる）
+        return Promise.resolve(ok({ ...this.diffFor(path), hunkStageable: false }));
+      },
+
       remoteList: (id: string) => {
-        this.record('remoteList', id);
-        return Promise.resolve(ok(this.remotes));
+        this.record('remoteList', id);        return Promise.resolve(ok(this.remotes));
       },
       remoteFetch: async (id: string, remote: string) => {
         this.record('remoteFetch', id, remote);

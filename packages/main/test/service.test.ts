@@ -3,7 +3,27 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CommandLog, DEFAULT_SETTINGS, SessionManager, type AppSettings } from '@feathertree/core';
+import {
+  CommandLog,
+  DEFAULT_SETTINGS,
+  SessionManager,
+  type AppSettings,
+  type GitVersionCheck,
+} from '@feathertree/core';
+
+/** 実環境に合わせた既定。`--staged` が使える版（決定 31）。 */
+const GIT_2_40: GitVersionCheck = {
+  version: { raw: 'git version 2.40.0', major: 2, minor: 40, patch: 0 },
+  supported: true,
+  warning: null,
+};
+
+/** 最低要求ぴったり。他は動くが Stash 保存だけが使えない版。 */
+const GIT_2_25: GitVersionCheck = {
+  version: { raw: 'git version 2.25.0', major: 2, minor: 25, patch: 0 },
+  supported: true,
+  warning: null,
+};
 import { pathToFileURL } from 'node:url';
 import type { CloneProgressEvent } from '@feathertree/ipc';
 import { createService, type Service } from '../src/handlers/service.js';
@@ -43,6 +63,11 @@ describe('Service (UI が通る経路の統合テスト)', () => {
   let progress: CloneProgressEvent[] = [];
   /** 進捗を受け取るたびに呼ぶ（中止の検証用）。 */
   let onProgress: (event: CloneProgressEvent) => void = () => undefined;
+  /**
+   * 起動時に 1 回だけ取る git のバージョン（対応表 #32）。
+   * Stash 保存（#27 の `--staged`）が 2.35 以降を要ることの検証で差し替える。
+   */
+  let gitVersion: GitVersionCheck | null;
 
   beforeEach(async () => {
     dir = join(TEST_ROOT, randomBytes(8).toString('hex'));
@@ -62,6 +87,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     terminal = { exe: 'wt.exe', args: [] };
     progress = [];
     onProgress = () => undefined;
+    gitVersion = GIT_2_40;
 
     const sessions = new SessionManager({
       gitPath: GIT_PATH,
@@ -81,7 +107,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
         isPackaged: false,
       }),
       git: () => ({ gitPath: GIT_PATH, source: 'path' }),
-      gitVersion: () => null,
+      gitVersion: () => gitVersion,
       sshPath: () => SSH_PATH,
       settings: () => settings,
       updateSettings: (patch) => {
@@ -1035,6 +1061,178 @@ describe('Service (UI が通る経路の統合テスト)', () => {
 
     expect(service.sessionList().sessions).toHaveLength(0);
     expect(settings.openRepositories).toHaveLength(0);
+  });
+
+  /*
+   * Stash 保存モードと解放モード（決定 31 / 対応表 #27〜#31、#45、#46）。
+   *
+   * ここで見るのは main の門（バージョン・メッセージ・参照の形・照合・確認）。
+   * git 側の挙動そのものは packages/git/test/stash.test.ts が持つ。
+   */
+  describe('stash（決定 31）', () => {
+    /** ステージ済み 1 件・未ステージ 1 件を作ってセッションを開く。 */
+    async function openWithStaged(): Promise<string> {
+      await write('keep.txt', 'v1');
+      await write('stash-me.txt', 'v1');
+      await git(dir, ['add', '-A']);
+      await git(dir, ['commit', '-m', 'init']);
+      await write('stash-me.txt', 'v2');
+      await git(dir, ['add', 'stash-me.txt']);
+      await write('keep.txt', 'v2');
+      const session = await service.sessionOpen(dir);
+      return session.id;
+    }
+
+    it('ステージした差分だけが退避され、未ステージの変更は残る（#27 → #2 → #28）', async () => {
+      const id = await openWithStaged();
+
+      const saved = await service.stashSave(id, '退避のメモ');
+
+      expect(saved.stashes).toHaveLength(1);
+      expect(saved.stashes[0]?.ref).toBe('stash@{0}');
+      expect(saved.stashes[0]?.message).toContain('退避のメモ');
+      // このアプリが作った stash（親 2 つ）には外部の印を出さない
+      expect(saved.stashes[0]?.staged).toBe(true);
+
+      // ステージ済みは空になり、未ステージの変更はそのまま
+      expect(service.statusGetSummary(id).counts.staged).toBe(0);
+      expect(await readFile(join(dir, 'keep.txt'), 'utf8')).toBe('v2');
+      expect(await readFile(join(dir, 'stash-me.txt'), 'utf8')).toBe('v1');
+    });
+
+    it('中身は oid で読む（変更ファイル一覧と、その 1 ファイルの diff）', async () => {
+      const id = await openWithStaged();
+      const saved = await service.stashSave(id, '中身を読む');
+      const entry = saved.stashes[0];
+      expect(entry).toBeDefined();
+      const ref = { index: entry?.index ?? 0, oid: entry?.oid ?? '' };
+
+      const files = await service.stashGetFiles(id, ref);
+      expect(files).toEqual([{ status: 'M', path: 'stash-me.txt', origPath: null }]);
+
+      const diff = await service.stashGetDiff(id, ref, 'stash-me.txt');
+      expect(diff?.path).toBe('stash-me.txt');
+      // stash から直接ステージはできない
+      expect(diff?.hunkStageable).toBe(false);
+    });
+
+    it('展開するとブランチへ戻り、pop なら一覧から消える（#30 → #2 → #28）', async () => {
+      const id = await openWithStaged();
+      const saved = await service.stashSave(id, '戻す');
+      const entry = saved.stashes[0];
+
+      const popped = await service.stashApply(id, {
+        stash: { index: entry?.index ?? 0, oid: entry?.oid ?? '' },
+        drop: true,
+      });
+
+      expect(popped.stashes).toHaveLength(0);
+      expect(await readFile(join(dir, 'stash-me.txt'), 'utf8')).toBe('v2');
+    });
+
+    it('破棄は確認が必須で、確認後に 1 件だけ消える（決定 16）', async () => {
+      const id = await openWithStaged();
+      const saved = await service.stashSave(id, '消す');
+      const ref = { index: saved.stashes[0]?.index ?? 0, oid: saved.stashes[0]?.oid ?? '' };
+
+      await expect(service.stashDrop(id, ref)).rejects.toMatchObject({
+        dto: { kind: 'needs-confirmation' },
+      });
+      // 断られた時点では消えていない
+      expect(await service.stashList(id)).toHaveLength(1);
+
+      const after = await service.stashDrop(id, ref, true);
+      expect(after.stashes).toHaveLength(0);
+    });
+
+    /*
+     * 決定 31 の要。番号は drop / pop のたびにずれるので、古い一覧のまま打つと
+     * **別の stash を不可逆に消す**。main は打つ直前に #28 を取り直して照合する。
+     */
+    it('一覧が古くなっていれば、確認済みでも消さずに断る', async () => {
+      const id = await openWithStaged();
+      await service.stashSave(id, '古い');
+      await write('stash-me.txt', 'v3');
+      await git(dir, ['add', 'stash-me.txt']);
+      await service.sessionRefresh(id, 'status');
+      await service.stashSave(id, '新しい');
+
+      const stale = await service.stashList(id);
+      const older = stale[1];
+      expect(older?.message).toContain('古い');
+
+      // 表示してから、別の経路で 0 番が落ちて番号がずれた
+      await git(dir, ['stash', 'drop', 'stash@{0}']);
+
+      await expect(
+        service.stashDrop(id, { index: older?.index ?? 1, oid: older?.oid ?? '' }, true),
+        // wrap が 'diff-stale' に写す（表示していたものと実物が食い違っている）
+      ).rejects.toMatchObject({ name: 'StaleStashError' });
+
+      // ずれた先の stash を巻き添えにしていない
+      const survived = await service.stashList(id);
+      expect(survived).toHaveLength(1);
+      expect(survived[0]?.message).toContain('古い');
+    });
+
+    it('メッセージの制御文字と空を拒否する（一覧のフィールドが壊れるため）', async () => {
+      const id = await openWithStaged();
+
+      await expect(service.stashSave(id, '   ')).rejects.toThrow(/メッセージを入力/);
+      await expect(
+        service.stashSave(id, 'a' + String.fromCharCode(0x1f) + 'b'),
+      ).rejects.toThrow(/制御文字/);
+
+      // git は 1 回も動いていない
+      expect(await service.stashList(id)).toHaveLength(0);
+    });
+
+    it('参照の形が壊れている指定は git を打たずに拒否する', async () => {
+      const id = await openWithStaged();
+
+      await expect(
+        service.stashGetFiles(id, { index: -1, oid: 'a'.repeat(40) }),
+      ).rejects.toMatchObject({ dto: { kind: 'internal' } });
+      await expect(
+        service.stashGetFiles(id, { index: 0, oid: 'HEAD~3' }),
+      ).rejects.toMatchObject({ dto: { kind: 'internal' } });
+    });
+
+    it('リポジトリ外のパスの diff は拒否する', async () => {
+      const id = await openWithStaged();
+      const saved = await service.stashSave(id, 'パス検証');
+      const ref = { index: 0, oid: saved.stashes[0]?.oid ?? '' };
+
+      await expect(
+        service.stashGetDiff(id, ref, '../outside.txt'),
+        // assertInsideRoot が PathOutsideRootError を投げ、wrap が invalid-path に写す
+      ).rejects.toMatchObject({ name: 'PathOutsideRootError' });
+    });
+
+    /*
+     * `--staged` は git 2.35 以降にしかない。最低要求（2.25）は上げず、
+     * **保存だけ**を止める（決定 31）。renderer の出し分けに任せず main が拒否する。
+     */
+    it('git 2.25 では保存だけが使えず、一覧や展開は使える', async () => {
+      const id = await openWithStaged();
+      const saved = await service.stashSave(id, '2.40 では作れる');
+
+      gitVersion = GIT_2_25;
+      expect(service.appGetEnvironment().supportsStagedStash).toBe(false);
+      await expect(service.stashSave(id, '2.25 では作れない')).rejects.toThrow(/2\.35 以降/);
+
+      // 読むのと展開するのは 2.25 でもできる（--staged を使わないため）
+      expect(await service.stashList(id)).toHaveLength(1);
+      const popped = await service.stashApply(id, {
+        stash: { index: 0, oid: saved.stashes[0]?.oid ?? '' },
+        drop: true,
+      });
+      expect(popped.stashes).toHaveLength(0);
+    });
+
+    it('環境は 2.40 なら使えると報告する', () => {
+      expect(service.appGetEnvironment().supportsStagedStash).toBe(true);
+    });
   });
 
   it('タブを並び替えると一覧と設定（再起動用の openRepositories）の両方に反映される', async () => {

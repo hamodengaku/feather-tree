@@ -7,12 +7,16 @@
    * （docs/01-architecture.md 8 章）。
    * ペインが畳まれていても消えないので、畳んだペインを呼び戻す口がここにある。
    *
-   * 上端の内訳（決定 27）:
-   *   1. 折り畳みボタン。**どちらのモードでもブランチペインが相手**
-   *   2. モード切替の 2 ボタン（差分モード / コミットログモード。排他）
+   * 上端の内訳（決定 27 / 31）:
+   *   1. 折り畳みボタン。**どのモードでもブランチペインが相手**
+   *   2. モード切替の 4 ボタン（差分 / コミットログ / Stash 保存 / Stash 解放。排他）
    *
-   * ブランチペインは 2 つのモードで共通（左に居続ける）。モードが変えるのは
+   * ブランチペインは 4 つのモードで共通（左に居続ける）。モードが変えるのは
    * その右側だけなので、折り畳みボタンの意味もモードで変わらない。
+   *
+   * 並びは「差分 → コミットログ → 区切り線 → Stash 保存 → Stash 解放」。
+   * **既存 2 つの位置を動かさず**、新しい対を区切り線の下にまとめる
+   * （stash の 2 つは互いに対なので隣り合わせる）。
    */
   import { app } from '../lib/appState.svelte.js';
   import { isDarkTheme } from '../lib/theme.js';
@@ -94,6 +98,66 @@
         <circle cx="8" cy="5.5" r="2.1" fill="none" stroke="currentColor" stroke-width="1.6" />
         <circle cx="8" cy="18.5" r="2.1" fill="none" stroke="currentColor" stroke-width="1.6" />
         <circle cx="16" cy="14.5" r="2.1" fill="none" stroke="currentColor" stroke-width="1.6" />
+      </svg>
+    </button>
+
+    <hr class="rule" />
+
+    <!--
+      stash の 2 モード（決定 31）。箱に対する矢印の向きだけで対を表す
+      （下向き＝しまう、上向き＝出す）。箱の形は 2 つで完全に同じにしてあり、
+      「同じものを違う向きに扱う」ことが一目で分かるようにしている。
+    -->
+    <button
+      class="activity-btn icon"
+      class:active={mode === 'stash'}
+      title="Stash 保存モード（ステージした差分だけを退避する）"
+      aria-pressed={mode === 'stash'}
+      onclick={() => void app.setViewMode('stash')}
+    >
+      <!-- 箱に下向きの矢印。ステージしたものを箱へしまう -->
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <path
+          d="M12 2.5v8.5M8.5 7.5l3.5 3.5 3.5-3.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M3.5 13.5h17v7h-17z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linejoin="round"
+        />
+      </svg>
+    </button>
+    <button
+      class="activity-btn icon"
+      class:active={mode === 'stash-list'}
+      title="Stash 解放モード（退避した差分を見る・ブランチに展開する）"
+      aria-pressed={mode === 'stash-list'}
+      onclick={() => void app.setViewMode('stash-list')}
+    >
+      <!-- 同じ箱に上向きの矢印。箱から出してブランチへ戻す -->
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <path
+          d="M12 11V2.5M8.5 6l3.5-3.5 3.5 3.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M3.5 13.5h17v7h-17z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linejoin="round"
+        />
       </svg>
     </button>
   </div>

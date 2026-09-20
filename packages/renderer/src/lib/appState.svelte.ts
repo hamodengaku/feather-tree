@@ -23,6 +23,8 @@ import type {
   Result,
   SessionDto,
   SettingsDto,
+  StashEntryDto,
+  StashRefDto,
   StatusGroupDto,
   StatusSummaryDto,
   UpdateStateDto,
@@ -50,13 +52,17 @@ const COMMAND_LOG_LIMIT = 500;
 const ERROR_LOG_LIMIT = 50;
 
 /**
- * タブの読み込み帯の対象にしない実行（ラベルの先頭語）。
+ * タブの読み込み帯の対象にしない実行（ラベルの先頭語、または先頭 2 語）。
  *
  * どれも選択やスクロールに伴う読み取りで、タブに出ている状態は変わらない。
  * 高頻度なので、拾うとファイルを選ぶたびに帯が出入りする。
  * 除外リストにしてあるのは、状態を変える git を将来足したときに書き足し忘れても
  * 「帯が出ない」失敗にならないようにするため（逆の失敗＝ちらつきは目で気づける）。
  * `read-untracked` は git ではないが、track() を通るので同じラベル体系に載っている。
+ *
+ * **2 語のものがあるのは stash のため**（決定 31）。`stash list` / `stash show` は読み取りだが、
+ * `stash push` / `pop` / `drop` は状態を変える。先頭語だけで見ると、
+ * `stash` を 1 語で除外した瞬間に**書き込みの帯まで消える**。
  */
 const VIEW_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   'diff',
@@ -64,7 +70,17 @@ const VIEW_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   'read-conflict',
   'show',
   'log',
+  'stash list',
+  'stash show',
 ]);
+
+/** その実行が読み取りだけか（先頭語と先頭 2 語の両方で照合する）。 */
+function isViewOnlyCommand(args: readonly string[]): boolean {
+  const first = args[0] ?? '';
+  if (VIEW_ONLY_COMMANDS.has(first)) return true;
+  const second = args[1];
+  return second !== undefined && VIEW_ONLY_COMMANDS.has(first + ' ' + second);
+}
 
 /** 選択を動かさない（操作の対象が選択中のファイルと関係ないとき）。#selectionPastTarget が返す。 */
 const KEEP_SELECTION = (): void => {
@@ -247,6 +263,35 @@ export class AppState {
    */
   #diffSeq = 0;
 
+  /* ---------------------------------------------------------------- stash（決定 31） */
+
+  /**
+   * stash スタック（新しい順）。**main はスナップショットを持たない**ので、
+   * これが renderer 側の唯一の正本になる（branches と違い、読むたびに git が走る）。
+   */
+  stashes = $state<readonly StashEntryDto[]>([]);
+  /**
+   * #28 を一度でも打ったか。`commits.length > 0` のような「中身の有無」では代用できない
+   * ——**stash が 0 件なのは普通の状態**なので、件数で判定すると解放モードを開くたびに
+   * git が走り直す。
+   */
+  stashesLoaded = $state(false);
+  stashesLoading = $state(false);
+  /** 選択中の stash の oid。番号は drop / pop でずれるので oid で持つ。 */
+  selectedStash = $state<string | null>(null);
+  stashFiles = $state<readonly CommitFileChangeDto[]>([]);
+  stashFilesLoading = $state(false);
+  /** stash 詳細で選択中のファイル。 */
+  selectedStashPath = $state<string | null>(null);
+  stashDiff = $state<FileDiffDto | null>(null);
+  stashDiffLoading = $state(false);
+  /** Stash 保存モードのメッセージ欄。コミットメッセージとは別に持つ（用途が違う）。 */
+  stashMessage = $state('');
+
+  /** stash 関係の要求の世代番号。#commitFilesSeq と同じ理由。 */
+  #stashFilesSeq = 0;
+  #stashDiffSeq = 0;
+
   commitMessage = $state('');
   amend = $state(false);
 
@@ -370,6 +415,12 @@ export class AppState {
       commitFiles: readonly CommitFileChangeDto[];
       selectedCommitPath: string | null;
       commitDiff: FileDiffDto | null;
+      stashes: readonly StashEntryDto[];
+      stashesLoaded: boolean;
+      selectedStash: string | null;
+      stashFiles: readonly CommitFileChangeDto[];
+      selectedStashPath: string | null;
+      stashDiff: FileDiffDto | null;
     }
   >();
 
@@ -386,6 +437,31 @@ export class AppState {
     if (this.busy || this.activeId === null) return false;
     if (this.commitMessage.trim().length === 0) return false;
     return this.amend || (this.summary?.counts.staged ?? 0) > 0;
+  }
+
+  /**
+   * `git stash push --staged`（#27）が使える git か（決定 31）。
+   *
+   * 環境がまだ読めていない間（起動直後）は**真**に倒す。偽に倒すと、
+   * 読み込みが終わるまでボタンが「この git では使えません」と嘘をつく。
+   * どのみち main 側が同じ判定で拒否するので、ここでの誤りは押せるボタンが
+   * 一瞬残るだけで済む。
+   */
+  get canUseStagedStash(): boolean {
+    return this.environment?.supportsStagedStash ?? true;
+  }
+
+  /** stash に保存できるか。条件はコミットと同じ「ステージ済みがある」＋メッセージがある。 */
+  get canSaveStash(): boolean {
+    if (this.busy || this.activeId === null || !this.canUseStagedStash) return false;
+    if (this.stashMessage.trim().length === 0) return false;
+    return (this.summary?.counts.staged ?? 0) > 0;
+  }
+
+  /** 選択中の stash。一覧から引き直すので、pop / drop で消えたら null になる。 */
+  get selectedStashEntry(): StashEntryDto | null {
+    if (this.selectedStash === null) return null;
+    return this.stashes.find((s) => s.oid === this.selectedStash) ?? null;
   }
 
   /**
@@ -728,6 +804,12 @@ export class AppState {
     this.commitFiles = cached.commitFiles;
     this.selectedCommitPath = cached.selectedCommitPath;
     this.commitDiff = cached.commitDiff;
+    this.stashes = cached.stashes;
+    this.stashesLoaded = cached.stashesLoaded;
+    this.selectedStash = cached.selectedStash;
+    this.stashFiles = cached.stashFiles;
+    this.selectedStashPath = cached.selectedStashPath;
+    this.stashDiff = cached.stashDiff;
     this.#invalidateDiff();
     if (cached.selected !== null) await this.loadDiff(cached.selected);
   }
@@ -782,6 +864,8 @@ export class AppState {
            * **差分モードでは走らせない**（見えていないものを取り直さない）。
            */
           if (this.viewMode === 'log' && this.activeId === id) await this.loadLog();
+          // Stash 解放モードも同じ理由で取り直す（見ているものが変わらないのは筋が通らない）
+          if (this.viewMode === 'stash-list' && this.activeId === id) await this.loadStashes();
         });
       }),
     );
@@ -1016,12 +1100,20 @@ export class AppState {
 
   // ---------------------------------------------------------------- コミットログモード（決定 27）
 
-  /** 今のモード。設定に永続化してあるので、再起動しても履歴を読んでいた続きから開く。 */
-  get viewMode(): 'diff' | 'log' {
+  /** 今のモード。設定に永続化してあるので、再起動しても読んでいた続きから開く。 */
+  get viewMode(): SettingsDto['viewMode'] {
     return this.settings?.viewMode ?? 'diff';
   }
 
-  async setViewMode(mode: 'diff' | 'log'): Promise<void> {
+  /**
+   * 差分モードと Stash 保存モードは**同じ 2 ペイン**（決定 31）。
+   * 替わるのは作業ツリーペイン下端の箱だけなので、ペインの出し分けはこれで見る。
+   */
+  get worktreeMode(): boolean {
+    return this.viewMode === 'diff' || this.viewMode === 'stash';
+  }
+
+  async setViewMode(mode: SettingsDto['viewMode']): Promise<void> {
     await this.#writeSettings({ viewMode: mode });
   }
 
@@ -1121,6 +1213,204 @@ export class AppState {
     } finally {
       if (seq === this.#commitDiffSeq) this.commitDiffLoading = false;
     }
+  }
+
+  // ---------------------------------------------------------------- stash（決定 31）
+
+  /**
+   * まだ一度も #28 を打っていなければ取る。Stash 解放モードのペインから呼ぶ。
+   *
+   * **モードに入った瞬間に初めて走る**（`ensureLog` と同じ）。他のモードでいる限り
+   * stash の一覧は取らない（見えていないもののために git を起動しない）。
+   */
+  async ensureStashes(): Promise<void> {
+    if (this.activeId === null || this.stashesLoading || this.stashesLoaded) return;
+    await this.loadStashes();
+  }
+
+  /** 対応表 #28。一覧の取り直し。 */
+  async loadStashes(): Promise<void> {
+    const id = this.activeId;
+    if (id === null) return;
+    this.stashesLoading = true;
+    try {
+      const result = await this.#ft.stashList(id);
+      // 待っている間に別のタブへ移られていたら、そちらの表示を上書きしない
+      if (id !== this.activeId) return;
+      if (!result.ok) {
+        this.#setError(result.error, id);
+        return;
+      }
+      this.#adoptStashes(result.value);
+      this.stashesLoaded = true;
+    } finally {
+      /*
+       * **無条件に下ろす**（loadLog と同じ）。「アクティブなタブが変わっていなければ」で
+       * 絞ると、読み込み中にタブを移られたとき立ったまま残り、
+       * ensureStashes が二度と取りに行かなくなる（取得済みでもないのに）。
+       */
+      this.stashesLoading = false;
+    }
+  }
+
+  /**
+   * 新しい一覧を取り込む。**選択していた stash が消えていたら選択も畳む。**
+   *
+   * pop / drop の後は番号がずれるだけでなく、選んでいた 1 件がそもそも無くなる。
+   * 残しておくと、詳細ペインが「もう存在しない stash の中身」を出したままになる。
+   */
+  #adoptStashes(next: readonly StashEntryDto[]): void {
+    this.stashes = [...next];
+    if (this.selectedStash === null) return;
+    if (next.some((s) => s.oid === this.selectedStash)) return;
+    this.#clearStashSelection();
+  }
+
+  /** stash を選ぶ。その変更ファイル一覧（#45）を 1 回だけ取る。 */
+  async selectStash(oid: string): Promise<void> {
+    const id = this.activeId;
+    if (id === null || this.selectedStash === oid) return;
+    const entry = this.stashes.find((s) => s.oid === oid);
+    if (entry === undefined) return;
+
+    this.selectedStash = oid;
+    // 前の stash のファイル選択と差分は意味を持たない。飛んでいる要求ごと捨てる
+    this.selectedStashPath = null;
+    this.#stashDiffSeq += 1;
+    this.stashDiff = null;
+
+    const seq = (this.#stashFilesSeq += 1);
+    this.stashFilesLoading = true;
+    try {
+      const result = await this.#ft.stashGetFiles(id, { index: entry.index, oid: entry.oid });
+      if (seq !== this.#stashFilesSeq) return;
+      this.stashFiles = result.ok ? [...result.value] : [];
+      if (!result.ok) this.#setError(result.error, id);
+    } finally {
+      if (seq === this.#stashFilesSeq) this.stashFilesLoading = false;
+    }
+  }
+
+  /** stash 詳細でファイルを選ぶ。そのファイルの diff（#46）を取る。 */
+  async selectStashPath(path: string): Promise<void> {
+    const id = this.activeId;
+    const entry = this.selectedStashEntry;
+    if (id === null || entry === null) return;
+
+    this.selectedStashPath = path;
+    const seq = (this.#stashDiffSeq += 1);
+    this.stashDiffLoading = true;
+    try {
+      const result = await this.#ft.stashGetDiff(id, { index: entry.index, oid: entry.oid }, path);
+      if (seq !== this.#stashDiffSeq) return;
+      this.stashDiff = result.ok ? result.value : null;
+      if (!result.ok) this.#setError(result.error, id);
+    } finally {
+      if (seq === this.#stashDiffSeq) this.stashDiffLoading = false;
+    }
+  }
+
+  /**
+   * 対応表 #27: ステージした差分だけを stash に保存する。
+   *
+   * **失敗しても status と一覧を取り直す。** git はステージ分を作業ツリーから
+   * 取り除く段で失敗することがあり、そのとき stash だけはできている
+   * （docs/02-git-command-map.md #27 の実測表）。取り直さないと
+   * 「エラーが出たのに stash が増えている」ことが画面に出ない。
+   */
+  async saveStash(): Promise<void> {
+    const id = this.activeId;
+    if (id === null || !this.canSaveStash) return;
+    const message = this.stashMessage;
+
+    await this.#run(() =>
+      this.#updating(id, async () => {
+        const result = await this.#ft.stashSave(id, message);
+        if (!result.ok) {
+          this.#setError(result.error, id);
+          // 半端に成功している可能性があるので、失敗の側でも取り直す
+          await this.#reflect(id, async () => {
+            await this.reloadActive();
+            if (this.activeId === id) await this.loadStashes();
+          });
+          return;
+        }
+        this.stashMessage = '';
+        await this.#reflect(id, async () => {
+          await this.reloadActive();
+          if (this.activeId === id) this.#adoptStashes(result.value.stashes);
+        });
+      }),
+    );
+  }
+
+  /**
+   * 対応表 #29 / #30: stash をブランチへ展開する。確認不要。
+   *
+   * `drop` が真なら `pop`（展開して消す）、偽なら `apply`（展開して残す）。
+   * **戻ってくる変更は未ステージ扱い**（`--index` を付けないため。決定 31）。
+   */
+  applyStash(stash: StashRefDto, drop: boolean): Promise<void> {
+    return this.#stashOperate(() => this.#ft.stashApply(this.#id(), { stash, drop }));
+  }
+
+  /** 対応表 #31: stash を破棄。**不可逆なので確認が要る**（判定は main）。 */
+  dropStash(stash: StashRefDto): Promise<void> {
+    return this.#stashOperate(
+      (confirmed) => this.#ft.stashDrop(this.#id(), stash, confirmed),
+      () => this.#stashOperate(() => this.#ft.stashDrop(this.#id(), stash, true)),
+    );
+  }
+
+  /**
+   * stash を動かす操作の共通処理。`#operate` とほぼ同じ形だが、**応答に載っている
+   * 一覧をそのまま取り込む**点が違う（載っているものを捨てて #28 を打ち直さない）。
+   *
+   * 失敗したときも取り直すのは `saveStash` と同じ理由——`pop` はコンフリクトで
+   * exit 1 になりつつ**作業ツリーだけは書き換える**（stash は残す）ので、
+   * 失敗を理由に画面を止めると、実際の状態と食い違ったままになる。
+   */
+  async #stashOperate(
+    call: (confirmed?: boolean) => Promise<Result<{ statusSeq: number; stashes: readonly StashEntryDto[] }>>,
+    retry?: () => Promise<void>,
+  ): Promise<void> {
+    const id = this.activeId;
+    const body = async (): Promise<void> => {
+      const result = await call();
+      if (!result.ok) {
+        const confirmation = result.error.confirmation;
+        if (result.error.kind === 'needs-confirmation' && confirmation !== undefined && retry !== undefined) {
+          this.pendingConfirmation = { confirmation, retry };
+          return;
+        }
+        this.#setError(result.error, id);
+        if (id === null) return;
+        await this.#reflect(id, async () => {
+          await this.reloadActive();
+          if (this.activeId === id) await this.loadStashes();
+        });
+        return;
+      }
+      if (id === null) return;
+      const stashes = result.value.stashes;
+      await this.#reflect(id, async () => {
+        await this.reloadActive();
+        if (this.activeId === id) this.#adoptStashes(stashes);
+      });
+    };
+    await this.#run(() => (id === null ? body() : this.#updating(id, body)));
+  }
+
+  /** stash 詳細ペインの高さの永続化。 */
+  async setStashDetailHeight(px: number): Promise<void> {
+    const clamped = Math.min(2000, Math.max(120, Math.round(px)));
+    await this.#writeSettings({ stashDetailHeight: clamped });
+  }
+
+  /** stash 詳細ペインの左ファイルリスト幅の永続化。 */
+  async setStashFileListWidth(px: number): Promise<void> {
+    const clamped = Math.min(1200, Math.max(120, Math.round(px)));
+    await this.#writeSettings({ stashFileListWidth: clamped });
   }
 
   /** コミット詳細ペインの高さの永続化。 */
@@ -1865,7 +2155,7 @@ export class AppState {
    */
   #syncGitActivity(sessionId: string): void {
     const running = this.runningCommands.some(
-      (c) => c.sessionId === sessionId && !VIEW_ONLY_COMMANDS.has(c.args[0] ?? ''),
+      (c) => c.sessionId === sessionId && !isViewOnlyCommand(c.args),
     );
     this.#tabActivity.setGit(sessionId, running);
   }
@@ -1940,6 +2230,12 @@ export class AppState {
       commitFiles: this.commitFiles,
       selectedCommitPath: this.selectedCommitPath,
       commitDiff: this.commitDiff,
+      stashes: this.stashes,
+      stashesLoaded: this.stashesLoaded,
+      selectedStash: this.selectedStash,
+      stashFiles: this.stashFiles,
+      selectedStashPath: this.selectedStashPath,
+      stashDiff: this.stashDiff,
     });
   }
 
@@ -1952,6 +2248,7 @@ export class AppState {
     this.selected = null;
     this.#invalidateDiff();
     this.#clearLog();
+    this.#clearStash();
     this.commitMessage = '';
     this.amend = false;
   }
@@ -1967,6 +2264,24 @@ export class AppState {
     this.#commitDiffSeq += 1;
     this.commitDiff = null;
     this.commitDetailTab = 'info';
+  }
+
+  /** stash モードの表示物を捨てる。飛んでいる要求も無効にする。 */
+  #clearStash(): void {
+    this.stashes = [];
+    this.stashesLoaded = false;
+    this.#clearStashSelection();
+    this.stashMessage = '';
+  }
+
+  /** 選択中の stash（と、その詳細）だけを畳む。一覧とメッセージ欄は残す。 */
+  #clearStashSelection(): void {
+    this.selectedStash = null;
+    this.#stashFilesSeq += 1;
+    this.stashFiles = [];
+    this.selectedStashPath = null;
+    this.#stashDiffSeq += 1;
+    this.stashDiff = null;
   }
 }
 

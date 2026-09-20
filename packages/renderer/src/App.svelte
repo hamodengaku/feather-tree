@@ -6,6 +6,8 @@
   import DiffPane from './panes/DiffPane.svelte';
   import CommitLogPane from './panes/CommitLogPane.svelte';
   import CommitDetailPane from './panes/CommitDetailPane.svelte';
+  import StashListPane from './panes/StashListPane.svelte';
+  import StashDetailPane from './panes/StashDetailPane.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
   import CommandLogPanel from './components/CommandLogPanel.svelte';
   import PaneSplitter from './components/PaneSplitter.svelte';
@@ -31,15 +33,23 @@
   const gitMissing = $derived(app.environment !== null && app.environment.gitPath === null);
 
   /**
-   * ペイン領域のモード（決定 27）。
+   * ペイン領域のモード（決定 27 / 31）。
    *
-   * **ブランチペインは 2 つのモードで共通**で、左に居続ける（幅も折り畳み状態も同じ設定）。
-   * モードが替えるのはその右側だけで、差分モードは左右 2 分割（作業ツリー / 差分）、
-   * コミットログモードは上下 2 分割（コミットリスト / コミット詳細）になる。
+   * **ブランチペインは 4 つのモードで共通**で、左に居続ける（幅も折り畳み状態も同じ設定）。
+   * モードが替えるのはその右側だけ:
+   *   差分 / Stash 保存 … 左右 2 分割（作業ツリー / 差分）。**同じ 2 ペインの実体を使う**
+   *   コミットログ       … 上下 2 分割（コミットリスト / コミット詳細）
+   *   Stash 解放         … 上下 2 分割（stash 一覧 / stash 詳細）
    *
    * 列の定義（gridColumns）より前に置いてあるのは、そちらが参照するため。
    */
   const logMode = $derived(app.viewMode === 'log');
+  const stashListMode = $derived(app.viewMode === 'stash-list');
+  /**
+   * 右側が上下 2 分割になるモード（コミットログ / Stash 解放）。
+   * 列の作りは同じなので、gridColumns はこれ 1 つで足りる。
+   */
+  const splitMode = $derived(logMode || stashListMode);
 
   // ---------------------------------------------------------------- center/diff の比率レイアウト
 
@@ -65,10 +75,11 @@
   const centerWidthPx = $derived(liveCenterWidth ?? Math.round(ratio * availableCD));
 
   /**
-   * ペイン領域の列。**両モードで 1 つの grid**（＝ブランチペインは 1 インスタンス）。
+   * ペイン領域の列。**全モードで 1 つの grid**（＝ブランチペインは 1 インスタンス）。
    *
    * 左側（ブランチペイン + 分割線）の扱いはモードに依らず同じで、右側だけが替わる。
-   * コミットログモードの右側は 1 トラック（中を上下に割るのは .log-split の仕事）。
+   * 上下に割るモード（コミットログ / Stash 解放）の右側は 1 トラック
+   * （中を上下に割るのは .log-split / .stash-split の仕事）。
    *
    * 差分モードの右側は、通常時は fr 単位で比率だけを指定し、ウィンドウ伸縮に応じた
    * ブラウザ側の再配分に任せる（center/diff がブランチペイン幅を保ったまま連動して伸縮し、
@@ -76,7 +87,7 @@
    * PaneSplitter の col-resize の感触を保つ。
    */
   const gridColumns = $derived.by(() => {
-    const right = logMode
+    const right = splitMode
       ? 'minmax(0, 1fr)'
       : liveCenterWidth !== null
         ? `${liveCenterWidth}px 6px minmax(200px, 1fr)`
@@ -139,6 +150,22 @@
   function commitDetailHeight(nextPx: number): void {
     liveDetailHeight = null;
     void app.setLogDetailHeight(nextPx);
+  }
+
+  // ---------------------------------------------------------------- Stash 解放モードの上下分割
+
+  /**
+   * コミットログモードと同じ形だが、**高さは別に持つ**（決定 31）。
+   * 読むものの量が違うので、片方で決めた高さがもう片方へ伝染すると
+   * モードを行き来するたびに直すことになる。
+   */
+  let liveStashDetailHeight = $state<number | null>(null);
+  const stashDetailHeight = $derived(liveStashDetailHeight ?? app.settings?.stashDetailHeight ?? 260);
+  const stashRows = $derived(`minmax(80px, 1fr) 6px ${String(stashDetailHeight)}px`);
+
+  function commitStashDetailHeight(nextPx: number): void {
+    liveStashDetailHeight = null;
+    void app.setStashDetailHeight(nextPx);
   }
 
   // ---------------------------------------------------------------- タブのラベル（決定 24）
@@ -329,7 +356,7 @@
         </div>
       {:else}
         <!--
-          ペイン領域（決定 27）。**2 つのモードで 1 つの grid**。
+ペイン領域（決定 27 / 31）。**4 つのモードで 1 つの grid**。
 
           ブランチペインをモード分岐の外に出してあるのは、**同じインスタンスを生かし続ける**ため。
           両枝に書くとモードを切り替えるたびに破棄・再生成され、BranchPane が持つ
@@ -367,7 +394,27 @@
               />
               <CommitDetailPane />
             </div>
+          {:else if stashListMode}
+            <!-- Stash 解放モード（決定 31）。上＝ stash 一覧／下＝選んだ stash の中身。 -->
+            <div class="stash-split" style:grid-template-rows={stashRows}>
+              <StashListPane />
+              <PaneSplitter
+                axis="y"
+                invert
+                value={stashDetailHeight}
+                min={120}
+                max={2000}
+                onchange={(h) => (liveStashDetailHeight = h)}
+                oncommit={commitStashDetailHeight}
+              />
+              <StashDetailPane />
+            </div>
           {:else}
+            <!--
+              差分モードと Stash 保存モードは**同じ 2 ペイン**（決定 31）。
+              ここで分岐しないのが要で、替わるのは WorkingTreePane 下端の箱だけ。
+              両枝に書くと切り替えのたびに破棄・再生成され、選択もスクロールも飛ぶ。
+            -->
             <WorkingTreePane />
             <PaneSplitter
               value={centerWidthPx}
@@ -677,10 +724,15 @@
   }
 
   /*
-   * コミットログモードの右側。ブランチペインの隣に座るグリッドアイテムで、
-   * 中を上下に割る（決定 27）。min-* を 0 にしないと中身がトラックを押し広げる。
+   * 上下に割るモードの右側（コミットログ / Stash 解放）。ブランチペインの隣に座る
+   * グリッドアイテムで、中を上下に割る（決定 27 / 31）。
+   * min-* を 0 にしないと中身がトラックを押し広げる。
+   *
+   * 2 つを 1 つのセレクタにまとめず並べてあるのは、**高さの設定が別**だから
+   * （見た目の規則が同じことと、状態を共有することは別）。
    */
-  .log-split {
+  .log-split,
+  .stash-split {
     display: grid;
     min-width: 0;
     min-height: 0;

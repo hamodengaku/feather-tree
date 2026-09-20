@@ -16,6 +16,15 @@ function toDto(err: unknown): FtErrorDto {
   if (err instanceof Error && err.name === 'StaleDiffError') {
     return { kind: 'diff-stale', message: err.message };
   }
+  /*
+   * stash の一覧が古い（決定 31）。**kind は StaleDiffError と同じ 'diff-stale' を使う**
+   * ——どちらも「表示していたものと実物が食い違っているので、取り直してからやり直せ」
+   * という同じ意味で、renderer も kind で枝分かれしない（出すのは message）。
+   * 専用の kind を足すと、renderer 側に扱いの差が無いのに語彙だけが増える。
+   */
+  if (err instanceof Error && err.name === 'StaleStashError') {
+    return { kind: 'diff-stale', message: err.message };
+  }
   if (err instanceof Error && err.name === 'PatchBuildError') {
     return { kind: 'internal', message: err.message };
   }

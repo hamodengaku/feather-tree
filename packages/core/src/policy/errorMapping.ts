@@ -34,8 +34,40 @@ const RULES: readonly Rule[] = [
     message: 'リモートに新しいコミットがあります。先に取得（fetch / pull）してください。',
   },
   {
+    /*
+     * 切替（#12）だけでなく **stash の展開（#29 / #30）でも出る**ので、
+     * 文言から「切り替え」を外した（2026-09-20、決定 31）。
+     * どちらの操作でも打つ手は同じ（先にコミットするか、退避してから再実行する）。
+     */
     test: /Your local changes to the following files would be overwritten|Please commit your changes or stash them/i,
-    message: '未コミットの変更があるため切り替えできません。コミットまたは stash してください。',
+    message:
+      '未コミットの変更が上書きされるため実行できません。先にコミットするか、退避してからやり直してください。',
+  },
+  /*
+   * stash（決定 31 / 対応表 #27〜#31）。
+   *
+   * **`CONFLICT` の行より前に置く**。`pop` がコンフリクトした場合は
+   * 既存の CONFLICT の文言で足りるが、下の 4 つはそれぞれ別の手を打つ必要があり、
+   * 「git の実行に失敗しました。」では何をすればよいか分からない。
+   */
+  {
+    // #27 の実測表 5 行目。**stash 自体はできている**ので、そう書かないと二重に保存される
+    test: /Cannot remove worktree changes/i,
+    message:
+      'ステージした変更を作業ツリーから取り除けませんでした（同じ箇所に未ステージの変更が重なっています）。' +
+      'stash は作成済みです。残った変更を確認してください。',
+  },
+  {
+    test: /No staged changes/i,
+    message: 'ステージした変更がありません。stash に保存するものをステージしてください。',
+  },
+  {
+    test: /You do not have the initial commit yet/i,
+    message: 'まだコミットが 1 つもないため実行できません。先にコミットしてください。',
+  },
+  {
+    test: /is not a stash reference|stash@\{[0-9]+\} is not a valid reference|log for .stash. only has/i,
+    message: 'その stash が見つかりません。一覧を更新してからやり直してください。',
   },
   {
     test: /index\.lock|Unable to create .*\.lock/i,

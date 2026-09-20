@@ -49,7 +49,14 @@ describe('起動', () => {
       appGetEnvironment: () =>
         Promise.resolve({
           ok: true as const,
-          value: { gitPath: null, gitSource: null, gitVersion: null, sshPath: null, warning: 'git が見つかりません' },
+          value: {
+            gitPath: null,
+            gitSource: null,
+            gitVersion: null,
+            sshPath: null,
+            supportsStagedStash: false,
+            warning: 'git が見つかりません',
+          },
         }),
     });
 

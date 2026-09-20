@@ -61,6 +61,13 @@ export const CHANNELS = {
   branchCreate: 'branch:create',
   branchMerge: 'branch:merge',
 
+  stashList: 'stash:list',
+  stashSave: 'stash:save',
+  stashApply: 'stash:apply',
+  stashDrop: 'stash:drop',
+  stashGetFiles: 'stash:getFiles',
+  stashGetDiff: 'stash:getDiff',
+
   remoteList: 'remote:list',
   remoteFetch: 'remote:fetch',
   remotePull: 'remote:pull',
@@ -133,6 +140,15 @@ export interface EnvironmentDto {
    * null のときは鍵を登録しても何も注入されない（bare 名は渡さないため）。
    */
   readonly sshPath: string | null;
+  /**
+   * `git stash push --staged`（対応表 #27）が使えるか＝ **git 2.35 以降か**（決定 31）。
+   *
+   * アプリの最低要求は 2.25 のままなので、古い git でも他の機能は動く。
+   * 偽のときは Stash 保存モードの**保存だけ**を止め、理由を画面に出す。
+   * 判定を renderer へ渡すのは、押せないボタンを押させないため
+   * （main 側でも同じ判定で拒否するので、これは表示のためだけの値）。
+   */
+  readonly supportsStagedStash: boolean;
   /** 古い git などの警告。無ければ null。 */
   readonly warning: string | null;
 }
@@ -188,10 +204,14 @@ export interface SettingsDto {
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
-  /** ペイン領域のモード（決定 27）。'diff' = 左右 3 分割、'log' = 上下 2 分割の履歴。 */
-  readonly viewMode: 'diff' | 'log';
+  /** ペイン領域のモード（決定 27 / 31）。core の ViewMode と同じ 4 値。 */
+  readonly viewMode: 'diff' | 'log' | 'stash' | 'stash-list';
   readonly logDetailHeight: number;
   readonly commitFileListWidth: number;
+  /** Stash 解放モードの下部（stash 詳細）ペインの高さ（px）。 */
+  readonly stashDetailHeight: number;
+  /** stash 詳細ペインの、左のファイルリストの幅（px）。 */
+  readonly stashFileListWidth: number;
   /** リポジトリタブに現在情報（ブランチ名と HEAD の件名）を出すか（決定 24）。 */
   readonly tabShowCurrentInfo: boolean;
   readonly paneWidths: { readonly left: number; readonly center: number; readonly centerRatio: number | null };
@@ -462,6 +482,61 @@ export interface CommitFileChangeDto {
   readonly path: string;
   /** R / C のときの元パス。それ以外は null。 */
   readonly origPath: string | null;
+}
+
+/* ------------------------------------------------ stash（決定 31 / 対応表 #27〜#31、#45、#46） */
+
+/**
+ * stash スタックの 1 件。
+ *
+ * **識別子を 2 つ持つ**のは git の都合そのもの: `pop` / `drop` は `stash@{n}` しか
+ * 受け付けず（生の oid は `is not a stash reference`）、その n は pop / drop のたびに
+ * ずれる。読み取り（#45 / #46）は oid で行うので番号のずれに巻き込まれない。
+ */
+export interface StashEntryDto {
+  /** `stash@{n}` の n。新しいものが 0。 */
+  readonly index: number;
+  /** `stash@{n}` そのもの。表示にも使う。 */
+  readonly ref: string;
+  readonly oid: string;
+  readonly shortOid: string;
+  /** ISO 8601。 */
+  readonly authoredAt: string;
+  /** reflog の件名（`On main: 退避のメモ`）。 */
+  readonly message: string;
+  /**
+   * **このアプリが作った stash か**（親が 2 つ＝ HEAD と index コミット）。
+   *
+   * 偽なら外部で `-u` 付きに作られたもので、未追跡としてだけ入っているファイルが
+   * ありうる（main はそれを 2 回目の diff で拾う）。画面では印を出すだけ。
+   */
+  readonly staged: boolean;
+}
+
+/**
+ * どの stash か。**oid は「一覧に出していたものと同じか」の指紋**。
+ *
+ * hunk 適用の `HunkSelectionDto` と同じ思想だが、こちらは外すと**不可逆**
+ * （別の stash を drop する）なので、main は打つ直前に #28 を取り直して照合する。
+ */
+export interface StashRefDto {
+  readonly index: number;
+  readonly oid: string;
+}
+
+/**
+ * stash を動かす操作の結果。**取り直した一覧をそのまま載せる**
+ * （どの操作でも一覧は必ず変わりうるので、載せないと必ず 2 回目の IPC が要る）。
+ */
+export interface StashResultDto {
+  readonly statusSeq: number;
+  readonly stashes: readonly StashEntryDto[];
+}
+
+export interface StashApplyRequest {
+  readonly stash: StashRefDto;
+  /** 真なら `stash pop`（展開して消す）、偽なら `stash apply`（展開して残す）。 */
+  readonly drop: boolean;
 }
 
 export interface BranchDto {
@@ -780,6 +855,34 @@ export interface FeatherTreeBridge {
    * 差分の描画側が同じ形だけを相手にできるようにするため。
    */
   commitGetDiff(id: string, oid: string, path: string): Promise<Result<FileDiffDto | null>>;
+  /**
+   * 対応表 #28: stash の一覧。**呼ぶたびに git が 1 回走る**（branchList と違い
+   * main はスナップショットを持たない）。Stash 解放モードに入った瞬間に 1 回だけ呼ぶ。
+   */
+  stashList(id: string): Promise<Result<readonly StashEntryDto[]>>;
+  /**
+   * 対応表 #27: **ステージした差分だけ**を stash に退避する（決定 31）。
+   *
+   * 失敗しても stash だけができていることがあるので（`Cannot remove worktree changes`）、
+   * renderer は**失敗時も status と一覧を取り直す**。
+   */
+  stashSave(id: string, message: string): Promise<Result<StashResultDto>>;
+  /**
+   * 対応表 #29 / #30: stash をブランチへ展開する。確認不要。
+   * **`--index` は付けない**ので、戻ってくる変更は未ステージ扱いになる。
+   */
+  stashApply(id: string, req: StashApplyRequest): Promise<Result<StashResultDto>>;
+  /** 対応表 #31: stash を破棄。**不可逆なので確認必須**（決定 16）。 */
+  stashDrop(id: string, stash: StashRefDto, confirmed?: boolean): Promise<Result<StashResultDto>>;
+  /** 対応表 #45: その stash の変更ファイル一覧。参照は oid（番号のずれに巻き込まれない）。 */
+  stashGetFiles(id: string, stash: StashRefDto): Promise<Result<readonly CommitFileChangeDto[]>>;
+  /**
+   * 対応表 #46: stash 内の 1 ファイルの diff。
+   *
+   * 戻りはコミットの diff と同じ `FileDiffDto` を使い回す。**`hunkStageable` は常に false**
+   * （stash から直接ステージすることはできない）。
+   */
+  stashGetDiff(id: string, stash: StashRefDto, path: string): Promise<Result<FileDiffDto | null>>;
   branchList(id: string): Promise<Result<readonly BranchDto[]>>;
   branchSwitch(id: string, branchName: string): Promise<Result<BranchSwitchResultDto>>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<Result<BranchCreateResultDto>>;

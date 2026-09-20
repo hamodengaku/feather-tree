@@ -9,7 +9,14 @@ export { buildSshCommand, gitSshEnv, sshKeyFor } from './env/sshCommand.js';
 export { locateSsh } from './env/sshLocator.js';
 export type { SshLocatorDeps } from './env/sshLocator.js';
 export { findOnPath } from './env/pathSearch.js';
-export { checkGitVersion, MIN_GIT_MAJOR, MIN_GIT_MINOR } from './env/gitVersion.js';
+export {
+  checkGitVersion,
+  supportsStagedStash,
+  MIN_GIT_MAJOR,
+  MIN_GIT_MINOR,
+  MIN_STAGED_STASH_MAJOR,
+  MIN_STAGED_STASH_MINOR,
+} from './env/gitVersion.js';
 export type { GitVersionCheck } from './env/gitVersion.js';
 
 // 土台の再輸出。アプリ側の import 元を 1 つに保つため。
@@ -31,6 +38,12 @@ export {
   validateIdentityValue,
 } from './policy/gitIdentity.js';
 export type { IdentityRejection } from './policy/gitIdentity.js';
+export {
+  MAX_STASH_MESSAGE_LENGTH,
+  describeStashMessageRejection,
+  validateStashMessage,
+} from './policy/stashMessage.js';
+export type { StashMessageRejection } from './policy/stashMessage.js';
 
 export { DEFAULT_SETTINGS, normalizeSettings } from './settings/schema.js';
 export { AppSettingsStore } from './settings/settingsStore.js';
@@ -90,10 +103,11 @@ export {
   NoSnapshotError,
   SessionOperations,
   StaleDiffError,
+  StaleStashError,
   TooManyPathsError,
 } from './session/operations.js';
-export type { ConflictSelection, HunkSelection } from './session/operations.js';
-export type { OperationOutcome } from './session/operations.js';
+export type { ConflictSelection, HunkSelection, StashSelection } from './session/operations.js';
+export type { OperationOutcome, StashOutcome } from './session/operations.js';
 
 // hunk / 行単位の可否判定（対応表 #33 / #34）。
 // main はボタンの出し分けのためにこれを DTO へ写す。git 層の関数をそのまま通す。
@@ -108,6 +122,9 @@ export type {
   ConflictLineKind,
   ConflictSection,
 } from '@feathertree/git';
+
+// stash（決定 31）。同じ理由で core が素通しする。
+export type { StashEntry } from '@feathertree/git';
 
 // アプリ終了時の後始末（docs/01-architecture.md 11 章）。
 // main は @feathertree/git に依存していないので、core が素通しする。

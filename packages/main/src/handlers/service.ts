@@ -4,10 +4,13 @@ import {
   canBuildPatch,
   describeAction,
   describeIdentityRejection,
+  describeStashMessageRejection,
   displayNameOf,
   gitNotFoundHint,
   isExecutableFileName,
+  supportsStagedStash,
   validateIdentityValue,
+  validateStashMessage,
   type AppSettings,
   type CloneStage,
   type CommandLog,
@@ -19,6 +22,7 @@ import {
   type HunkSelection,
   type RepositorySession,
   type SessionManager,
+  type StashSelection,
   type TerminalLaunch,
 } from '@feathertree/core';
 import type {
@@ -54,6 +58,10 @@ import type {
   SessionListDto,
   SessionStateDto,
   SettingsDto,
+  StashApplyRequest,
+  StashEntryDto,
+  StashRefDto,
+  StashResultDto,
   StatusPageDto,
   StatusPageRequest,
   StatusSummaryDto,
@@ -192,6 +200,12 @@ export interface Service {
   branchSwitch(id: string, branchName: string): Promise<BranchSwitchResultDto>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<BranchCreateResultDto>;
   branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<BranchMergeResultDto>;
+  stashList(id: string): Promise<readonly StashEntryDto[]>;
+  stashSave(id: string, message: string): Promise<StashResultDto>;
+  stashApply(id: string, req: StashApplyRequest): Promise<StashResultDto>;
+  stashDrop(id: string, stash: StashRefDto, confirmed?: boolean): Promise<StashResultDto>;
+  stashGetFiles(id: string, stash: StashRefDto): Promise<readonly CommitFileChangeDto[]>;
+  stashGetDiff(id: string, stash: StashRefDto, path: string): Promise<FileDiffDto | null>;
   remoteList(id: string): readonly string[];
   remoteFetch(id: string, remote: string): Promise<RemoteResultDto>;
   remotePull(id: string): Promise<RemoteResultDto>;
@@ -419,6 +433,58 @@ export function createService(deps: ServiceDeps): Service {
     return oid;
   };
 
+  /**
+   * renderer が送ってきた stash の指定を検証する（決定 31）。
+   *
+   * 番号は `stash@{n}` としてそのまま git へ渡り、oid は `diff` の 2 点指定に入る。
+   * `validOid` と同じ「形で縛る」やり方で、`HEAD~3` のような任意の rev を通さない。
+   * **番号と oid が食い違っていないか**（別の stash を指していないか）は core が
+   * #28 を取り直して照合する——ここで見られるのは形だけで、
+   * 一覧との一致は git を 1 回打たないと分からないため。
+   */
+  const validStash = (stash: StashRefDto): StashSelection => {
+    if (!Number.isSafeInteger(stash.index) || stash.index < 0 || stash.index > 100000) {
+      throw new HandlerError({ kind: 'internal', message: 'stash の指定が不正です。' });
+    }
+    return { index: stash.index, oid: validOid(stash.oid) };
+  };
+
+  /**
+   * `stash push --staged`（#27）が打てる git か（決定 31）。
+   *
+   * **renderer の出し分けに任せない。** ボタンを消すのは親切のためで、
+   * 止めるのはここ（決定 16 の確認を main が強制しているのと同じ考え方）。
+   */
+  const requireStagedStash = (): void => {
+    if (supportsStagedStash(deps.gitVersion()?.version ?? null)) return;
+    throw new HandlerError({
+      kind: 'git-failed',
+      message:
+        'この git では Stash 保存モードを使えません（git 2.35 以降が必要です）。' +
+        'ステージした差分だけを退避する git stash push --staged が無いためです。',
+      detail: deps.gitVersion()?.version.raw ?? null,
+    });
+  };
+
+  /** stash の DTO への写し替え。git 層の StashEntry をそのままワイヤへ出さない。 */
+  const toStashDto = (entry: {
+    readonly index: number;
+    readonly ref: string;
+    readonly oid: string;
+    readonly parents: readonly string[];
+    readonly authoredAt: string;
+    readonly message: string;
+  }): StashEntryDto => ({
+    index: entry.index,
+    ref: entry.ref,
+    oid: entry.oid,
+    shortOid: entry.oid.slice(0, 7),
+    authoredAt: entry.authoredAt,
+    message: entry.message,
+    // 親 2 つ＝ HEAD と index コミット＝このアプリが作った --staged の stash
+    staged: entry.parents.length === 2,
+  });
+
   /** renderer 由来の相対パスを検証してから絶対パスへ直す（規約: git に渡す前に必ず検証）。 */
   const resolveInsideRoot = (id: string, path: string): string => {
     const session = requireSession(id);
@@ -611,6 +677,8 @@ export function createService(deps: ServiceDeps): Service {
         gitSource: git?.source ?? null,
         gitVersion: version?.version.raw ?? null,
         sshPath: deps.sshPath(),
+        // 決定 31: 古い git では Stash 保存モードの保存だけを止める
+        supportsStagedStash: supportsStagedStash(version?.version ?? null),
         warning:
           git === null
             ? 'git が見つかりませんでした。Git for Windows を導入するか、設定で git.exe のパスを指定してください。'
@@ -972,6 +1040,88 @@ export function createService(deps: ServiceDeps): Service {
      * リモート操作（対応表 #22〜#25）。確認は要らない（決定 16）。
      * 引数は必ず main 側の一覧と照合してから git へ渡す。
      */
+    /*
+     * stash（決定 31 / 対応表 #27〜#31、#45、#46）。
+     *
+     * 読み取りは oid、書き込みは番号（core が #28 で照合してから `stash@{n}` を組む）。
+     * 確認が要るのは破棄だけ（決定 16）。
+     */
+    stashList: async (id) => {
+      const session = requireSession(id);
+      const stashes = await withSignal(id, (signal) => session.listStashes(signal));
+      return stashes.map(toStashDto);
+    },
+
+    stashSave: async (id, message) => {
+      requireStagedStash();
+      const checked = validateStashMessage(message);
+      if (!checked.ok) {
+        throw new HandlerError({ kind: 'internal', message: describeStashMessageRejection(checked.reason) });
+      }
+      const ops = opsFor(id);
+      const outcome = await withSignal(id, (signal) => ops.saveStash(checked.value, signal));
+      return { statusSeq: outcome.statusSeq, stashes: outcome.stashes.map(toStashDto) };
+    },
+
+    stashApply: async (id, req) => {
+      const selection = validStash(req.stash);
+      const ops = opsFor(id);
+      const outcome = await withSignal(id, (signal) =>
+        ops.applyStash(selection, req.drop === true, signal),
+      );
+      return { statusSeq: outcome.statusSeq, stashes: outcome.stashes.map(toStashDto) };
+    },
+
+    stashDrop: async (id, stash, confirmed) => {
+      const selection = validStash(stash);
+      requireConfirmed(SessionOperations.confirmationFor('stashDrop'), confirmed);
+      const ops = opsFor(id);
+      const outcome = await withSignal(id, (signal) => ops.dropStash(selection, signal));
+      return { statusSeq: outcome.statusSeq, stashes: outcome.stashes.map(toStashDto) };
+    },
+
+    stashGetFiles: async (id, stash) => {
+      const session = requireSession(id);
+      const selection = validStash(stash);
+      return withSignal(id, (signal) => session.getStashFiles(selection.oid, signal));
+    },
+
+    /*
+     * #46。外部で `-u` 付きに作られた stash（親が 3 つ）では、未追跡としてだけ
+     * 入っているファイルが `<oid>^ <oid>` の diff に現れない（実測）。そのときだけ
+     * 第 3 親を相手に打ち直す。**このアプリが作った stash では 2 回目は起きない。**
+     */
+    stashGetDiff: async (id, stash, path) => {
+      const session = requireSession(id);
+      assertInsideRoot(session.root, path);
+      const selection = validStash(stash);
+
+      let diff = await withSignal(id, (signal) =>
+        session.getStashDiff(selection.oid, path, false, signal),
+      );
+      if (diff === null) {
+        const entry = (await withSignal(id, (signal) => session.listStashes(signal))).find(
+          (s) => s.oid === selection.oid,
+        );
+        if (entry !== undefined && entry.parents.length >= 3) {
+          diff = await withSignal(id, (signal) =>
+            session.getStashDiff(selection.oid, path, true, signal),
+          );
+        }
+      }
+      if (diff === null) return null;
+
+      // stash から直接ステージすることはできないので hunkStageable は必ず false
+      return {
+        path: diff.path,
+        oldPath: diff.oldPath,
+        binary: diff.binary,
+        hunks: diff.hunks,
+        truncated: diff.truncated,
+        hunkStageable: false,
+      };
+    },
+
     remoteList: (id) => requireSession(id).remotes,
 
     // async にしてあるのは、名前の照合で投げる例外も必ず reject として届けるため

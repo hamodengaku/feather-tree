@@ -55,7 +55,16 @@ describe('エラーメッセージのマッピング', () => {
     ['fatal: could not read Username for https://github.com', '認証に失敗しました'],
     ['Permission denied (publickey).', '認証に失敗しました'],
     ['! [rejected] main -> main (non-fast-forward)', 'リモートに新しいコミットがあります'],
-    ['error: Your local changes to the following files would be overwritten by checkout:', '未コミットの変更があるため'],
+    // 切替でも stash の展開でも同じ stderr が出る（決定 31 で文言から「切り替え」を外した）
+    ['error: Your local changes to the following files would be overwritten by checkout:', '未コミットの変更が上書きされるため'],
+    ['error: Your local changes to the following files would be overwritten by merge:', '未コミットの変更が上書きされるため'],
+    // stash（決定 31 / 対応表 #27〜#31）
+    ['error: t.txt: patch does not apply\nCannot remove worktree changes', 'stash は作成済みです'],
+    ['No staged changes', 'ステージした変更がありません'],
+    ['You do not have the initial commit yet', 'まだコミットが 1 つもないため'],
+    ["error: 'abc1234' is not a stash reference", 'その stash が見つかりません'],
+    ['error: stash@{3} is not a valid reference', 'その stash が見つかりません'],
+    ["fatal: log for 'stash' only has 1 entries", 'その stash が見つかりません'],
     ['fatal: Unable to create .git/index.lock: File exists.', '他の git プロセスが実行中です'],
     ['CONFLICT (content): Merge conflict in a.txt', 'コンフリクトが発生しました'],
     ['error: external filter git-lfs smudge filter lfs failed', 'Git LFS の処理に失敗しました'],

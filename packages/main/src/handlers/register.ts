@@ -204,6 +204,21 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.branchMerge, (id: string, branchName: string, confirmed?: boolean) =>
     service.branchMerge(id, branchName, confirmed),
   );
+  bind(CHANNELS.stashList, (id: string) => service.stashList(id));
+  bind(CHANNELS.stashSave, (id: string, message: string) => service.stashSave(id, message));
+  bind(CHANNELS.stashApply, (id: string, req: Parameters<Service['stashApply']>[1]) =>
+    service.stashApply(id, req),
+  );
+  bind(CHANNELS.stashDrop, (id: string, stash: Parameters<Service['stashDrop']>[1], confirmed?: boolean) =>
+    service.stashDrop(id, stash, confirmed),
+  );
+  bind(CHANNELS.stashGetFiles, (id: string, stash: Parameters<Service['stashGetFiles']>[1]) =>
+    service.stashGetFiles(id, stash),
+  );
+  bind(CHANNELS.stashGetDiff, (id: string, stash: Parameters<Service['stashGetDiff']>[1], path: string) =>
+    service.stashGetDiff(id, stash, path),
+  );
+
   bind(CHANNELS.remoteList, (id: string) => service.remoteList(id));
   bind(CHANNELS.remoteFetch, (id: string, remote: string) => service.remoteFetch(id, remote));
   bind(CHANNELS.remotePull, (id: string) => service.remotePull(id));

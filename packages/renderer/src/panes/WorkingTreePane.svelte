@@ -4,7 +4,15 @@
   import VirtualFileList from '../components/VirtualFileList.svelte';
   import FileContextMenu from '../components/FileContextMenu.svelte';
   import PaneSplitter from '../components/PaneSplitter.svelte';
+  import StashSaveBox from '../components/StashSaveBox.svelte';
   import { EMPTY_SELECTION, nextSelection, type SelectionState } from '../lib/selection.js';
+
+  /**
+   * このペインは**差分モードと Stash 保存モードで共用**する（決定 31）。
+   * 替わるのは下端の箱だけで、ファイル一覧もステージ操作も同じものを使う
+   * （モードで分岐して別のペインを描くと、切り替えるたびに選択とスクロールが飛ぶ）。
+   */
+  const stashMode = $derived(app.viewMode === 'stash');
 
   const stagedCount = $derived(app.summary?.counts.staged ?? 0);
   const changesTotal = $derived(app.changes.total);
@@ -72,7 +80,15 @@
   <div class="groups" style:grid-template-rows="{stagedHeight}px 6px 1fr" bind:clientHeight={groupsHeight}>
     <section class="group">
       <header>
-        <h2>ステージ済み <span class="count">{stagedCount}</span></h2>
+        <!--
+          セーブモードでは見出しを変えて色を替える（決定 31）。
+          同じ一覧が「コミットの材料」ではなく「退避の材料」であることを、
+          下端の箱まで視線を落とさなくても分かるようにするため。
+        -->
+        <h2 class:stash={stashMode}>
+          {stashMode ? 'Stash ステージ済み' : 'ステージ済み'}
+          <span class="count">{stagedCount}</span>
+        </h2>
         <div class="actions">
           <button disabled={app.busy || stagedCount === 0} onclick={() => void app.unstage({ kind: 'filtered', filter: { group: 'staged' } })}>
             すべて戻す
@@ -111,21 +127,29 @@
           >
             すべてステージ
           </button>
-          <button
-            class="danger"
-            disabled={app.busy || changesTotal === 0}
-            title="作業ツリーの変更だけを捨てます。ステージ済みの内容は残ります。"
-            onclick={() => void app.discard({ kind: 'filtered', filter: { group: 'unstaged' } })}
-          >
-            未ステージの変更をすべて破棄
-          </button>
-          <button
-            class="danger"
-            disabled={app.busy || (app.summary?.counts.untracked ?? 0) === 0}
-            onclick={() => void app.deleteUntracked({ kind: 'filtered', filter: { group: 'untracked' } })}
-          >
-            未追跡をすべて削除
-          </button>
+          <!--
+            破壊的な 2 つはセーブモードでは出さない（決定 31）。
+            退避する側を選んでいる最中に、**退避されない側を不可逆に消す口**を
+            すぐ隣へ並べない（どちらも git には残らない操作）。
+            必要なら差分モードへ戻れば同じ一覧・同じ選択のまま押せる。
+          -->
+          {#if !stashMode}
+            <button
+              class="danger"
+              disabled={app.busy || changesTotal === 0}
+              title="作業ツリーの変更だけを捨てます。ステージ済みの内容は残ります。"
+              onclick={() => void app.discard({ kind: 'filtered', filter: { group: 'unstaged' } })}
+            >
+              未ステージの変更をすべて破棄
+            </button>
+            <button
+              class="danger"
+              disabled={app.busy || (app.summary?.counts.untracked ?? 0) === 0}
+              onclick={() => void app.deleteUntracked({ kind: 'filtered', filter: { group: 'untracked' } })}
+            >
+              未追跡をすべて削除
+            </button>
+          {/if}
         </div>
       </header>
       <VirtualFileList
@@ -142,21 +166,25 @@
     </section>
   </div>
 
-  <section class="commit">
-    <textarea
-      bind:value={app.commitMessage}
-      placeholder="コミットメッセージ"
-      rows="4"
-      spellcheck="false"
-    ></textarea>
-    <div class="commit-actions">
-      <label>
-        <input type="checkbox" bind:checked={app.amend} />
-        直前のコミットを修正
-      </label>
-      <button disabled={!app.canCommit} onclick={() => void app.commit()}>コミット</button>
-    </div>
-  </section>
+  {#if stashMode}
+    <StashSaveBox />
+  {:else}
+    <section class="commit">
+      <textarea
+        bind:value={app.commitMessage}
+        placeholder="コミットメッセージ"
+        rows="4"
+        spellcheck="false"
+      ></textarea>
+      <div class="commit-actions">
+        <label>
+          <input type="checkbox" bind:checked={app.amend} />
+          直前のコミットを修正
+        </label>
+        <button disabled={!app.canCommit} onclick={() => void app.commit()}>コミット</button>
+      </div>
+    </section>
+  {/if}
 </div>
 
 {#if contextMenu !== null}
@@ -250,6 +278,15 @@
     /* ペインを狭めたとき、操作ボタンより先に見出しから縮ませる。 */
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /*
+   * Stash 保存モードの見出し（決定 31）。アクセント色は縦帯で選択中のモードを
+   * 示している色と同じなので、「いまどのモードにいるか」が 2 箇所で一致する。
+   * 太さは変えない（幅が動くと一覧の行がずれて見える）。
+   */
+  h2.stash {
+    color: var(--app-accent);
   }
 
   .count {

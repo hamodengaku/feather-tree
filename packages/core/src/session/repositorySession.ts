@@ -6,10 +6,13 @@ import {
   getCommitFiles,
   getFileDiff,
   getLog,
+  getStashFileDiff,
+  getStashFiles,
   getStatus,
   getUntrackedFileDiff,
   listBranches,
   listRemotes,
+  listStashes,
   readConflictFile,
   readConflictText,
   readUserIdentity,
@@ -23,6 +26,7 @@ import {
   type ConflictParse,
   type FileDiff,
   type GitContext,
+  type StashEntry,
   type StatusSnapshot,
   type TextLine,
   type UserIdentity,
@@ -311,6 +315,55 @@ export class RepositorySession {
       getCommitFileDiff(this.context(signal), oid, path, {
         contextLines: settings.diffContextLines,
         maxLines: settings.diffMaxLines,
+      }),
+    );
+  }
+
+  /* ---------------------------------------------------------------- stash（決定 31） */
+
+  /**
+   * 対応表 #28: stash の一覧。
+   *
+   * **スナップショットとして持たない**（branches / remotes と違う扱いにしてある）。
+   * 持つとリポジトリを開くとき（#1 〜 #4）に 1 プロセス増えるが、Stash 解放モードを
+   * 開かない利用者にはその 1 本が丸ごと無駄になる。履歴（#20）と同じく、
+   * **見えているモードに入った瞬間に初めて取る**。
+   */
+  async listStashes(signal?: AbortSignal): Promise<StashEntry[]> {
+    return this.track(['stash', 'list'], () => listStashes(this.context(signal)));
+  }
+
+  /**
+   * 対応表 #45: stash の変更ファイル一覧。
+   *
+   * 参照は**生の oid**。`stash@{n}` の n は drop / pop のたびにずれるので、
+   * 一覧が古いまま読むと別の stash を見せてしまう（docs/02-git-command-map.md の
+   * 「参照の渡し方」）。
+   */
+  async getStashFiles(oid: string, signal?: AbortSignal): Promise<CommitFileChange[]> {
+    return this.track(['stash', 'show', shortOid(oid)], () =>
+      getStashFiles(this.context(signal), oid),
+    );
+  }
+
+  /**
+   * 対応表 #46: stash 内の 1 ファイルの diff。
+   * 文脈行数と行数上限は作業ツリーの diff（#18 / #19）と同じ設定に従う。
+   *
+   * `fromUntracked` は外部で `-u` 付きに作られた stash 用の打ち直し（#46 の注記）。
+   */
+  async getStashDiff(
+    oid: string,
+    path: string,
+    fromUntracked: boolean,
+    signal?: AbortSignal,
+  ): Promise<FileDiff | null> {
+    const settings = this.#deps.settings();
+    return this.track(['diff', shortOid(oid), path], () =>
+      getStashFileDiff(this.context(signal), oid, path, {
+        contextLines: settings.diffContextLines,
+        maxLines: settings.diffMaxLines,
+        fromUntracked,
       }),
     );
   }

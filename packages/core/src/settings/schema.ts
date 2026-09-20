@@ -13,8 +13,15 @@ import { isAbsolute } from 'node:path';
 
 export type ThemeName = 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
 export type UntrackedMode = 'normal' | 'all';
-/** ペイン領域のモード（決定 27）。'diff' = 左右 3 分割、'log' = 上下 2 分割の履歴。 */
-export type ViewMode = 'diff' | 'log';
+/**
+ * ペイン領域のモード（決定 27 / 31）。
+ *
+ *  - 'diff'       差分モード。左右 2 分割（作業ツリー / 差分）
+ *  - 'stash'      Stash 保存モード。**差分モードと同じ 2 ペイン**で、下端の箱だけが替わる
+ *  - 'log'        コミットログモード。上下 2 分割（履歴 / コミット詳細）
+ *  - 'stash-list' Stash 解放モード。上下 2 分割（stash 一覧 / stash 詳細）
+ */
+export type ViewMode = 'diff' | 'log' | 'stash' | 'stash-list';
 /** ウィンドウ復帰時の更新方式（決定14の唯一の自動入口の挙動）。 */
 export type RefocusUpdateMode = 'auto' | 'modal' | 'none';
 
@@ -47,7 +54,7 @@ export interface AppSettings {
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
-  /** 差分モードとコミットログモードのどちらを出しているか（決定 27）。 */
+  /** どのモードを出しているか（決定 27 / 31）。 */
   readonly viewMode: ViewMode;
   /**
    * コミットログモードの下部（コミット詳細）ペインの高さ（px）。残りはコミットリストに割り当てる。
@@ -59,6 +66,16 @@ export interface AppSettings {
   readonly logDetailHeight: number;
   /** コミット詳細ペイン「変更」タブの、左のファイルリストの幅（px）。 */
   readonly commitFileListWidth: number;
+  /**
+   * Stash 解放モードの下部（stash 詳細）ペインの高さ（px）。
+   *
+   * `logDetailHeight` と**共有しない**。同じ上下 2 分割の形でも、読むものの量が違う
+   * （コミット詳細はメタ情報と本文が主、stash 詳細はファイル一覧と差分が主）ので、
+   * 片方で決めた高さがもう片方に伝染すると、モードを行き来するたびに直すことになる。
+   */
+  readonly stashDetailHeight: number;
+  /** stash 詳細ペインの、左のファイルリストの幅（px）。理由は stashDetailHeight と同じ。 */
+  readonly stashFileListWidth: number;
   /**
    * リポジトリタブに現在情報（ブランチ名と HEAD の件名）を出すか（決定 24）。
    * 切ると従来どおりリポジトリ名だけになる。
@@ -107,6 +124,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   viewMode: 'diff',
   logDetailHeight: 260,
   commitFileListWidth: 260,
+  stashDetailHeight: 260,
+  stashFileListWidth: 260,
   tabShowCurrentInfo: true,
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
@@ -125,7 +144,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 const THEMES: readonly ThemeName[] = ['classic-dark', 'classic-light', 'phoenix-dark', 'phoenix-light'];
 const UNTRACKED: readonly UntrackedMode[] = ['normal', 'all'];
 const REFOCUS_MODES: readonly RefocusUpdateMode[] = ['auto', 'modal', 'none'];
-const VIEW_MODES: readonly ViewMode[] = ['diff', 'log'];
+const VIEW_MODES: readonly ViewMode[] = ['diff', 'log', 'stash', 'stash-list'];
 
 /** 絶対パスの上限。Windows の MAX_PATH は 260 だが、長パス有効時はもっと長くなりうる。 */
 const MAX_PATH_LENGTH = 4096;
@@ -203,6 +222,8 @@ export function normalizeSettings(raw: unknown): AppSettings {
       1200,
       DEFAULT_SETTINGS.commitFileListWidth,
     ),
+    stashDetailHeight: clampInt(o['stashDetailHeight'], 120, 2000, DEFAULT_SETTINGS.stashDetailHeight),
+    stashFileListWidth: clampInt(o['stashFileListWidth'], 120, 1200, DEFAULT_SETTINGS.stashFileListWidth),
     tabShowCurrentInfo: boolOr(o['tabShowCurrentInfo'], DEFAULT_SETTINGS.tabShowCurrentInfo),
     paneWidths: {
       left: clampInt(record(o['paneWidths'])['left'], 120, 1200, DEFAULT_SETTINGS.paneWidths.left),

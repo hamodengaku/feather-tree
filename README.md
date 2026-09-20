@@ -13,6 +13,8 @@
 - **Git for Windows が必須**（2.25 以降。`--pathspec-from-file` を使うため）
   - FeatherTree は git を同梱しない。https://gitforwindows.org/ から導入する
   - 未検出の場合、起動時に導入を案内する
+  - **Stash 保存モードだけ 2.35 以降が必要**（`git stash push --staged` を使うため）。
+    それより古い git でも他の機能はすべて動き、保存ボタンだけが理由付きで無効になる
 
 ### インストール
 
