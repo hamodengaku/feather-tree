@@ -33,7 +33,7 @@ import {
 } from '@feathertree/git';
 import type { CommandLog } from '@feathertree/base-core';
 import { gitSshEnv, sshKeyFor } from '../env/sshCommand.js';
-import { mapGitStderr, type MappedError } from '../policy/errorMapping.js';
+import { mapGitOutput, type MappedError } from '../policy/errorMapping.js';
 import { redactUrl } from '../policy/redactUrl.js';
 import type { AppSettings } from '../settings/schema.js';
 import { pageEntries, type StatusFilter, type StatusPage, type StatusSummary } from './statusView.js';
@@ -486,7 +486,8 @@ export function toMappedError(err: unknown): MappedError {
     return { kind: 'cancelled', message: '操作を中断しました。' };
   }
   if (err instanceof GitCommandError) {
-    return mapGitStderr(err.stderr, err.exitCode);
+    // stdout も渡す（merge / pull の競合は stdout にしか出ない）
+    return mapGitOutput(err.stderr, err.stdout, err.exitCode);
   }
   if (err instanceof Error) {
     return { kind: 'internal', message: '内部エラーが発生しました。', detail: err.message };

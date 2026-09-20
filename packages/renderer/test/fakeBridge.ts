@@ -700,7 +700,10 @@ export class FakeBridge {
       branchSwitch: (id: string, branchName: string) => {
         this.record('branchSwitch', id, branchName);
         this.seq += 1;
-        return Promise.resolve(ok({ statusSeq: this.seq }));
+        // main と同じ判定: ローカルに無い名前ならリモートからの取り出し（#47）になり、
+        // 新しいローカル枝ができるので main 側が一覧も取り直す
+        const isLocal = this.branches.some((b) => !b.isRemote && b.shortName === branchName);
+        return Promise.resolve(ok({ statusSeq: this.seq, branchesRefreshed: !isLocal }));
       },
       branchCreate: (id: string, req: BranchCreateRequest) => {
         this.record('branchCreate', id, req);

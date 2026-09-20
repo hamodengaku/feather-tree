@@ -555,6 +555,15 @@ export interface BranchDto {
 
 export interface BranchSwitchResultDto {
   readonly statusSeq: number;
+  /**
+   * 切替に伴ってブランチ一覧（対応表 #3）も取り直したかどうか。
+   *
+   * 真になるのは、リモートにだけあるブランチへ切り替えたとき（git の DWIM が
+   * ローカル追跡ブランチを新しく作る）。**その判定は main が自分の一覧で行う**ので、
+   * renderer はこの値を見てブランチペインを読み直すかどうかだけを決める。
+   * 偽のときに読み直しても main のスナップショットは切替前のままで、IPC が無駄に増える。
+   */
+  readonly branchesRefreshed: boolean;
 }
 
 export interface BranchCreateRequest {

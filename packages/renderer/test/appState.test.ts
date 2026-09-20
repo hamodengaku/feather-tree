@@ -610,24 +610,54 @@ describe('更新（リロード）の対象', () => {
 
 describe('ブランチ操作', () => {
   it('ブランチ切替は確認なしで即実行し、一覧を更新する', async () => {
-    const { app, bridge } = await boot();
+    const { app, bridge } = await boot((b) => {
+      b.branches = [branch('main', { isHead: true }), branch('feature')];
+    });
     const pagesBefore = bridge.countOf('statusGetSummary');
+    const branchesBefore = bridge.countOf('branchList');
 
     await app.switchBranch('feature');
 
     expect(bridge.lastArgsOf('branchSwitch')).toEqual(['s1', 'feature']);
     expect(bridge.countOf('statusGetSummary')).toBeGreaterThan(pagesBefore);
+    // ローカル同士の切替では顔ぶれが変わらないのでブランチ一覧は読み直さない
+    expect(bridge.countOf('branchList')).toBe(branchesBefore);
     expect(app.error).toBeNull();
   });
 
-  it('ブランチ作成に成功するとダイアログを閉じる', async () => {
-    const { app, bridge } = await boot();
-    app.openCreateBranch();
+  it('リモートブランチへの切替はブランチ一覧も読み直す（新しいローカル枝が増えるため）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.branches = [branch('main', { isHead: true })];
+    });
+    const branchesBefore = bridge.countOf('branchList');
+    // main が #47 を打って一覧を取り直した状態（新しいローカル枝が載っている）
+    bridge.branches = [
+      branch('main'),
+      branch('feature/x', { isHead: true, upstream: 'origin/feature/x' }),
+    ];
 
+    await app.switchBranch('origin/feature/x');
+
+    expect(bridge.lastArgsOf('branchSwitch')).toEqual(['s1', 'origin/feature/x']);
+    expect(bridge.countOf('branchList')).toBeGreaterThan(branchesBefore);
+    expect(app.branches.map((b) => b.shortName)).toContain('feature/x');
+  });
+
+  it('ブランチ作成に成功するとダイアログを閉じ、一覧に作った枝が出る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.branches = [branch('main', { isHead: true })];
+    });
+    const branchesBefore = bridge.countOf('branchList');
+    // main は #14 のあとに #3 を済ませている状態
+    bridge.branches = [branch('main'), branch('obana/topic', { isHead: true })];
+
+    app.openCreateBranch();
     await app.createBranch('obana/topic', 'main', () => app.closeCreateBranch());
 
     expect(bridge.lastArgsOf('branchCreate')).toEqual(['s1', { name: 'obana/topic', startPoint: 'main' }]);
     expect(app.createBranchOpen).toBe(false);
+    expect(bridge.countOf('branchList')).toBeGreaterThan(branchesBefore);
+    expect(app.branches.map((b) => b.shortName)).toContain('obana/topic');
   });
 
   /*
@@ -1265,10 +1295,46 @@ describe('ブランチのマージ (対応表 #35)', () => {
 
     expect(app.pendingConfirmation?.confirmation.action).toBe('merge-branch');
 
+    const branchesBefore = bridge.countOf('branchList');
     await app.acceptConfirmation();
 
     expect(bridge.confirmedCalls).toEqual(['branchMerge']);
     expect(app.pendingConfirmation).toBeNull();
+    // main は #35 のあとに #3 を打っているので、その結果を読み直す（ahead/behind が変わる）
+    expect(bridge.countOf('branchList')).toBe(branchesBefore + 1);
+  });
+
+  it('確認が不要な構成でもブランチ一覧を取り直す', async () => {
+    const { app, bridge } = await boot();
+    const branchesBefore = bridge.countOf('branchList');
+
+    await app.mergeBranch('topic');
+
+    expect(app.pendingConfirmation).toBeNull();
+    expect(bridge.countOf('branchList')).toBe(branchesBefore + 1);
+  });
+
+  it('競合で失敗しても、ファイル一覧を読み直して競合ファイルを出す', async () => {
+    const bridge = new FakeBridge();
+    // main は失敗の直前に status を取り直している（#35 → #2）ので、その結果を読ませる
+    const failing: FeatherTreeBridge = {
+      ...bridge.build(),
+      branchMerge: () => {
+        bridge.changes = [entry('a.txt')];
+        return Promise.resolve({
+          ok: false,
+          error: { kind: 'git-failed', message: 'コンフリクトが発生しました。競合を解決してください。' },
+        });
+      },
+    };
+    const app = await load(failing);
+    const summariesBefore = bridge.countOf('statusGetSummary');
+
+    await app.mergeBranch('topic');
+
+    expect(app.error?.message).toContain('コンフリクトが発生しました');
+    expect(bridge.countOf('statusGetSummary')).toBeGreaterThan(summariesBefore);
+    expect(app.changes.entries.map((e) => e?.path)).toEqual(['a.txt']);
   });
 
   /*
@@ -2281,6 +2347,49 @@ describe('ブランチ操作のあとのブランチ一覧', () => {
     expect(bridge.countOf('branchList')).toBe(before + 1);
   });
 
+  /*
+   * 失敗時の読み直しは**どこまで進んだか**で範囲が違う（#operate の reloadOnFailure）。
+   * マージは枝の先端が動かないまま競合するので、一覧までは読み直さない。
+   * プルは fetch の分だけ追跡枝が動いているので、成功時と同じ範囲を読み直す。
+   */
+  it('マージが競合で失敗しても、ブランチ一覧までは取り直さない（枝の先端は動いていない）', async () => {
+    const bridge = new FakeBridge();
+    const failing: FeatherTreeBridge = {
+      ...bridge.build(),
+      branchMerge: () => {
+        bridge.changes = [entry('a.txt')];
+        return Promise.resolve({ ok: false, error: { kind: 'git-failed', message: 'コンフリクトが発生しました。' } });
+      },
+    };
+    const app = await load(failing);
+    const before = bridge.countOf('branchList');
+    const summariesBefore = bridge.countOf('statusGetSummary');
+
+    await app.mergeBranch('topic');
+
+    // 競合ファイルを出すための status は読み直すが、一覧は読み直さない
+    expect(bridge.countOf('statusGetSummary')).toBeGreaterThan(summariesBefore);
+    expect(bridge.countOf('branchList')).toBe(before);
+  });
+
+  it('プルが競合で失敗したときはブランチ一覧も取り直す（fetch の分だけ追跡枝が動く）', async () => {
+    const bridge = new FakeBridge();
+    const failing: FeatherTreeBridge = {
+      ...bridge.build(),
+      remotePull: () => {
+        bridge.changes = [entry('a.txt')];
+        return Promise.resolve({ ok: false, error: { kind: 'git-failed', message: 'コンフリクトが発生しました。' } });
+      },
+    };
+    const app = await load(failing);
+    const before = bridge.countOf('branchList');
+
+    await app.pull();
+
+    expect(bridge.countOf('branchList')).toBe(before + 1);
+    expect(app.changes.entries.map((e) => e?.path)).toEqual(['a.txt']);
+  });
+
   it('確認待ちで止まったマージでは取り直さない（承認して実行されたら取り直す）', async () => {
     const { app, bridge } = await boot((b) => {
       b.requireConfirmation = 'branchMerge';
@@ -2321,6 +2430,25 @@ describe('書き込み操作の後の履歴', () => {
 
     await app.pull();
 
+    expect(bridge.countOf('logGetPage')).toBe(before + 1);
+  });
+
+  it('コミットログモードでは、競合で失敗した pull のあとも履歴を取り直す', async () => {
+    const bridge = new FakeBridge();
+    bridge.commits = [commit('aaa1111')];
+    const failing: FeatherTreeBridge = {
+      ...bridge.build(),
+      remotePull: () =>
+        Promise.resolve({ ok: false, error: { kind: 'git-failed', message: 'コンフリクトが発生しました。' } }),
+    };
+    const app = await load(failing);
+    await app.setViewMode('log');
+    await app.ensureLog();
+    const before = bridge.countOf('logGetPage');
+
+    await app.pull();
+
+    // #20 は --all なので、HEAD が進んでいなくても追跡枝が動けば古くなる
     expect(bridge.countOf('logGetPage')).toBe(before + 1);
   });
 

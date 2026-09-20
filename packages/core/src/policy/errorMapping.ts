@@ -108,15 +108,34 @@ const RULES: readonly Rule[] = [
 ];
 
 export function mapGitStderr(stderr: string, exitCode: number): MappedError {
-  const detail = stderr.trim();
+  return mapGitOutput(stderr, '', exitCode);
+}
 
-  for (const rule of RULES) {
-    if (rule.test.test(detail)) {
-      const kind: FtErrorKind = /not a git repository/i.test(detail) ? 'not-a-repository' : 'git-failed';
-      return { kind, message: rule.message, ...(detail.length > 0 ? { detail } : {}), exitCode };
+/**
+ * stderr と stdout の両方を見て写す。
+ *
+ * **`merge` / `pull` の競合は stdout に出る**（`CONFLICT (content): ...` /
+ * `Automatic merge failed`。stderr は空。実測は docs/02-git-command-map.md）。
+ * stderr しか見ないと、競合したのに「git の実行に失敗しました」としか言えない。
+ *
+ * 判定は stderr を先に見る。pull の stderr には fetch の進捗しか入らないことがあり、
+ * その進捗を detail に出しても利用者の役に立たないので、**当たった側の原文だけ**を
+ * detail に残す（どちらも当たらなければ、中身のある方を残す）。
+ */
+export function mapGitOutput(stderr: string, stdout: string, exitCode: number): MappedError {
+  const err = stderr.trim();
+  const out = stdout.trim();
+
+  for (const source of [err, out]) {
+    if (source.length === 0) continue;
+    for (const rule of RULES) {
+      if (!rule.test.test(source)) continue;
+      const kind: FtErrorKind = /not a git repository/i.test(source) ? 'not-a-repository' : 'git-failed';
+      return { kind, message: rule.message, detail: source, exitCode };
     }
   }
 
+  const detail = err.length > 0 ? err : out;
   return {
     kind: 'git-failed',
     message: 'git の実行に失敗しました。',

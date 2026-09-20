@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DESTRUCTIVE_ACTIONS,
   describeAction,
+  mapGitOutput,
   mapGitStderr,
   requiresConfirmation,
   validateIdentityValue,
@@ -94,6 +95,46 @@ describe('エラーメッセージのマッピング', () => {
   it('リポジトリでない場合は専用の kind になる', () => {
     const mapped = mapGitStderr('fatal: not a git repository (or any of the parent directories): .git', 128);
     expect(mapped.kind).toBe('not-a-repository');
+  });
+
+  /*
+   * merge / pull の競合は stdout にしか出ない（stderr は空、pull は fetch の進捗だけ）。
+   * 実測は docs/02-git-command-map.md「エラーメッセージのマッピング」。
+   */
+  it('stderr が空でも stdout の CONFLICT を拾う（マージの競合）', () => {
+    const stdout =
+      'Auto-merging f.txt\nCONFLICT (content): Merge conflict in f.txt\n' +
+      'Automatic merge failed; fix conflicts and then commit the result.\n';
+
+    const mapped = mapGitOutput('', stdout, 1);
+
+    expect(mapped.message).toContain('コンフリクトが発生しました');
+    expect(mapped.detail).toBe(stdout.trim());
+  });
+
+  it('stderr が進捗だけなら、当たった stdout の原文を detail にする（プルの競合）', () => {
+    const stderr = 'remote: Counting objects: 100% (5/5), done.\nFrom D:/repo\n   d303927..2b286e8  main -> origin/main';
+    const stdout = 'Auto-merging f.txt\nCONFLICT (content): Merge conflict in f.txt';
+
+    const mapped = mapGitOutput(stderr, stdout, 1);
+
+    expect(mapped.message).toContain('コンフリクトが発生しました');
+    // fetch の進捗を見せても仕方がないので、競合を言っている側だけを残す
+    expect(mapped.detail).toBe(stdout.trim());
+  });
+
+  it('stderr が当たるなら stdout は見ない（未コミットの変更でマージが中止された場合）', () => {
+    const stderr =
+      'error: Your local changes to the following files would be overwritten by merge:\n\tf.txt\nAborting';
+    const mapped = mapGitOutput(stderr, 'Updating d303927..6e9c60d', 1);
+
+    expect(mapped.message).toContain('未コミットの変更が上書きされるため');
+    expect(mapped.detail).toBe(stderr.trim());
+  });
+
+  it('どちらも当たらなければ、中身のある方の原文を残す', () => {
+    expect(mapGitOutput('', 'something on stdout', 1).detail).toBe('something on stdout');
+    expect(mapGitOutput('something on stderr', 'noise', 1).detail).toBe('something on stderr');
   });
 });
 

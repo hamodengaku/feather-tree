@@ -7,6 +7,7 @@ import {
   mergeBranch,
   resolveRepository,
   switchBranch,
+  switchToRemoteBranch,
 } from '../src/index.js';
 import { commitAll, createFixture, type Fixture } from './fixture.js';
 
@@ -102,6 +103,53 @@ describe('ブランチ切替 (対応表 #12)', () => {
     expect(feature?.isHead).toBe(true);
   });
 
+  it('リモートブランチを取り出すと上流つきのローカル枝ができる（対応表 #47）', async () => {
+    const upstream = await createFixture();
+    try {
+      await upstream.write('u.txt', 'x');
+      await commitAll(upstream, 'upstream init');
+      await upstream.run('switch', '-c', 'feature/x');
+      await upstream.write('f.txt', 'from feature');
+      await commitAll(upstream, 'feature work');
+      await upstream.run('switch', 'main');
+
+      await fx.run('remote', 'add', 'origin', upstream.dir);
+      await fx.run('fetch', 'origin');
+
+      await switchToRemoteBranch(fx.ctx, 'origin/feature/x');
+
+      const branches = await listBranches(fx.ctx);
+      const local = branches.find((b) => b.shortName === 'feature/x' && !b.isRemote);
+      expect(local?.isHead).toBe(true);
+      // リモート名を除いた名前が付き、上流もそこへ張られる
+      expect(local?.upstream).toBe('origin/feature/x');
+    } finally {
+      await upstream.cleanup();
+    }
+  });
+
+  it('同名のローカルブランチが既にあると取り出しは失敗する（main が #12 に振り分ける根拠）', async () => {
+    const upstream = await createFixture();
+    try {
+      await upstream.write('u.txt', 'x');
+      await commitAll(upstream, 'upstream init');
+      await upstream.run('switch', '-c', 'feature/x');
+      await upstream.write('f.txt', 'from feature');
+      await commitAll(upstream, 'feature work');
+      await upstream.run('switch', 'main');
+
+      await fx.run('remote', 'add', 'origin', upstream.dir);
+      await fx.run('fetch', 'origin');
+      await fx.run('branch', 'feature/x');
+
+      await expect(switchToRemoteBranch(fx.ctx, 'origin/feature/x')).rejects.toBeInstanceOf(
+        GitCommandError,
+      );
+    } finally {
+      await upstream.cleanup();
+    }
+  });
+
   it('作業ツリーの変更が上書きされる場合は失敗する', async () => {
     await fx.run('branch', 'feature');
     await fx.run('switch', 'feature');
@@ -193,7 +241,16 @@ describe('マージ (対応表 #35)', () => {
     await fx.write('a.txt', 'main side');
     await commitAll(fx, 'main edit');
 
-    await expect(mergeBranch(fx.ctx, 'feature')).rejects.toBeInstanceOf(GitCommandError);
+    const error = await mergeBranch(fx.ctx, 'feature').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(GitCommandError);
+    /*
+     * 競合の説明は **stdout に出る**（stderr は空）。stderr しか持ち帰らないと
+     * 「git の実行に失敗しました」としか言えないので、GitCommandError に stdout も載せる。
+     */
+    const failure = error as GitCommandError;
+    expect(failure.stderr.trim()).toBe('');
+    expect(failure.stdout).toMatch(/CONFLICT|Automatic merge failed/);
 
     // 競合したままの状態が残る（利用者が解決するか自分で abort する）
     const status = await fx.run('status', '--porcelain=v2', '-z');

@@ -221,11 +221,58 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
 
     expect(session.snapshot?.head.branch).toBe('feature');
     expect(result.statusSeq).toBe(session.statusSeq);
+    expect(result.branchesRefreshed).toBe(false);
     const added = commandLog.recent(10).slice(0, commandLog.size - before);
     expect(added.map((e) => e.args[0]).sort()).toEqual(['status', 'switch']);
   });
 
-  it('ブランチ作成は起点から分岐して切替まで行い、ブランチ一覧も取り直す（#14 → #2 → #3）', async () => {
+  it('リモートブランチの取り出しはブランチ一覧も取り直す（対応表 #47 → #2 → #3）', async () => {
+    // 疑似リモート（もう 1 つの使い捨てリポジトリ）に feature/x を用意する
+    const remoteDir = join(TEST_ROOT, randomBytes(8).toString('hex'));
+    await mkdir(remoteDir, { recursive: true });
+    await git(remoteDir, ['init', '--initial-branch=main']);
+    await git(remoteDir, ['config', 'user.name', 'T']);
+    await git(remoteDir, ['config', 'user.email', 't@example.invalid']);
+    await writeFile(join(remoteDir, 'u.txt'), 'x', 'utf8');
+    await git(remoteDir, ['add', '-A']);
+    await git(remoteDir, ['commit', '-m', 'upstream init']);
+    await git(remoteDir, ['switch', '-c', 'feature/x']);
+    await writeFile(join(remoteDir, 'f.txt'), 'from feature', 'utf8');
+    await git(remoteDir, ['add', '-A']);
+    await git(remoteDir, ['commit', '-m', 'feature work']);
+    await git(remoteDir, ['switch', 'main']);
+
+    try {
+      await write('a.txt', 'x');
+      const session = await manager.open(dir);
+      const ops = new SessionOperations(session);
+      await ops.stage({ kind: 'all' });
+      await ops.commit('init');
+      await git(dir, ['remote', 'add', 'origin', remoteDir]);
+      await git(dir, ['fetch', 'origin']);
+      const before = commandLog.size;
+
+      const result = await ops.switchToRemoteBranch('origin/feature/x');
+
+      expect(session.snapshot?.head.branch).toBe('feature/x');
+      expect(result.branchesRefreshed).toBe(true);
+      // 一覧を取り直しているので、更新ボタンを押さなくても新しいローカル枝が見える
+      const local = session.branches.find((b) => !b.isRemote && b.shortName === 'feature/x');
+      expect(local?.upstream).toBe('origin/feature/x');
+      const added = commandLog.recent(10).slice(0, commandLog.size - before);
+      expect(added.map((e) => e.args.join(' ')).sort()).toEqual([
+        'for-each-ref',
+        'status',
+        'switch --track',
+      ]);
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+        () => undefined,
+      );
+    }
+  });
+
+  it('ブランチ作成は起点から分岐して切替まで行い、一覧も取り直す（対応表 #14 → #2 → #3）', async () => {
     await write('a.txt', 'x');
     const session = await manager.open(dir);
     const ops = new SessionOperations(session);
@@ -237,10 +284,39 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
 
     expect(session.snapshot?.head.branch).toBe('feature');
     expect(result.statusSeq).toBe(session.statusSeq);
+    // 作ったブランチは #3 の結果にしか現れない。取り直さないと一覧に出ないまま印だけが消える
+    expect(session.branches.some((b) => !b.isRemote && b.shortName === 'feature')).toBe(true);
     const added = commandLog.recent(10).slice(0, commandLog.size - before);
     expect(added.map((e) => e.args[0]).sort()).toEqual(['for-each-ref', 'status', 'switch']);
-    // 作ったブランチは #3 の結果にしか現れない。取り直さないと一覧に出ないまま印だけが消える
-    expect(session.branches.map((b) => b.shortName)).toContain('feature');
+  });
+
+  it('マージが競合で失敗したら、例外を投げる前に status を取り直す（対応表 #35 → #2）', async () => {
+    await write('a.txt', 'base');
+    const session = await manager.open(dir);
+    const ops = new SessionOperations(session);
+    await ops.stage({ kind: 'all' });
+    await ops.commit('init');
+    await ops.createBranch('topic', 'main');
+    await write('a.txt', 'topic side');
+    // 書いた直後はスナップショットに載っていない（決定 14: 監視もポーリングもしない）
+    await session.refreshStatus();
+    await ops.stage({ kind: 'all' });
+    await ops.commit('topic edit');
+    await ops.switchBranch('main');
+    await write('a.txt', 'main side');
+    await session.refreshStatus();
+    await ops.stage({ kind: 'all' });
+    await ops.commit('main edit');
+    const before = commandLog.size;
+
+    await expect(ops.mergeBranch('topic')).rejects.toThrow();
+
+    // 競合したファイルが、更新ボタンを押さなくても一覧に出ている
+    expect(session.getStatusSummary().counts.unmerged).toBe(1);
+    expect(session.getStatusPage(0, 50, { group: 'changes' }).entries.map((e) => e.path)).toEqual(['a.txt']);
+    // 失敗の後始末は #2 だけ（枝の先端は動いていないので #3 は打たない）
+    const added = commandLog.recent(10).slice(0, commandLog.size - before);
+    expect(added.map((e) => e.args[0]).sort()).toEqual(['merge', 'status']);
   });
 
   it('明示パスの上限を超えたら拒否する', async () => {

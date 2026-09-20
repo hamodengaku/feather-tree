@@ -425,6 +425,57 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     expect(service.statusGetSummary(id).seq).toBe(result.statusSeq);
   });
 
+  it('リモートブランチのダブルクリックはローカルへ取り出して切り替える（対応表 #47 → #2 → #3）', async () => {
+    const remoteDir = join(TEST_ROOT, randomBytes(8).toString('hex'));
+    await mkdir(remoteDir, { recursive: true });
+    await git(remoteDir, ['init', '--initial-branch=main']);
+    await git(remoteDir, ['config', 'user.name', 'T']);
+    await git(remoteDir, ['config', 'user.email', 't@example.invalid']);
+    await writeFile(join(remoteDir, 'u.txt'), 'x', 'utf8');
+    await git(remoteDir, ['add', '-A']);
+    await git(remoteDir, ['commit', '-m', 'upstream init']);
+    await git(remoteDir, ['switch', '-c', 'feature/x']);
+    await git(remoteDir, ['switch', 'main']);
+
+    try {
+      const id = await openDemo();
+      await service.stage(id, { kind: 'all' });
+      await service.commit(id, { message: 'init', amend: false });
+      await git(dir, ['remote', 'add', 'origin', remoteDir]);
+      await git(dir, ['fetch', 'origin']);
+      await service.sessionRefresh(id, 'full');
+
+      // renderer は一覧に出ている名前そのまま（リモート名つき）を渡す
+      const result = await service.branchSwitch(id, 'origin/feature/x');
+
+      expect(result.branchesRefreshed).toBe(true);
+      expect(service.statusGetSummary(id).head?.branch).toBe('feature/x');
+      // 一覧も取り直しているので、full refresh 抜きで新しいローカル枝が見える
+      const local = service.branchList(id).find((b) => !b.isRemote && b.shortName === 'feature/x');
+      expect(local?.upstream).toBe('origin/feature/x');
+
+      // 同じ行をもう一度叩くと、今度は既存のローカル枝への切替（#12）になる
+      await service.branchSwitch(id, 'main');
+      const again = await service.branchSwitch(id, 'origin/feature/x');
+      expect(again.branchesRefreshed).toBe(false);
+      expect(service.statusGetSummary(id).head?.branch).toBe('feature/x');
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+        () => undefined,
+      );
+    }
+  });
+
+  it('リモート名を落とした名前は受け付けない（renderer が送る名前は一覧の名前そのまま、3-B）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+
+    await expect(service.branchSwitch(id, 'feature/x')).rejects.toMatchObject({
+      dto: { kind: 'internal' },
+    });
+  });
+
   it('未コミットの変更が上書きされる切替は失敗する', async () => {
     const id = await openDemo();
     await service.stage(id, { kind: 'all' });
@@ -490,6 +541,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
      * **作成した直後にブランチ一覧へ現れること。**（2026-09-19 改定）
      * 作ったブランチは #3 の結果にしか現れないので、#2 だけを取り直す従来の設計では
      * ブランチペインに出ないまま、現在ブランチの印だけがどこにも付かない状態になっていた。
+     * ここで branchList が新しい枝を返すのは、sessionRefresh を挟まずに #3 を済ませているため。
      * 対応表の例外「ブランチ作成（作成して切替）後の反映: #14 → #2 → #3」。
      */
     const feature = service.branchList(id).find((b) => b.shortName === 'obana/topic');
@@ -525,6 +577,32 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     expect(branches.find((b) => b.shortName === 'main')?.oid).toBe(
       branches.find((b) => b.shortName === 'topic')?.oid,
     );
+  });
+
+  it('マージが競合したら、競合ファイルを一覧に載せたうえで失敗を返す（対応表 #35 → #2）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+    await service.branchCreate(id, { name: 'topic', startPoint: 'main' });
+    await write('README.md', 'topic side');
+    await service.sessionRefresh(id, 'status');
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'topic edit', amend: false });
+    await service.branchSwitch(id, 'main');
+    await write('README.md', 'main side');
+    await service.sessionRefresh(id, 'status');
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'main edit', amend: false });
+
+    const error = await service.branchMerge(id, 'topic', true).catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ name: 'GitCommandError' });
+    // 競合の説明は stdout に出る（stderr は空）。renderer 側の文言はこれで決まる
+    expect((error as { stdout: string }).stdout).toMatch(/CONFLICT|Automatic merge failed/);
+    // 失敗でも status は取り直してあるので、更新ボタン抜きで競合ファイルが見える
+    expect(service.statusGetSummary(id).counts.unmerged).toBe(1);
+    const page = service.statusGetPage(id, { offset: 0, limit: 10, filter: { group: 'changes' } });
+    expect(page.entries.map((e) => e.path)).toEqual(['README.md']);
   });
 
   it('ファイルを OS 既定のアプリで開く（絶対パスに直して渡す）', async () => {

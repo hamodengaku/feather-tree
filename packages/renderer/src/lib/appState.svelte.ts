@@ -1865,10 +1865,18 @@ export class AppState {
     );
   }
 
-  /** ブランチのダブルクリックによる切替。確認不要（決定: ブランチ移動は無確認）。 */
+  /**
+   * ブランチのダブルクリックによる切替。確認不要（決定: ブランチ移動は無確認）。
+   *
+   * リモートブランチを渡すと main が #47 で取り出す（ローカル枝が 1 本増える）。
+   * **そのときだけ** main がブランチ一覧も取り直すので（`branchesRefreshed`）、
+   * こちらもブランチペインを読み直して新しいローカル枝を出す。
+   * ローカル同士の切替（#12）では枝の顔ぶれが変わらないので読み直さない。
+   */
   switchBranch(branchName: string): Promise<void> {
-    // HEAD が動くので履歴も古くなる（対応表 #12）
+    // 一覧は main が取り直したときだけ。履歴は HEAD が動く以上どちらでも古くなる（#12 / #47）
     return this.#operate(() => this.#ft.branchSwitch(this.#id(), branchName), undefined, undefined, {
+      branches: (result) => result.branchesRefreshed,
       log: true,
     });
   }
@@ -1886,9 +1894,11 @@ export class AppState {
    * ブランチの新規作成(起点から分岐して切替まで)。確認不要・push はしない。
    * 成功時だけ onSuccess を呼ぶ(呼び出し元はこれでダイアログを閉じるかどうかを判断する)。
    *
-   * ブランチ一覧も取り直す（対応表の例外「ブランチ作成後の反映: #14 → #2 → #3」）。
-   * **作ったブランチは #3 の結果にしか現れない**ので、取り直さないとブランチペインに出ないまま
-   * 現在ブランチの印だけが消える。読むのは main のスナップショットなので git は増えない。
+   * ローカル枝が 1 本増えるのでブランチ一覧も読み直す
+   * （対応表の例外「ブランチ作成後の反映: #14 → #2 → #3」。#47 と同じ理由）。
+   * **作ったブランチは #3 の結果にしか現れない**ので、読み直さないとブランチペインに出ないまま
+   * 現在ブランチの印だけが消える。読むのは main のスナップショット（#3 は main が済ませている）
+   * なので git は増えない。
    */
   createBranch(name: string, startPoint: string, onSuccess?: () => void): Promise<void> {
     return this.#operate(
@@ -1903,19 +1913,22 @@ export class AppState {
    * 現在のブランチへ branchName を取り込む。確認が必要（決定 16）。
    * 確認の判定は main が行うので、ここは needs-confirmation を受けて再送するだけ。
    *
-   * 成功したときだけブランチ一覧も取り直す（例外「マージ後の反映: #35 → #2 → #3」）。
-   * HEAD が進み ahead/behind も変わるので、取り直さないとブランチペインが古いまま残る。
+   * 取り込むと HEAD が進んで ahead/behind が変わる（例外「マージ後の反映: #35 → #2 → #3」）。
+   * main は #35 のあとに #3 を済ませているので、こちらも一覧と履歴を読み直す
+   * （読まないと、打った #3 の結果が捨てられ、ブランチペインの数字が古いまま残る）。
+   *
+   * **競合で失敗したときも読み直す**（`reloadOnFailure`）。競合は「作業ツリーを変えたまま
+   * 失敗する」ので、読み直さないと競合ファイルがどこにも出ない。ただし枝の先端は動いて
+   * いないので、失敗時に読むのは status と差分だけ（main も #3 を打っていない）。
    */
   mergeBranch(branchName: string): Promise<void> {
+    const options = { branches: true, log: true, reloadOnFailure: 'active' } as const;
     return this.#operate(
       (confirmed) => this.#ft.branchMerge(this.#id(), branchName, confirmed),
       () =>
-        this.#operate(() => this.#ft.branchMerge(this.#id(), branchName, true), undefined, undefined, {
-          branches: true,
-          log: true,
-        }),
+        this.#operate(() => this.#ft.branchMerge(this.#id(), branchName, true), undefined, undefined, options),
       undefined,
-      { branches: true, log: true },
+      options,
     );
   }
 
@@ -1984,9 +1997,11 @@ export class AppState {
   }
 
   async pull(): Promise<void> {
+    // 競合して失敗したときも読み直す（作業ツリーが競合状態で残り、fetch の分だけ追跡枝は進んでいる）
     await this.#operate(() => this.#ft.remotePull(this.#id()), undefined, undefined, {
       branches: true,
       log: true,
+      reloadOnFailure: 'same',
     });
   }
 
@@ -2048,16 +2063,49 @@ export class AppState {
    * 読み込み帯と反映は操作を始めたタブに付く（#reflect）。確認待ちで止まったときは
    * ここで抜けるので、ダイアログを出している間は帯を出さない。
    *
-   * @param options.branches 成功したらブランチ一覧も取り直す（コミット・ブランチ・リモート操作）。
-   * @param options.log HEAD や ahead/behind が動く操作。保持している履歴が古くなる。
+   * 読み直す範囲は 2 つの軸で指定する。status と差分（reloadActive）は**必ず**読み直すので
+   * 指定の対象ではない。どれも main が済ませたスナップショットを読むだけで、git は増えない。
+   *
+   * @param options.branches ブランチ一覧（#3）も読み直す（コミット・ブランチ・リモート操作）。
+   *   main が取り直したかどうかで決まる操作（ブランチ切替）は、真偽値の代わりに
+   *   結果を見る関数を渡す。
+   * @param options.log 履歴（#20）も始末する。HEAD や ahead/behind が動く操作に付ける
+   *   （#20 は `--all` なので、追跡枝が動くだけでも古くなる）。
+   * @param options.reloadOnFailure **失敗したときも**読み直す操作に付ける。マージとプルは
+   *   競合すると「作業ツリーを変えたまま失敗する」ので、読み直さないと競合ファイルが
+   *   画面に出ない。範囲は失敗の時点でどこまで進んでいるかで選ぶ:
+   *   - 'active' … status と差分だけ。枝の先端が動いていない操作（マージ）
+   *   - 'same'   … 成功したときと同じ範囲（上の branches / log をそのまま使う）。
+   *     プルは fetch の分だけ追跡枝が動くので、一覧も履歴も古くなる
+   *
+   *   'same' でも branches の**関数形は使わない**（結果が無いので判定できない）。
+   *   失敗時に一覧まで読み直したい操作は、真偽値で指定するものに限られる。
    */
   async #operate<T>(
     call: (confirmed?: boolean) => Promise<Result<T>>,
     retry?: () => Promise<void>,
     onSuccess?: () => void,
-    options: { readonly branches?: boolean; readonly log?: boolean } = {},
+    options: {
+      readonly branches?: boolean | ((value: T) => boolean);
+      readonly log?: boolean;
+      readonly reloadOnFailure?: 'active' | 'same';
+    } = {},
   ): Promise<void> {
     const id = this.activeId;
+    /**
+     * 操作の結果を画面へ読み直す。成功でも失敗でも通る唯一の口にして、
+     * 「どこまで読むか」の判断を 2 か所に散らさない。
+     */
+    const reload = async (branches: boolean, log: boolean): Promise<void> => {
+      if (id === null) return;
+      await this.#reflect(id, async () => {
+        await this.reloadActive();
+        // 読んでいる間に別のタブへ移られたら、そのタブの一覧・履歴には手を出さない
+        if (this.activeId !== id) return;
+        if (branches) await this.reloadBranches();
+        if (log) await this.#invalidateLog();
+      });
+    };
     const body = async (): Promise<void> => {
       const result = await call();
       if (!result.ok) {
@@ -2070,15 +2118,17 @@ export class AppState {
           return;
         }
         this.#setError(result.error, id);
+        // 失敗しても状態が動いている操作（マージ・プルの競合）は、main が取り直した
+        // スナップショットを読み直す。確認待ちで止まった場合は上で抜けるのでここには来ない。
+        const failureScope = options.reloadOnFailure;
+        if (failureScope === 'active') await reload(false, false);
+        else if (failureScope === 'same') await reload(options.branches === true, options.log === true);
         return;
       }
       onSuccess?.();
-      if (id === null) return;
-      await this.#reflect(id, async () => {
-        await this.reloadActive();
-        if (options.branches === true && this.activeId === id) await this.reloadBranches();
-        if (options.log === true && this.activeId === id) await this.#invalidateLog();
-      });
+      const branches =
+        typeof options.branches === 'function' ? options.branches(result.value) : options.branches === true;
+      await reload(branches, options.log === true);
     };
     // タブが無いときは call の中の #id() が投げ、#run がエラー帯に出す
     await this.#run(() => (id === null ? body() : this.#updating(id, body)));
