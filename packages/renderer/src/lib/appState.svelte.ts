@@ -1356,14 +1356,12 @@ export class AppState {
    * ブランチペインの数字が古いまま残る）。
    */
   mergeBranch(branchName: string): Promise<void> {
+    const options = { branches: true, reloadOnFailure: 'active' } as const;
     return this.#operate(
       (confirmed) => this.#ft.branchMerge(this.#id(), branchName, confirmed),
-      () =>
-        this.#operate(() => this.#ft.branchMerge(this.#id(), branchName, true), undefined, undefined, {
-          branches: true,
-        }),
+      () => this.#operate(() => this.#ft.branchMerge(this.#id(), branchName, true), undefined, undefined, options),
       undefined,
-      { branches: true },
+      options,
     );
   }
 
@@ -1429,7 +1427,11 @@ export class AppState {
   }
 
   async pull(): Promise<void> {
-    await this.#operate(() => this.#ft.remotePull(this.#id()), undefined, undefined, { branches: true });
+    // 競合して失敗したときも読み直す（作業ツリーが競合状態で残り、追跡枝は進んでいる）
+    await this.#operate(() => this.#ft.remotePull(this.#id()), undefined, undefined, {
+      branches: true,
+      reloadOnFailure: 'branches',
+    });
   }
 
   openPushDialog(): void {
@@ -1493,12 +1495,18 @@ export class AppState {
    * @param options.branches 成功したらブランチ一覧も取り直す（コミット・リモート操作）。
    *   main が取り直したかどうかで決まる操作（ブランチ切替）は、真偽値の代わりに
    *   結果を見る関数を渡す。
+   * @param options.reloadOnFailure **失敗したときも**取り直す操作に付ける。マージとプルは
+   *   競合すると「作業ツリーを変えたまま失敗する」ので、読み直さないと競合ファイルが
+   *   画面に出ない。'branches' なら一覧も読み直す（プルは fetch の分だけ追跡枝が動く）。
    */
   async #operate<T>(
     call: (confirmed?: boolean) => Promise<Result<T>>,
     retry?: () => Promise<void>,
     onSuccess?: () => void,
-    options: { readonly branches?: boolean | ((value: T) => boolean) } = {},
+    options: {
+      readonly branches?: boolean | ((value: T) => boolean);
+      readonly reloadOnFailure?: 'active' | 'branches';
+    } = {},
   ): Promise<void> {
     const id = this.activeId;
     const body = async (): Promise<void> => {
@@ -1513,6 +1521,15 @@ export class AppState {
           return;
         }
         this.error = result.error;
+        // 失敗しても状態が動いている操作（マージ・プルの競合）は、main が取り直した
+        // スナップショットを読み直す。確認待ちで止まった場合は上で抜けるのでここには来ない。
+        const failureScope = options.reloadOnFailure;
+        if (failureScope !== undefined && id !== null) {
+          await this.#reflect(id, async () => {
+            await this.reloadActive();
+            if (failureScope === 'branches' && this.activeId === id) await this.reloadBranches();
+          });
+        }
         return;
       }
       onSuccess?.();

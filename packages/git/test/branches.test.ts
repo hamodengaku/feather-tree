@@ -241,7 +241,16 @@ describe('マージ (対応表 #35)', () => {
     await fx.write('a.txt', 'main side');
     await commitAll(fx, 'main edit');
 
-    await expect(mergeBranch(fx.ctx, 'feature')).rejects.toBeInstanceOf(GitCommandError);
+    const error = await mergeBranch(fx.ctx, 'feature').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(GitCommandError);
+    /*
+     * 競合の説明は **stdout に出る**（stderr は空）。stderr しか持ち帰らないと
+     * 「git の実行に失敗しました」としか言えないので、GitCommandError に stdout も載せる。
+     */
+    const failure = error as GitCommandError;
+    expect(failure.stderr.trim()).toBe('');
+    expect(failure.stdout).toMatch(/CONFLICT|Automatic merge failed/);
 
     // 競合したままの状態が残る（利用者が解決するか自分で abort する）
     const status = await fx.run('status', '--porcelain=v2', '-z');

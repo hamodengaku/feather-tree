@@ -227,6 +227,35 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
     expect(added.map((e) => e.args[0]).sort()).toEqual(['for-each-ref', 'status', 'switch']);
   });
 
+  it('マージが競合で失敗したら、例外を投げる前に status を取り直す（対応表 #35 → #2）', async () => {
+    await write('a.txt', 'base');
+    const session = await manager.open(dir);
+    const ops = new SessionOperations(session);
+    await ops.stage({ kind: 'all' });
+    await ops.commit('init');
+    await ops.createBranch('topic', 'main');
+    await write('a.txt', 'topic side');
+    // 書いた直後はスナップショットに載っていない（決定 14: 監視もポーリングもしない）
+    await session.refreshStatus();
+    await ops.stage({ kind: 'all' });
+    await ops.commit('topic edit');
+    await ops.switchBranch('main');
+    await write('a.txt', 'main side');
+    await session.refreshStatus();
+    await ops.stage({ kind: 'all' });
+    await ops.commit('main edit');
+    const before = commandLog.size;
+
+    await expect(ops.mergeBranch('topic')).rejects.toThrow();
+
+    // 競合したファイルが、更新ボタンを押さなくても一覧に出ている
+    expect(session.getStatusSummary().counts.unmerged).toBe(1);
+    expect(session.getStatusPage(0, 50, { group: 'changes' }).entries.map((e) => e.path)).toEqual(['a.txt']);
+    // 失敗の後始末は #2 だけ（枝の先端は動いていないので #3 は打たない）
+    const added = commandLog.recent(10).slice(0, commandLog.size - before);
+    expect(added.map((e) => e.args[0]).sort()).toEqual(['merge', 'status']);
+  });
+
   it('明示パスの上限を超えたら拒否する', async () => {
     await write('a.txt', 'x');
     const session = await manager.open(dir);

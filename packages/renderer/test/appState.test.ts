@@ -1183,6 +1183,29 @@ describe('ブランチのマージ (対応表 #35)', () => {
     expect(bridge.countOf('branchList')).toBe(branchesBefore + 1);
   });
 
+  it('競合で失敗しても、ファイル一覧を読み直して競合ファイルを出す', async () => {
+    const bridge = new FakeBridge();
+    // main は失敗の直前に status を取り直している（#35 → #2）ので、その結果を読ませる
+    const failing: FeatherTreeBridge = {
+      ...bridge.build(),
+      branchMerge: () => {
+        bridge.changes = [entry('a.txt')];
+        return Promise.resolve({
+          ok: false,
+          error: { kind: 'git-failed', message: 'コンフリクトが発生しました。競合を解決してください。' },
+        });
+      },
+    };
+    const app = await load(failing);
+    const summariesBefore = bridge.countOf('statusGetSummary');
+
+    await app.mergeBranch('topic');
+
+    expect(app.error?.message).toContain('コンフリクトが発生しました');
+    expect(bridge.countOf('statusGetSummary')).toBeGreaterThan(summariesBefore);
+    expect(app.changes.entries.map((e) => e?.path)).toEqual(['a.txt']);
+  });
+
   it('キャンセルすると再送しない', async () => {
     const { app, bridge } = await boot((b) => {
       b.requireConfirmation = 'branchMerge';

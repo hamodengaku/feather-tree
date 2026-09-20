@@ -295,10 +295,41 @@ export class SessionOperations {
    * 自動 abort はしない（利用者が外部ツールで解決するか、自分で abort する）。
    */
   async mergeBranch(branchName: string, signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
-    await this.#session.track(['merge'], () => gitMergeBranch(this.#session.context(signal), branchName));
+    try {
+      await this.#session.track(['merge'], () => gitMergeBranch(this.#session.context(signal), branchName));
+    } catch (err) {
+      // 競合は「作業ツリーを変えたまま失敗する」。取り直さないと、競合したファイルが
+      // どこにも出ないまま「失敗しました」とだけ言うことになる（#35 → #2）。
+      // ブランチの先端は動いていないので #3 は打たない。
+      await this.#refreshStatusQuietly(signal);
+      throw err;
+    }
     await this.#session.refreshStatus(signal);
     await this.#session.refreshBranches(signal);
     return { statusSeq: this.#session.statusSeq };
+  }
+
+  /**
+   * 失敗の後始末としての status 再取得。
+   *
+   * ここで投げると**本来のエラー（競合）が握りつぶされる**ので、取り直しに失敗しても
+   * 黙って諦める（表示が古いまま残るだけで、利用者は「更新」で追いつける）。
+   */
+  async #refreshStatusQuietly(signal?: AbortSignal): Promise<void> {
+    try {
+      await this.#session.refreshStatus(signal);
+    } catch {
+      // 握りつぶす（呼び出し元が元のエラーを投げ直す）
+    }
+  }
+
+  /** #refreshStatusQuietly のブランチ一覧版。 */
+  async #refreshBranchesQuietly(signal?: AbortSignal): Promise<void> {
+    try {
+      await this.#session.refreshBranches(signal);
+    } catch {
+      // 握りつぶす（同上）
+    }
   }
 
   /*
@@ -322,7 +353,18 @@ export class SessionOperations {
 
   /** 対応表 #23。上流が無ければ git 自身が失敗する（先回りして判定しない）。 */
   async pull(signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
-    await this.#session.track(['pull'], () => pullCurrent(this.#session.context(signal)));
+    try {
+      await this.#session.track(['pull'], () => pullCurrent(this.#session.context(signal)));
+    } catch (err) {
+      /*
+       * pull は fetch + merge。競合で落ちたときは作業ツリーが競合状態で残り、
+       * **fetch の分だけリモート追跡ブランチも進んでいる**ので、マージと違って
+       * 一覧も取り直す（#23 → #2 → #3）。
+       */
+      await this.#refreshStatusQuietly(signal);
+      await this.#refreshBranchesQuietly(signal);
+      throw err;
+    }
     await this.#session.refreshStatus(signal);
     await this.#session.refreshBranches(signal);
     return { statusSeq: this.#session.statusSeq };

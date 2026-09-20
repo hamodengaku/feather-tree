@@ -546,6 +546,32 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     );
   });
 
+  it('マージが競合したら、競合ファイルを一覧に載せたうえで失敗を返す（対応表 #35 → #2）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+    await service.branchCreate(id, { name: 'topic', startPoint: 'main' });
+    await write('README.md', 'topic side');
+    await service.sessionRefresh(id, 'status');
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'topic edit', amend: false });
+    await service.branchSwitch(id, 'main');
+    await write('README.md', 'main side');
+    await service.sessionRefresh(id, 'status');
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'main edit', amend: false });
+
+    const error = await service.branchMerge(id, 'topic', true).catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ name: 'GitCommandError' });
+    // 競合の説明は stdout に出る（stderr は空）。renderer 側の文言はこれで決まる
+    expect((error as { stdout: string }).stdout).toMatch(/CONFLICT|Automatic merge failed/);
+    // 失敗でも status は取り直してあるので、更新ボタン抜きで競合ファイルが見える
+    expect(service.statusGetSummary(id).counts.unmerged).toBe(1);
+    const page = service.statusGetPage(id, { offset: 0, limit: 10, filter: { group: 'changes' } });
+    expect(page.entries.map((e) => e.path)).toEqual(['README.md']);
+  });
+
   it('ファイルを OS 既定のアプリで開く（絶対パスに直して渡す）', async () => {
     const id = await openDemo();
 

@@ -94,9 +94,10 @@ export async function createBranch(ctx: GitContext, name: string, startPoint: st
  * 通常のマージと同じ結果になる。main 側の一覧照合（knownLocalBranch）と多重防御にする。
  */
 export async function mergeBranch(ctx: GitContext, branchName: string): Promise<void> {
-  const { exit } = await runGitText(
+  const { exit, stdout } = await runGitText(
     commandFor(ctx, [...WRITE_PREFIX, 'merge', '--', branchName]),
     ctx.signal,
   );
-  if (exit.code !== 0) throw new GitCommandError(['merge'], exit.code, exit.stderr);
+  // 競合の説明は stdout に出る（stderr は空）。分類できるよう両方を渡す
+  if (exit.code !== 0) throw new GitCommandError(['merge'], exit.code, exit.stderr, stdout);
 }

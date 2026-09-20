@@ -39,11 +39,12 @@ export async function fetchRemote(ctx: GitContext, remote: string): Promise<void
  * （上流が無ければ git 自身がそう言って失敗する。アプリ側で先回りして判定しない）。
  */
 export async function pullCurrent(ctx: GitContext): Promise<void> {
-  const { exit } = await runGitText(
+  const { exit, stdout } = await runGitText(
     commandFor(ctx, [...WRITE_PREFIX, 'pull', '--progress']),
     ctx.signal,
   );
-  if (exit.code !== 0) throw new GitCommandError(['pull'], exit.code, exit.stderr);
+  // merge と同じ理由で stdout も渡す。pull の stderr には fetch の進捗しか入らない
+  if (exit.code !== 0) throw new GitCommandError(['pull'], exit.code, exit.stderr, stdout);
 }
 
 /**

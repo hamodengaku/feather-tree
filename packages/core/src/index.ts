@@ -16,7 +16,7 @@ export type { GitVersionCheck } from './env/gitVersion.js';
 export { CommandLog, RefreshCoordinator, SettingsStore } from '@feathertree/base-core';
 export type { CommandLogEntry } from '@feathertree/base-core';
 
-export { mapGitStderr } from './policy/errorMapping.js';
+export { mapGitOutput, mapGitStderr } from './policy/errorMapping.js';
 export type { FtErrorKind, MappedError } from './policy/errorMapping.js';
 export {
   DESTRUCTIVE_ACTIONS,
