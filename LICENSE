@@ -36,7 +36,7 @@ SOFTWARE.
 
 対象となるもの:
 
-  - build/icon-app.png（ロゴ・アプリケーションアイコン）
+  - build/icon/*.png（ロゴ・アプリケーションアイコン）
   - 配布物（exe / zip）に埋め込まれたアプリケーションアイコン
   - 今後追加されるロゴ・イラスト・デザイン素材
 
@@ -52,7 +52,7 @@ Illustrations and design assets
 
 The following are NOT covered by the MIT License above:
 
-  - build/icon-app.png (the logo and application icon)
+  - build/icon/*.png (the logo and application icon)
   - The application icon embedded in distributed binaries (exe / zip)
   - Any logos, illustrations, or design assets added in the future
 
@@ -65,9 +65,96 @@ please replace the icon with your own.
 ================================================================================
 同梱される第三者ソフトウェア / Third-party software
 
-配布物（exe / zip）には Electron、Chromium、Node.js、Svelte などが同梱されます。
-これらはそれぞれの権利者に著作権があり、各ライセンス（MIT / BSD / Apache-2.0 等）
-の条件に従います。
+配布物（exe / zip）には、以下の第三者ソフトウェアが同梱されます。
+それぞれの権利者に著作権があり、各ライセンスの条件に従います。
 
-Distributed binaries bundle Electron, Chromium, Node.js, Svelte and other
-third-party software, each under its own license terms.
+なお、FeatherTree は Git を同梱していません。Git for Windows は利用者自身が
+導入するものであり、この配布物には含まれていません。
+
+Distributed binaries bundle the third-party software listed below, each under
+its own license terms. FeatherTree does not bundle Git; Git for Windows is
+installed separately by the user.
+
+--------------------------------------------------------------------------------
+Electron 44.2.0 / Chromium / Node.js
+
+  Electron 本体のライセンス（MIT）:
+      同梱の LICENSE.electron.txt
+
+  Chromium および Chromium が含む多数の第三者コンポーネントの
+  著作権表示・ライセンス全文（BSD-3-Clause ほか）:
+      同梱の LICENSES.chromium.html
+
+  See LICENSE.electron.txt and LICENSES.chromium.html, both included in this
+  distribution, for the full copyright notices and license texts.
+
+--------------------------------------------------------------------------------
+FFmpeg (LGPL-2.1-or-later)
+
+Electron の一部として FFmpeg のライブラリ（ffmpeg.dll）を同梱しています。
+FFmpeg の大部分は GNU Lesser General Public License version 2.1 以降
+（LGPL v2.1+）の下で提供されています。ライセンス全文は、同梱の
+LICENSES.chromium.html 内の "ffmpeg" の項を参照してください。
+
+FFmpeg は独立した動的リンクライブラリとして同梱されており、利用者が
+ffmpeg.dll を差し替えることができます。
+
+対応するソースコードは FFmpeg の公式リポジトリから入手できます。
+
+    https://git.ffmpeg.org/ffmpeg.git
+    https://github.com/FFmpeg/FFmpeg
+
+同梱の ffmpeg.dll は Electron 44.2.0 に含まれるものであり、そのビルドに
+用いられたソースの版は、Electron 44.2.0 が参照する Chromium のリビジョン
+（third_party/ffmpeg）に対応します。
+
+    https://github.com/electron/electron/releases/tag/v44.2.0
+
+上記で入手できない場合は、FeatherTree のリポジトリから連絡してください。
+対応するソースコードの複製を提供します。
+
+    https://github.com/hamodengaku/feather-tree
+
+FFmpeg is bundled as a separate dynamic library and is licensed under the GNU
+Lesser General Public License version 2.1 or later. See the "ffmpeg" entry in
+LICENSES.chromium.html for the full text. Corresponding source code is
+available from the URLs above; if you cannot obtain it there, please contact us
+through the FeatherTree repository and we will provide a copy.
+
+--------------------------------------------------------------------------------
+Svelte 5.57.0 (MIT)
+
+Copyright (c) 2016-2025 Svelte Contributors
+https://github.com/sveltejs/svelte/graphs/contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+NSIS (zlib/libpng License)
+
+インストーラ版（Setup.exe）は NSIS（Nullsoft Scriptable Install System）で
+作成されており、そのランタイム（インストーラ本体および elevate.exe）を含みます。
+NSIS は zlib/libpng ライセンス（LZMA 圧縮モジュールは Common Public License
+version 1.0）の下で提供されています。
+
+    https://nsis.sourceforge.io/
+
+The installer (Setup.exe) is built with NSIS, provided under the zlib/libpng
+license (the LZMA compression module is under the Common Public License
+version 1.0).

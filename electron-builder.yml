@@ -15,6 +15,10 @@ files:
   - out/**/*
   - package.json
 
+extraFiles:
+  - from: LICENSE
+    to: LICENSE.txt
+
 # Electron 本体 zip の取得先。既定は %LOCALAPPDATA%electronCache だが、
 # CLAUDE.md 規約 2（リポジトリ外に書かない）によりリポジトリ内へ向ける。
 electronDownload:
