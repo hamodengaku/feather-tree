@@ -90,7 +90,6 @@ describe('設定の正規化', () => {
   it('未知・不正な値は既定値で埋める（起動を止めない）', () => {
     const s = normalizeSettings({
       theme: 'rainbow',
-      untrackedFiles: 'everything',
       diffContextLines: -5,
       logPageSize: 999999,
       recentRepositories: ['a', 42, null, 'b'],
@@ -98,7 +97,6 @@ describe('設定の正規化', () => {
       unknownKey: 'ignored',
     });
     expect(s.theme).toBe(DEFAULT_SETTINGS.theme);
-    expect(s.untrackedFiles).toBe(DEFAULT_SETTINGS.untrackedFiles);
     expect(s.diffContextLines).toBe(0);
     expect(s.logPageSize).toBe(2000);
     expect(s.recentRepositories).toEqual(['a', 'b']);
@@ -111,10 +109,15 @@ describe('設定の正規化', () => {
   });
 
   it('有効な値は保持する', () => {
-    const s = normalizeSettings({ theme: 'phoenix-dark', noRenames: true, untrackedFiles: 'all' });
+    const s = normalizeSettings({ theme: 'phoenix-dark', noRenames: true });
     expect(s.theme).toBe('phoenix-dark');
     expect(s.noRenames).toBe(true);
-    expect(s.untrackedFiles).toBe('all');
+  });
+
+  it('廃止した untrackedFiles が残った設定ファイルでも読み込める（黙って捨てる）', () => {
+    const s = normalizeSettings({ untrackedFiles: 'normal' });
+    expect(s).toEqual(DEFAULT_SETTINGS);
+    expect('untrackedFiles' in s).toBe(false);
   });
 
   it('復帰時更新モードの有効な値は保持する', () => {

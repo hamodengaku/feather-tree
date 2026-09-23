@@ -12,7 +12,6 @@ import {
 import { isAbsolute } from 'node:path';
 
 export type ThemeName = 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
-export type UntrackedMode = 'normal' | 'all';
 /**
  * ペイン領域のモード（決定 27 / 31）。
  *
@@ -20,8 +19,10 @@ export type UntrackedMode = 'normal' | 'all';
  *  - 'stash'      Stash 保存モード。**差分モードと同じ 2 ペイン**で、下端の箱だけが替わる
  *  - 'log'        コミットログモード。上下 2 分割（履歴 / コミット詳細）
  *  - 'stash-list' Stash 解放モード。上下 2 分割（stash 一覧 / stash 詳細）
+ *  - 'unity'      Unity Prefab 差分モード（決定 32）。**差分モードと同じ 2 ペインの土台**で、
+ *                 右が Unity ペイン（ヒエラルキー / プロパティ表の左右 2 分割）に替わる
  */
-export type ViewMode = 'diff' | 'log' | 'stash' | 'stash-list';
+export type ViewMode = 'diff' | 'log' | 'stash' | 'stash-list' | 'unity';
 /** ウィンドウ復帰時の更新方式（決定14の唯一の自動入口の挙動）。 */
 export type RefocusUpdateMode = 'auto' | 'modal' | 'none';
 
@@ -50,7 +51,6 @@ export interface AppSettings {
   readonly theme: ThemeName;
   /** status の rename 検出を切る。巨大リポで所要時間に効く。 */
   readonly noRenames: boolean;
-  readonly untrackedFiles: UntrackedMode;
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
@@ -76,6 +76,13 @@ export interface AppSettings {
   readonly stashDetailHeight: number;
   /** stash 詳細ペインの、左のファイルリストの幅（px）。理由は stashDetailHeight と同じ。 */
   readonly stashFileListWidth: number;
+  /**
+   * Unity ペインの、左の Prefab ヒエラルキーの幅（px）。残りはプロパティ表に割り当てる。
+   *
+   * 他のファイルリストと共有しない（決定 32）。ヒエラルキーは階層の深さぶん
+   * 横に伸びるので、平たいファイル一覧より広く取りたくなる。
+   */
+  readonly unityHierarchyWidth: number;
   /**
    * リポジトリタブに現在情報（ブランチ名と HEAD の件名）を出すか（決定 24）。
    * 切ると従来どおりリポジトリ名だけになる。
@@ -117,7 +124,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sshKeyPaths: {},
   theme: 'phoenix-light',
   noRenames: false,
-  untrackedFiles: 'normal',
   diffContextLines: 3,
   diffMaxLines: 20000,
   logPageSize: 200,
@@ -126,6 +132,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   commitFileListWidth: 260,
   stashDetailHeight: 260,
   stashFileListWidth: 260,
+  unityHierarchyWidth: 320,
   tabShowCurrentInfo: true,
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
@@ -142,9 +149,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 const THEMES: readonly ThemeName[] = ['classic-dark', 'classic-light', 'phoenix-dark', 'phoenix-light'];
-const UNTRACKED: readonly UntrackedMode[] = ['normal', 'all'];
 const REFOCUS_MODES: readonly RefocusUpdateMode[] = ['auto', 'modal', 'none'];
-const VIEW_MODES: readonly ViewMode[] = ['diff', 'log', 'stash', 'stash-list'];
+const VIEW_MODES: readonly ViewMode[] = ['diff', 'log', 'stash', 'stash-list', 'unity'];
 
 /** 絶対パスの上限。Windows の MAX_PATH は 260 だが、長パス有効時はもっと長くなりうる。 */
 const MAX_PATH_LENGTH = 4096;
@@ -210,7 +216,6 @@ export function normalizeSettings(raw: unknown): AppSettings {
     sshKeyPaths: absolutePathRecord(o['sshKeyPaths'], MAX_SSH_KEY_ENTRIES),
     theme: pickFrom(o['theme'], THEMES, DEFAULT_SETTINGS.theme),
     noRenames: boolOr(o['noRenames'], DEFAULT_SETTINGS.noRenames),
-    untrackedFiles: pickFrom(o['untrackedFiles'], UNTRACKED, DEFAULT_SETTINGS.untrackedFiles),
     diffContextLines: clampInt(o['diffContextLines'], 0, 20, DEFAULT_SETTINGS.diffContextLines),
     diffMaxLines: clampInt(o['diffMaxLines'], 100, 200000, DEFAULT_SETTINGS.diffMaxLines),
     logPageSize: clampInt(o['logPageSize'], 20, 2000, DEFAULT_SETTINGS.logPageSize),
@@ -224,6 +229,12 @@ export function normalizeSettings(raw: unknown): AppSettings {
     ),
     stashDetailHeight: clampInt(o['stashDetailHeight'], 120, 2000, DEFAULT_SETTINGS.stashDetailHeight),
     stashFileListWidth: clampInt(o['stashFileListWidth'], 120, 1200, DEFAULT_SETTINGS.stashFileListWidth),
+    unityHierarchyWidth: clampInt(
+      o['unityHierarchyWidth'],
+      160,
+      1200,
+      DEFAULT_SETTINGS.unityHierarchyWidth,
+    ),
     tabShowCurrentInfo: boolOr(o['tabShowCurrentInfo'], DEFAULT_SETTINGS.tabShowCurrentInfo),
     paneWidths: {
       left: clampInt(record(o['paneWidths'])['left'], 120, 1200, DEFAULT_SETTINGS.paneWidths.left),

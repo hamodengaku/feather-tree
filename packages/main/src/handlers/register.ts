@@ -188,6 +188,13 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     service.diffGet(id, path, staged),
   );
   bind(CHANNELS.conflictGet, (id: string, path: string) => service.conflictGet(id, path));
+  bind(CHANNELS.unityGetView, (id: string, path: string, staged: boolean) =>
+    service.unityGetView(id, path, staged),
+  );
+  bind(CHANNELS.unityGetNode, (id: string, path: string, staged: boolean, nodeId: string) =>
+    service.unityGetNode(id, path, staged, nodeId),
+  );
+  bind(CHANNELS.unityIndexScripts, (id: string) => service.unityIndexScripts(id));
   bind(CHANNELS.conflictResolve, (id: string, req: Parameters<Service['conflictResolve']>[1]) =>
     service.conflictResolve(id, req),
   );

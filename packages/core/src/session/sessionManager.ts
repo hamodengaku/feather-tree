@@ -125,6 +125,11 @@ export class SessionManager {
     }));
   }
 
+  /** 開いている全セッション。全タブに同じ手当てをするとき（Unity ビューの解放など）に使う。 */
+  all(): readonly RepositorySession[] {
+    return [...this.#sessions.values()];
+  }
+
   get(id: string): RepositorySession | null {
     return this.#sessions.get(id) ?? null;
   }

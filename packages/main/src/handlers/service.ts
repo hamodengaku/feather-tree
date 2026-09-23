@@ -24,6 +24,8 @@ import {
   type SessionManager,
   type StashSelection,
   type TerminalLaunch,
+  rowsFor,
+  selectionForNode,
 } from '@feathertree/core';
 import type {
   AppInfoDto,
@@ -65,6 +67,9 @@ import type {
   StatusPageDto,
   StatusPageRequest,
   StatusSummaryDto,
+  UnityNodeDetailDto,
+  UnityScriptIndexDto,
+  UnityViewDto,
 } from '@feathertree/ipc';
 import { stat } from 'node:fs/promises';
 import { basename, isAbsolute, join } from 'node:path';
@@ -193,6 +198,14 @@ export interface Service {
   diffGet(id: string, path: string, staged: boolean): Promise<FileDiffDto | null>;
   conflictGet(id: string, path: string): Promise<ConflictFileDto | null>;
   conflictResolve(id: string, req: ConflictResolveRequest): Promise<ConflictResolveResultDto>;
+  unityGetView(id: string, path: string, staged: boolean): Promise<UnityViewDto>;
+  unityGetNode(
+    id: string,
+    path: string,
+    staged: boolean,
+    nodeId: string,
+  ): Promise<UnityNodeDetailDto | null>;
+  unityIndexScripts(id: string): Promise<UnityScriptIndexDto>;
   logGetPage(id: string, skip: number): Promise<readonly CommitSummaryDto[]>;
   commitGetFiles(id: string, oid: string): Promise<readonly CommitFileChangeDto[]>;
   commitGetDiff(id: string, oid: string, path: string): Promise<FileDiffDto | null>;
@@ -300,6 +313,25 @@ export function createService(deps: ServiceDeps): Service {
     for (const hunk of req.hunks) {
       if (!Number.isInteger(hunk.index) || hunk.index < 0) {
         throw new HandlerError({ kind: 'internal', message: '差分の指定が不正です。' });
+      }
+      /*
+       * 行の指定も見る（決定 32 で追加）。
+       *
+       * 従来は hunk.index しか検査していなかった。Unity モードでは 1 回の選択に
+       * **数百の行添字**が載るので、壊れた配列がそのまま core へ流れないようここで止める。
+       * 昇順・重複なしを要求するのは `buildHunkPatch` が前提にしている形だからで、
+       * lineCount 未満であることは「表示していたものと同じ hunk か」の指紋とも噛み合う。
+       */
+      if (hunk.lines === null) continue;
+      if (!Number.isInteger(hunk.lineCount) || hunk.lineCount < 0) {
+        throw new HandlerError({ kind: 'internal', message: '差分の指定が不正です。' });
+      }
+      let previous = -1;
+      for (const line of hunk.lines) {
+        if (!Number.isInteger(line) || line <= previous || line >= hunk.lineCount) {
+          throw new HandlerError({ kind: 'internal', message: '差分の行指定が不正です。' });
+        }
+        previous = line;
       }
     }
     return [req.path, req.hunks];
@@ -710,8 +742,18 @@ export function createService(deps: ServiceDeps): Service {
         assertAbsolutePathSetting('SSH 秘密鍵のパス', keyPath);
       }
       const before = deps.settings().gitPath;
+      const wasUnity = deps.settings().viewMode === 'unity';
       const updated = await deps.updateSettings(patch);
       if (updated.gitPath !== before) await deps.reloadGit();
+      /*
+       * Unity モードを離れたら、抱えている Prefab / シーンを手放す（決定 32 / F-1）。
+       * 100MB 級のシーンを 2 側ぶん掴んだまま他のモードで作業されると、
+       * 見ていないもののためにヒープを食い続けることになる。
+       * 専用の IPC を増やさずに済むよう、モードが替わるこの 1 か所で拾う。
+       */
+      if (wasUnity && updated.viewMode !== 'unity') {
+        for (const session of deps.sessions()?.all() ?? []) session.releaseUnityView();
+      }
       return updated;
     },
 
@@ -991,6 +1033,66 @@ export function createService(deps: ServiceDeps): Service {
       const ops = opsFor(id);
       const [path, section, choice] = await guardConflict(id, req);
       return withSignal(id, (signal) => ops.resolveConflict(path, section, choice, signal));
+    },
+
+    /*
+     * Unity モードのヒエラルキー（決定 32）。
+     *
+     * **ヒエラルキーだけを返す。** プロパティの表は unityGetNode で 1 ノードずつ取る。
+     * 全ノードの全行を 1 回で送ると、構造化クローンは同期なので画面が数秒止まる。
+     */
+    unityGetView: async (id, path, staged) => {
+      const session = requireSession(id);
+      assertInsideRoot(session.root, path);
+      const view = await withSignal(id, (signal) => session.getUnityView(path, staged, signal));
+      return {
+        path: view.path,
+        staged: view.staged,
+        format: view.format,
+        nodes: view.nodes,
+        stageable: view.stageable,
+        refusal: view.refusal,
+        changedNodeCount: view.nodes.reduce((n, node) => (node.mark === 'same' ? n : n + 1), 0),
+      };
+    },
+
+    /*
+     * 選んだ 1 ノードのプロパティ表。ここで初めて本体のパースとフローの分解が走る。
+     *
+     * ステージの座標も**ここで計算して載せる**ので、renderer は既存の
+     * stageHunks / unstageHunks にそのまま流せる。新しいステージ用の口は増やさない
+     * （パッチ本体を renderer から受け取らない決定はそのまま保たれる）。
+     */
+    unityGetNode: async (id, path, staged, nodeId) => {
+      const session = requireSession(id);
+      assertInsideRoot(session.root, path);
+      const view = await withSignal(id, (signal) => session.getUnityView(path, staged, signal));
+      const rows = rowsFor(view, nodeId);
+      if (rows.length === 0) return null;
+      return {
+        nodeId,
+        rows: rows.map((entry) => ({
+          key: entry.row.key,
+          before: entry.row.before,
+          after: entry.row.after,
+          state: entry.row.state,
+          selection: entry.selection,
+          alsoStages: entry.alsoStages,
+        })),
+        selection: selectionForNode(view, nodeId),
+      };
+    },
+
+    /*
+     * guid -> スクリプト名 / Prefab 名の索引（要件 11）。**git は 0 プロセス。**
+     *
+     * 利用者がペインのボタンを押したときだけ来る。数千の `.meta` を読むので、
+     * ファイルを選ぶたびに自動で走らせてよい処理ではない（CLAUDE.md「ファイル I/O が非常に遅い」）。
+     */
+    unityIndexScripts: async (id) => {
+      const session = requireSession(id);
+      const index = await withSignal(id, (signal) => session.indexUnityScripts(signal));
+      return { resolved: index.names.size };
     },
 
     logGetPage: async (id, skip) => requireSession(id).getLogPage(Math.max(0, skip)),

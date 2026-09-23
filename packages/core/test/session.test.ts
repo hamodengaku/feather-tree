@@ -428,14 +428,13 @@ describe('RepositorySession / SessionManager', () => {
     }
   });
 
-  it('設定の変更が次の status に反映される', async () => {
+  it('未追跡はディレクトリに畳まず 1 件ずつ並び、選ぶと中身が出る', async () => {
     await write('sub/a.txt', 'x');
     const session = await manager.open(dir);
-    expect(session.getStatusPage(0, 10).entries[0]?.path).toBe('sub/');
+    expect(session.getStatusPage(0, 10).entries.map((e) => e.path)).toEqual(['sub/a.txt']);
 
-    settings = { ...DEFAULT_SETTINGS, untrackedFiles: 'all' };
-    await manager.requestStatusRefresh(session.id);
-    expect(session.getStatusPage(0, 10).entries[0]?.path).toBe('sub/a.txt');
+    const diff = await session.getDiff('sub/a.txt', false);
+    expect(diff?.hunks).toHaveLength(1);
   });
 
   /*

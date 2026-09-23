@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@feathertree/git": "*"
+    "@feathertree/git": "*",
+    "@feathertree/unity": "*"
   }
 }
