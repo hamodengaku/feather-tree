@@ -32,7 +32,8 @@
     "icon": "node scripts/make-icon.mjs",
     "clean": "node scripts/clean.mjs out release",
     "demo:repo": "node scripts/make-demo-repo.mjs",
-    "dist:dir": "npm run icon && npm run build && node scripts/dist.mjs --dir"
+    "dist:dir": "npm run icon && npm run build && node scripts/dist.mjs --dir",
+    "test:unity-perf": "node scripts/test-unity-perf.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

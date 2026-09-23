@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [svelte({ configFile: false, compilerOptions: { runes: true } })],
   test: {
     // git 層 / core 層 / main / renderer はいずれも Electron 本体を必要としない
-    include: ['packages/{base-contract,base-core,base-electron,base-ui,git,core,ipc,main,renderer}/test/**/*.test.ts'],
+    include: ['packages/{base-contract,base-core,base-electron,base-ui,git,unity,core,ipc,main,renderer}/test/**/*.test.ts'],
     environment: 'node',
     testTimeout: 30_000,
     hookTimeout: 30_000,

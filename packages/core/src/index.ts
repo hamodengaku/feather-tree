@@ -52,6 +52,21 @@ export type { AppSettings, PaneWidths, ThemeName, UntrackedMode } from './settin
 export { RepositorySession, toMappedError } from './session/repositorySession.js';
 export type { CommandStart, SessionChange, SessionDeps } from './session/repositorySession.js';
 export { SessionManager, displayNameOf } from './session/sessionManager.js';
+export { buildScriptIndex, EMPTY_SCRIPT_INDEX, extractGuid } from './session/scriptIndex.js';
+export type { ScriptIndex } from './session/scriptIndex.js';
+export {
+  buildUnityView,
+  isUnityPath,
+  rowsFor,
+  selectionForNode,
+} from './session/unityView.js';
+export type {
+  UnityFormat,
+  UnityRefusal,
+  UnityRow,
+  UnityView,
+  UnityViewSource,
+} from './session/unityView.js';
 export type { CloneOutcome, CloneTarget, SessionInfo } from './session/sessionManager.js';
 
 // クローン（決定 9 / 対応表 #37〜#41）

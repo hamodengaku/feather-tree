@@ -37,6 +37,8 @@ import { mapGitOutput, type MappedError } from '../policy/errorMapping.js';
 import { redactUrl } from '../policy/redactUrl.js';
 import type { AppSettings } from '../settings/schema.js';
 import { pageEntries, type StatusFilter, type StatusPage, type StatusSummary } from './statusView.js';
+import { buildScriptIndex, type ScriptIndex } from './scriptIndex.js';
+import { buildUnityView, type UnityView } from './unityView.js';
 
 /** パッチ適用のために diff を取り直すときの行数上限（設定の上限値と同じ）。 */
 const PATCH_MAX_LINES = 200000;
@@ -98,6 +100,22 @@ export class RepositorySession {
   #remotes: readonly string[] = [];
   /** track() が発行する opId の連番。 */
   #opSeq = 0;
+
+  /**
+   * Unity モードのビュー（決定 32）。**セッションあたり 1 件だけ**持つ。
+   *
+   * LRU にすらしないのは、100MB のシーンを 2 側ぶん抱えると
+   * それだけでヒープが数百 MB になるため（F-1）。別のファイルを選んだ時点で捨てる。
+   */
+  #unityView: UnityView | null = null;
+
+  /**
+   * guid -> スクリプト名 / Prefab 名（要件 11）。**セッションの間は持ち続ける。**
+   *
+   * ビューのキャッシュと違って中身は小さく（数千件の短い文字列）、
+   * 作るのに数千ファイルを読むので、モードを行き来するたびに作り直したくない。
+   */
+  #scriptIndex: ScriptIndex | null = null;
 
   readonly #listeners = new Set<(change: SessionChange) => void>();
 
@@ -290,6 +308,66 @@ export class RepositorySession {
     }
 
     return this.track(['diff', path], () => getFileDiff(this.context(signal), path, staged, options));
+  }
+
+  /**
+   * Unity モードのビュー（決定 32）。
+   *
+   * 鍵は**パス・ステージ側・status の世代**の 3 つ。`statusSeq` が進む（＝何かを
+   * ステージした、更新した）と作り直すので、古い座標のまま当てることが起きない。
+   */
+  async getUnityView(path: string, staged: boolean, signal?: AbortSignal): Promise<UnityView> {
+    const cached = this.#unityView;
+    if (
+      cached !== null &&
+      cached.path === path &&
+      cached.staged === staged &&
+      cached.statusSeq === this.#statusSeq
+    ) {
+      return cached;
+    }
+    // 先に捨てる。組み立てに失敗しても古いものが残らないようにする
+    this.#unityView = null;
+    const view = await buildUnityView(this, path, staged, signal, this.#resolveGuid);
+    this.#unityView = view;
+    return view;
+  }
+
+  /**
+   * guid からスクリプト名 / Prefab 名を引く（要件 11）。
+   *
+   * 索引がまだ無ければ常に null を返し、表示は `MonoBehaviour (a1b2c3d4)` のままになる。
+   * `this` に縛った矢印関数にしてあるのは、そのまま `buildUnityView` へ渡すため。
+   */
+  readonly #resolveGuid = (guid: string): string | null =>
+    this.#scriptIndex?.names.get(guid) ?? null;
+
+  /**
+   * リポジトリ内の `*.meta` を走査して guid の索引を作る（要件 11）。**git は 0 プロセス。**
+   *
+   * **利用者が明示的にボタンを押したときだけ呼ぶ。** 巨大プロジェクトでは数千の
+   * `.meta` を読むことになり、この環境はファイル I/O が極端に遅い（CLAUDE.md）。
+   * 1 度作ったらセッションの間は使い回す。
+   */
+  async indexUnityScripts(signal?: AbortSignal): Promise<ScriptIndex> {
+    /*
+     * **件数ではなく「走査したか」で見る。** 対象の .meta が 1 つも無い
+     * リポジトリ（スクリプトの無い Prefab だけの構成など）でも、
+     * ボタンを押すたびに数千ファイルを読み直さないため。
+     */
+    const cached = this.#scriptIndex;
+    if (cached !== null) return cached;
+    this.#scriptIndex = await this.track(['scan-meta'], () =>
+      buildScriptIndex(this.#root, signal),
+    );
+    // 既に組んだビューには古い名前が焼き付いているので、次の取得で作り直させる
+    this.#unityView = null;
+    return this.#scriptIndex;
+  }
+
+  /** Unity モードを離れたときに持ち物を手放す（100MB を掴み続けない）。 */
+  releaseUnityView(): void {
+    this.#unityView = null;
   }
 
   /** 対応表 #20。範囲は git 層で `--all` 固定。 */

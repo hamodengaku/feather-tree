@@ -68,6 +68,11 @@ export const CHANNELS = {
   stashGetFiles: 'stash:getFiles',
   stashGetDiff: 'stash:getDiff',
 
+  // Unity Prefab 差分モード（決定 32）
+  unityGetView: 'unity:getView',
+  unityGetNode: 'unity:getNode',
+  unityIndexScripts: 'unity:indexScripts',
+
   remoteList: 'remote:list',
   remoteFetch: 'remote:fetch',
   remotePull: 'remote:pull',
@@ -204,14 +209,16 @@ export interface SettingsDto {
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
-  /** ペイン領域のモード（決定 27 / 31）。core の ViewMode と同じ 4 値。 */
-  readonly viewMode: 'diff' | 'log' | 'stash' | 'stash-list';
+  /** ペイン領域のモード（決定 27 / 31 / 32）。core の ViewMode と同じ 5 値。 */
+  readonly viewMode: 'diff' | 'log' | 'stash' | 'stash-list' | 'unity';
   readonly logDetailHeight: number;
   readonly commitFileListWidth: number;
   /** Stash 解放モードの下部（stash 詳細）ペインの高さ（px）。 */
   readonly stashDetailHeight: number;
   /** stash 詳細ペインの、左のファイルリストの幅（px）。 */
   readonly stashFileListWidth: number;
+  /** Unity ペインの、左の Prefab ヒエラルキーの幅（px）。決定 32。 */
+  readonly unityHierarchyWidth: number;
   /** リポジトリタブに現在情報（ブランチ名と HEAD の件名）を出すか（決定 24）。 */
   readonly tabShowCurrentInfo: boolean;
   readonly paneWidths: { readonly left: number; readonly center: number; readonly centerRatio: number | null };
@@ -457,6 +464,106 @@ export interface HunkSelectionDto {
 export interface HunkStageRequest {
   readonly path: string;
   readonly hunks: readonly HunkSelectionDto[];
+}
+
+/* ------------------------------------------------ Unity Prefab 差分（決定 32） */
+
+/**
+ * そのファイルを展開できたか。
+ *  - `yaml`       … テキストの Unity YAML。ヒエラルキーと表を出す
+ *  - `binary`     … バイナリシリアライズ / LFS のポインタ。「展開できません」
+ *  - `not-prefab` … `.prefab` / `.unity` ではない。「Prefab ではありません」
+ */
+export type UnityFormatDto = 'yaml' | 'binary' | 'not-prefab';
+
+/** ヒエラルキーの印（要件 7）。 */
+export type UnityNodeMarkDto = 'same' | 'changed' | 'added' | 'removed' | 'moved';
+
+export type UnityNodeKindDto = 'gameObject' | 'component' | 'prefabInstance';
+
+/**
+ * ヒエラルキーの 1 ノード。**平坦な配列＋親の添字**で持つ。
+ *
+ * 入れ子の JSON にしないのは、構造化クローンが深さに弱く、
+ * renderer の仮想リストも平坦な配列を欲しがるため（決定 32）。
+ */
+export interface UnityNodeDto {
+  /** fileID（anchor）。ノードの同一性はこれで見る。 */
+  readonly id: string;
+  /** 親の添字。ルートは -1。 */
+  readonly parent: number;
+  readonly depth: number;
+  readonly kind: UnityNodeKindDto;
+  readonly classId: number;
+  readonly name: string;
+  readonly mark: UnityNodeMarkDto;
+  /**
+   * 子孫のどこかに `same` 以外が居るか。
+   * 「変更のある節までの経路だけ自動展開」（要件 7）を renderer が 1 回のなめで組める。
+   */
+  readonly hasChangedDescendant: boolean;
+}
+
+export interface UnityViewDto {
+  readonly path: string;
+  readonly staged: boolean;
+  readonly format: UnityFormatDto;
+  /** ヒエラルキー全体。プロパティの表は**選んだときに** `unityGetNode` で取る。 */
+  readonly nodes: readonly UnityNodeDto[];
+  /**
+   * ステージ操作ができるか。false の理由は `refusal`。
+   *
+   * **できないときも表示は出す**（読む機能は行の対応と関係が無い）。
+   * 判定を main 側の 1 か所で行うのは `FileDiffDto.hunkStageable` と同じ理由で、
+   * 「UI では押せるのに main が拒否する」ずれを作らないため。
+   */
+  readonly stageable: boolean;
+  /**
+   * ステージできない理由。`binary` / `truncated` / `synthesized` / `whole-file` /
+   * `rename` / `combined` / `no-hunk` / `empty-selection` / `no-such-hunk` に加えて、
+   * `alignment`（改行変換 / LFS で全文と diff が食い違う）と `no-diff`。
+   */
+  readonly refusal: string | null;
+  readonly changedNodeCount: number;
+}
+
+export type UnityRowStateDto = 'same' | 'changed' | 'added' | 'removed';
+
+/** プロパティ表の 1 行（要件 8）。 */
+export interface UnityRowDto {
+  /** 「変数」列。`m_LocalPosition.x` のような道筋。 */
+  readonly key: string;
+  readonly before: string | null;
+  readonly after: string | null;
+  readonly state: UnityRowStateDto;
+  /**
+   * 「1 パラメータだけステージ」で送る座標。**null ならボタンを出さない。**
+   *
+   * 座標の計算を main 側で済ませておくことで、renderer は既存の
+   * `stageHunks` / `unstageHunks` にそのまま流すだけで済む。
+   * パッチ本体は依然として renderer を通らない（決定「やらないこと」）。
+   */
+  readonly selection: readonly HunkSelectionDto[] | null;
+  /**
+   * その 1 行を押すと**一緒に入ってしまう**他の変更行の数。
+   *
+   * git が扱えるのは行までなので、`{x: 2.5, y: 3, z: 1}` の x と y が両方
+   * 変わっていたら片方だけは入れられない。押す前に分かるようボタンの説明に添える。
+   */
+  readonly alsoStages: number;
+}
+
+/** guid の索引を作った結果（要件 11）。 */
+export interface UnityScriptIndexDto {
+  /** 名前を引けるようになった guid の数。 */
+  readonly resolved: number;
+}
+
+export interface UnityNodeDetailDto {
+  readonly nodeId: string;
+  readonly rows: readonly UnityRowDto[];
+  /** 「コンポーネントをステージ」で送る座標。null ならボタンを出さない。 */
+  readonly selection: readonly HunkSelectionDto[] | null;
 }
 
 export interface CommitSummaryDto {
@@ -853,6 +960,32 @@ export interface FeatherTreeBridge {
    * 書く直前にファイルを読み直し、指紋が食い違えば `diff-stale` で断る。
    */
   conflictResolve(id: string, req: ConflictResolveRequest): Promise<Result<ConflictResolveResultDto>>;
+  /**
+   * Unity モードのヒエラルキー（決定 32）。
+   *
+   * **ヒエラルキーだけを返し、プロパティの表は含めない。** 全ノードの全行を 1 回で
+   * 送ると 20MB のシーンで 100MB 超の構造化クローンになり、同期処理なので画面が数秒止まる。
+   * ツリーだけなら 2 万ノードで 1.6MB 程度に収まる。
+   *
+   * `.prefab` / `.unity` 以外や、バイナリシリアライズでも**エラーにはしない**。
+   * `format` にその旨が入るので、画面は案内を出す。
+   */
+  unityGetView(id: string, path: string, staged: boolean): Promise<Result<UnityViewDto>>;
+  /** 選んだ 1 ノードのプロパティ表。ここで初めて本体のパースが走る。 */
+  unityGetNode(
+    id: string,
+    path: string,
+    staged: boolean,
+    nodeId: string,
+  ): Promise<Result<UnityNodeDetailDto | null>>;
+  /**
+   * リポジトリ内の `*.meta` を走査して guid -> スクリプト名 / Prefab 名の索引を作る（要件 11）。
+   *
+   * **git は 1 プロセスも起動しない**（Node のファイル走査だけ）。
+   * 巨大プロジェクトでは数千ファイルを読むので、**利用者が押したときだけ**呼ぶ。
+   * 1 度作ったらセッションの間は使い回す。
+   */
+  unityIndexScripts(id: string): Promise<Result<UnityScriptIndexDto>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
   /** 対応表 #21。マージコミットでは空配列（`git show` の既定）。 */
   commitGetFiles(id: string, oid: string): Promise<Result<readonly CommitFileChangeDto[]>>;

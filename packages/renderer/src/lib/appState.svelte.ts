@@ -27,13 +27,16 @@ import type {
   StashRefDto,
   StatusGroupDto,
   StatusSummaryDto,
+  UnityNodeDetailDto,
+  UnityViewDto,
   UpdateStateDto,
 } from '@feathertree/ipc';
 import { tick } from 'svelte';
-import { SvelteMap } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { ft } from '../bridge.js';
 import { applyTheme } from './theme.js';
 import { nextSelectionAfterRemoval } from './selection.js';
+import { initialUnityExpansion } from './unityTree.js';
 import { TabActivity } from './tabActivity.js';
 
 /** ブランチペインの展開状態が無いときに返す共通の空配列（毎回作り直さない）。 */
@@ -919,8 +922,16 @@ export class AppState {
     if (this.selected !== null && !this.#stillPresent(this.selected)) {
       this.selected = null;
       this.#invalidateDiff();
+      this.#invalidateUnity();
+      this.unityView = null;
     } else if (this.selected !== null) {
-      await this.loadDiff(this.selected);
+      /*
+       * **見ているものだけを読み直す。** Unity モードで `loadDiff` を呼ぶと、
+       * 画面に出さない diff のために `diff:get` が 1 回余計に走る
+       * （「見えていないもののために git を起動しない」。docs/00-decisions.md やらないこと）。
+       */
+      if (this.viewMode === 'unity') await this.loadUnity(this.selected);
+      else await this.loadDiff(this.selected);
     }
   }
 
@@ -950,6 +961,21 @@ export class AppState {
    * 内容が変わりうるのは git を動かしたときだけで、そちらは reloadActive が読み直す。
    */
   async select(file: SelectedFile): Promise<void> {
+    /*
+     * Unity モードでは行の diff を出さないので、`diff:get` ではなく
+     * Unity のビューを取りに行く（決定 32）。見ていないものを取らない、という点は
+     * コミットログモードが履歴をモードに入るまで取らないのと同じ考え方。
+     */
+    if (this.viewMode === 'unity') {
+      if (this.#showingUnityOf(file)) {
+        this.selected = file;
+        return;
+      }
+      this.selected = file;
+      await this.loadUnity(file);
+      return;
+    }
+
     if (this.#showingDiffOf(file)) {
       this.selected = file;
       return;
@@ -1106,15 +1132,210 @@ export class AppState {
   }
 
   /**
-   * 差分モードと Stash 保存モードは**同じ 2 ペイン**（決定 31）。
-   * 替わるのは作業ツリーペイン下端の箱だけなので、ペインの出し分けはこれで見る。
+   * 差分・Stash 保存・Unity は**作業ツリーを土台にする 3 モード**（決定 31 / 32）。
+   * 替わるのは作業ツリーペイン下端の箱（Stash）と第 3 トラック（Unity）だけ。
    */
   get worktreeMode(): boolean {
-    return this.viewMode === 'diff' || this.viewMode === 'stash';
+    return this.viewMode === 'diff' || this.viewMode === 'stash' || this.viewMode === 'unity';
   }
 
   async setViewMode(mode: SettingsDto['viewMode']): Promise<void> {
     await this.#writeSettings({ viewMode: mode });
+  }
+
+  // ---------------------------------------------------------------- Unity Prefab 差分モード（決定 32）
+
+  /** ヒエラルキー全体。プロパティの表は選んだノードのぶんだけ別に取る。 */
+  unityView = $state<UnityViewDto | null>(null);
+  /** 選択中のノードの表。 */
+  unityNode = $state<UnityNodeDetailDto | null>(null);
+  unitySelectedNode = $state<string | null>(null);
+  /**
+   * 展開中の GameObject（id の集合）。初期は「変更のある節までの経路」だけ。
+   *
+   * SvelteSet なので中身を書き換えるだけで画面が追従する（作り直さない）。
+   */
+  readonly unityExpanded = new SvelteSet<string>();
+  unityLoading = $state(false);
+  unityNodeLoading = $state(false);
+  unityError = $state<FtErrorDto | null>(null);
+  /** guid の索引を作っている最中か（要件 11）。 */
+  unityScriptsIndexing = $state(false);
+  /** 索引で名前を引けるようになった guid の数。null なら未実施。 */
+  unityScriptsResolved = $state<number | null>(null);
+
+  /**
+   * 世代番号。ビューとノードで**分ける**——独立した操作なので、
+   * 片方の完了がもう片方を無効にしてはいけない。
+   * ただしビューが進んだらノードも進める（`#invalidateUnity`）。
+   *
+   * 要件 12 の「読み込み中に他の操作をされたら読み込みを破棄する」はこれで満たす。
+   * main 側の解析を途中で止める口は**作っていない**——実測で 50MB のシーンが 206ms、
+   * 100MB でも 379ms なので、専用のキャンセル用チャネルを増やすほどの長さではない。
+   */
+  #unitySeq = 0;
+  #unityNodeSeq = 0;
+
+  /** Unity モードへ入る。**ブランチペインを畳むのは入るときだけ**（決定 32）。 */
+  async enterUnityMode(): Promise<void> {
+    // 1 回の書き込みで両方を書く。2 回に分けると設定ファイルを 2 度書き、
+    // sessionChanged も 2 度飛ぶ
+    await this.#writeSettings({ viewMode: 'unity', branchPaneCollapsed: true });
+  }
+
+  /** Unity ペインの左右の分割幅の永続化。 */
+  async setUnityHierarchyWidth(px: number): Promise<void> {
+    const clamped = Math.min(1200, Math.max(160, Math.round(px)));
+    await this.#writeSettings({ unityHierarchyWidth: clamped });
+  }
+
+  /**
+   * 今出しているのがこのファイルの Unity ビューか。
+   *
+   * **先に「選択中のファイルと同じか」を見る。** 読み込み中かどうかを先に見ると、
+   * 別のファイルを読んでいる最中の選択まで「もう出している」と答えてしまい、
+   * 新しい選択が走らないまま**古い応答が最後に勝つ**（`#showingDiffOf` と同じ順序）。
+   */
+  #showingUnityOf(file: SelectedFile): boolean {
+    const current = this.selected;
+    if (current === null || current.path !== file.path || current.staged !== file.staged) {
+      return false;
+    }
+    // 読み込み中なら、その要求は選択中のファイル（＝この file）のもの
+    if (this.unityLoading) return true;
+    const view = this.unityView;
+    return view !== null && view.path === file.path && view.staged === file.staged;
+  }
+
+  /**
+   * Unity モードのペインから呼ぶ。選択中のファイルのビューがまだ無ければ取りに行く。
+   *
+   * **モードに入った瞬間に初めて走る。** 他のモードでいる限り
+   * `#48` も diff も 1 度も実行しない（「見えていないもののために git を起動しない」）。
+   */
+  async ensureUnity(): Promise<void> {
+    const file = this.selected;
+    if (file === null || this.activeId === null) return;
+    if (this.#showingUnityOf(file)) return;
+    await this.loadUnity(file);
+  }
+
+  async loadUnity(file: SelectedFile): Promise<void> {
+    const id = this.activeId;
+    if (id === null) return;
+    const seq = this.#invalidateUnity();
+    this.unityLoading = true;
+    try {
+      const result = await this.#ft.unityGetView(id, file.path, file.staged);
+      // 追い越された要求の応答は捨てる（要件 12）
+      if (seq !== this.#unitySeq) return;
+      if (!result.ok) {
+        this.unityView = null;
+        this.unityError = result.error;
+        return;
+      }
+      this.unityView = result.value;
+      this.unityError = null;
+      this.#replaceUnityExpansion(initialUnityExpansion(result.value.nodes));
+      // 最初に目がいくノード（最初の変更）を選んでおく。何も変わっていなければ先頭
+      const first =
+        result.value.nodes.find((n) => n.mark !== 'same') ?? result.value.nodes[0] ?? null;
+      if (first !== null) await this.selectUnityNode(first.id);
+    } finally {
+      if (seq === this.#unitySeq) this.unityLoading = false;
+    }
+  }
+
+  /** ヒエラルキーでノードを選ぶ。表はここで初めて取りに行く。 */
+  async selectUnityNode(nodeId: string): Promise<void> {
+    const id = this.activeId;
+    const view = this.unityView;
+    if (id === null || view === null) return;
+
+    this.unitySelectedNode = nodeId;
+    const seq = (this.#unityNodeSeq += 1);
+    this.unityNodeLoading = true;
+    try {
+      const result = await this.#ft.unityGetNode(id, view.path, view.staged, nodeId);
+      if (seq !== this.#unityNodeSeq) return;
+      this.unityNode = result.ok ? result.value : null;
+      if (!result.ok) this.unityError = result.error;
+    } finally {
+      if (seq === this.#unityNodeSeq) this.unityNodeLoading = false;
+    }
+  }
+
+  /** GameObject の折り畳みを切り替える。 */
+  toggleUnityNode(nodeId: string): void {
+    if (this.unityExpanded.has(nodeId)) this.unityExpanded.delete(nodeId);
+    else this.unityExpanded.add(nodeId);
+  }
+
+  #replaceUnityExpansion(next: ReadonlySet<string>): void {
+    this.unityExpanded.clear();
+    for (const id of next) this.unityExpanded.add(id);
+  }
+
+  /**
+   * 「1 パラメータだけステージ」／「コンポーネントをステージ」。
+   *
+   * 座標は main が計算して DTO に載せてくれているので、ここは**既存の
+   * `stageHunks` / `unstageHunks` にそのまま流すだけ**。新しい口は増やさない
+   * （パッチ本体を renderer から送らない決定はそのまま保たれる）。
+   */
+  async applyUnitySelection(selection: readonly HunkSelectionDto[] | null): Promise<void> {
+    if (selection === null || selection.length === 0) return;
+    const staged = this.unityView?.staged ?? false;
+    /*
+     * 取り直しはここでは呼ばない。`stageHunks` / `unstageHunks` の中の `#operate` が
+     * `reloadActive` を通り、そこが Unity モードなら `loadUnity` を選ぶ。
+     * ここでも呼ぶと #48 と diff がもう 1 往復ぶん無駄に走る。
+     */
+    await (staged ? this.unstageHunks(selection) : this.stageHunks(selection));
+  }
+
+  /**
+   * guid からスクリプト名 / Prefab 名を引けるようにする（要件 11）。
+   *
+   * **利用者が押したときだけ走る。** 数千の `.meta` を読むので、
+   * ファイルを選ぶたびに自動で走らせてよい処理ではない。
+   * 済んだらビューを取り直して、名前の入った状態に差し替える。
+   */
+  async indexUnityScripts(): Promise<void> {
+    const id = this.activeId;
+    const file = this.selected;
+    if (id === null || this.unityScriptsIndexing) return;
+
+    this.unityScriptsIndexing = true;
+    try {
+      const result = await this.#ft.unityIndexScripts(id);
+      if (!result.ok) {
+        this.unityError = result.error;
+        return;
+      }
+      this.unityScriptsResolved = result.value.resolved;
+      if (file !== null) await this.loadUnity(file);
+    } finally {
+      this.unityScriptsIndexing = false;
+    }
+  }
+
+  /** ビューの世代を進め、ノード側も無効にする。 */
+  #invalidateUnity(): number {
+    this.#unityNodeSeq += 1;
+    this.unityNode = null;
+    this.unitySelectedNode = null;
+    return (this.#unitySeq += 1);
+  }
+
+  /** Unity モードを離れたときに持ち物を手放す（100MB のシーンを掴み続けない）。 */
+  releaseUnity(): void {
+    this.#invalidateUnity();
+    this.unityView = null;
+    this.unityError = null;
+    this.unityLoading = false;
+    this.unityNodeLoading = false;
+    this.unityExpanded.clear();
   }
 
   /**

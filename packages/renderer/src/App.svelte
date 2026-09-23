@@ -4,6 +4,7 @@
   import BranchPane from './panes/BranchPane.svelte';
   import WorkingTreePane from './panes/WorkingTreePane.svelte';
   import DiffPane from './panes/DiffPane.svelte';
+  import UnityPane from './panes/UnityPane.svelte';
   import CommitLogPane from './panes/CommitLogPane.svelte';
   import CommitDetailPane from './panes/CommitDetailPane.svelte';
   import StashListPane from './panes/StashListPane.svelte';
@@ -35,9 +36,9 @@
   /**
    * ペイン領域のモード（決定 27 / 31）。
    *
-   * **ブランチペインは 4 つのモードで共通**で、左に居続ける（幅も折り畳み状態も同じ設定）。
+   * **ブランチペインは 5 つのモードで共通**で、左に居続ける（幅も折り畳み状態も同じ設定）。
    * モードが替えるのはその右側だけ:
-   *   差分 / Stash 保存 … 左右 2 分割（作業ツリー / 差分）。**同じ 2 ペインの実体を使う**
+   *   差分 / Stash 保存 / Unity … 左右 2 分割。**作業ツリーペインは同じ実体を使う**
    *   コミットログ       … 上下 2 分割（コミットリスト / コミット詳細）
    *   Stash 解放         … 上下 2 分割（stash 一覧 / stash 詳細）
    *
@@ -45,6 +46,13 @@
    */
   const logMode = $derived(app.viewMode === 'log');
   const stashListMode = $derived(app.viewMode === 'stash-list');
+  /**
+   * Unity Prefab 差分モード（決定 32）。
+   *
+   * 列の作りは差分モードと同じ 3 トラックなので splitMode には入れない。
+   * 替わるのは第 3 トラック（差分ペイン ↔ Unity ペイン）だけ。
+   */
+  const unityMode = $derived(app.viewMode === 'unity');
   /**
    * 右側が上下 2 分割になるモード（コミットログ / Stash 解放）。
    * 列の作りは同じなので、gridColumns はこれ 1 つで足りる。
@@ -411,8 +419,9 @@
             </div>
           {:else}
             <!--
-              差分モードと Stash 保存モードは**同じ 2 ペイン**（決定 31）。
-              ここで分岐しないのが要で、替わるのは WorkingTreePane 下端の箱だけ。
+              差分モード・Stash 保存モード・Unity モードは**同じ土台**（決定 31 / 32）。
+              ここで作業ツリーペインを分岐させないのが要で、
+              替わるのは「下端の箱」（Stash）と「第 3 トラック」（Unity）だけ。
               両枝に書くと切り替えのたびに破棄・再生成され、選択もスクロールも飛ぶ。
             -->
             <WorkingTreePane />
@@ -423,7 +432,11 @@
               onchange={(w) => (liveCenterWidth = w)}
               oncommit={commitCenterWidth}
             />
-            <DiffPane />
+            {#if unityMode}
+              <UnityPane />
+            {:else}
+              <DiffPane />
+            {/if}
           {/if}
         </main>
       {/if}

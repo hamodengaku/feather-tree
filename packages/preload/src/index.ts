@@ -84,6 +84,11 @@ const bridge: FeatherTreeBridge = {
   diffGet: (id: string, path: string, staged: boolean) =>
     ipcRenderer.invoke(CHANNELS.diffGet, id, path, staged),
   conflictGet: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.conflictGet, id, path),
+  unityGetView: (id: string, path: string, staged: boolean) =>
+    ipcRenderer.invoke(CHANNELS.unityGetView, id, path, staged),
+  unityGetNode: (id: string, path: string, staged: boolean, nodeId: string) =>
+    ipcRenderer.invoke(CHANNELS.unityGetNode, id, path, staged, nodeId),
+  unityIndexScripts: (id: string) => ipcRenderer.invoke(CHANNELS.unityIndexScripts, id),
   conflictResolve: (id: string, req: ConflictResolveRequest) =>
     ipcRenderer.invoke(CHANNELS.conflictResolve, id, req),
   logGetPage: (id: string, skip: number) => ipcRenderer.invoke(CHANNELS.logGetPage, id, skip),

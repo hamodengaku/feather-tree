@@ -104,9 +104,10 @@
     <hr class="rule" />
 
     <!--
-      stash の 2 モード（決定 31）。箱に対する矢印の向きだけで対を表す
-      （下向き＝しまう、上向き＝出す）。箱の形は 2 つで完全に同じにしてあり、
-      「同じものを違う向きに扱う」ことが一目で分かるようにしている。
+      stash の 2 モード（決定 31）。箱を 2 つ置き、その間のアーチ矢印の向きだけで対を表す。
+      左下の大きい箱が手前＝ワークツリー、右上の小さい箱が奥＝スタッシュ領域。
+      箱と弧の形は 2 つで完全に同じにしてあり（矢じりの位置だけが違う）、
+      「同じ経路を逆向きにたどる」ことが一目で分かるようにしている。
     -->
     <button
       class="activity-btn icon"
@@ -115,23 +116,27 @@
       aria-pressed={mode === 'stash'}
       onclick={() => void app.setViewMode('stash')}
     >
-      <!-- 箱に下向きの矢印。ステージしたものを箱へしまう -->
+      <!-- 手前の箱から奥の箱へ。ワークツリーの差分をスタッシュ領域へ退避する -->
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <!-- 手前の箱（左下・大）と奥の箱（右上・小）。どちらも上辺の無い角ばった U 字 -->
         <path
-          d="M12 2.5v8.5M8.5 7.5l3.5 3.5 3.5-3.5"
+          d="M2.5 12.5v8h11v-8M15 4v5h6.5V4"
           fill="none"
           stroke="currentColor"
           stroke-width="1.6"
           stroke-linecap="round"
           stroke-linejoin="round"
         />
+        <!-- 手前の箱の中央から立ち上がり、奥の箱の左へ届く弧。矢じりは右向きの塗り三角で、弧は三角の底辺の中点で終わる -->
         <path
-          d="M3.5 13.5h17v7h-17z"
+          d="M8 16.5Q8 6.5 10.6 6.5"
           fill="none"
           stroke="currentColor"
           stroke-width="1.6"
+          stroke-linecap="round"
           stroke-linejoin="round"
         />
+        <path d="M13.8 6.5L10.6 4v5z" fill="currentColor" />
       </svg>
     </button>
     <button
@@ -141,18 +146,59 @@
       aria-pressed={mode === 'stash-list'}
       onclick={() => void app.setViewMode('stash-list')}
     >
-      <!-- 同じ箱に上向きの矢印。箱から出してブランチへ戻す -->
+      <!-- 同じ 2 つの箱で逆向き。スタッシュ領域からワークツリーへ差分を戻す -->
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
         <path
-          d="M12 11V2.5M8.5 6l3.5-3.5 3.5 3.5"
+          d="M2.5 12.5v8h11v-8M15 4v5h6.5V4"
           fill="none"
           stroke="currentColor"
           stroke-width="1.6"
           stroke-linecap="round"
           stroke-linejoin="round"
         />
+        <!-- 保存モードと同じ弧を奥の箱の左から手前の箱の中央へ。矢じりは下向きの塗り三角で、弧は三角の底辺の中点で終わる -->
         <path
-          d="M3.5 13.5h17v7h-17z"
+          d="M13.8 6.5Q8 6.5 8 14.3"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <path d="M8 17.5L5.5 14.3h5z" fill="currentColor" />
+      </svg>
+    </button>
+
+    <hr class="rule" />
+
+    <!--
+      Unity Prefab 差分モード（決定 32）。
+      **Unity 公式のロゴは使わない**——代わりにヒエラルキーペインで
+      ゲームオブジェクトに付けているのと同じ「立方体の等角投影」を描く。
+    -->
+    <button
+      class="activity-btn icon"
+      class:active={mode === 'unity'}
+      title="Unity Prefab 差分モード（Prefab / シーンをコンポーネント単位で見る）"
+      aria-pressed={mode === 'unity'}
+      onclick={() => void app.enterUnityMode()}
+    >
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <!--
+          外形は正六角形（頂点が上下）。中心 (12,12)・外接円の半径 9 なので、
+          横の頂点は 12 ± 9cos30° ≒ 12 ± 7.8、上下の頂点は 12 ± 9。
+          中心から上左・上右・真下へ 3 本の稜線を引き、上面・左面・右面を見せる
+          （UnityHierarchyPane の obj-icon と同じ形を 24 グリッドに合わせたもの）。
+        -->
+        <path
+          d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M4.2 7.5L12 12l7.8-4.5M12 12v9"
           fill="none"
           stroke="currentColor"
           stroke-width="1.6"
@@ -207,7 +253,7 @@
     width: 60%;
     margin: 3px auto;
     border: none;
-    border-top: 1px solid var(--app-border-subtle);
+    border-top: 4px solid var(--app-border-subtle);
   }
 
   .activity-btn {

@@ -12,6 +12,10 @@ import type {
   ConflictFileDto,
   ConflictResolveRequest,
   ConflictSectionDto,
+  UnityFormatDto,
+  UnityNodeDetailDto,
+  UnityNodeDto,
+  UnityViewDto,
   FtErrorDto,
   GitIdentityDto,
   GitIdentityRequest,
@@ -58,6 +62,7 @@ const SETTINGS: SettingsDto = {
   commitFileListWidth: 260,
   stashDetailHeight: 260,
   stashFileListWidth: 260,
+  unityHierarchyWidth: 320,
   tabShowCurrentInfo: true,
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
@@ -342,6 +347,60 @@ export class FakeBridge {
       truncated: false,
     },
   ];
+
+  /* ------------------------------------------ Unity Prefab 差分モード（決定 32） */
+
+  /** unityGetView が返すヒエラルキー。テストごとに差し替える。 */
+  unityHierarchy: readonly UnityNodeDto[] = [
+    {
+      id: '100',
+      parent: -1,
+      depth: 0,
+      kind: 'gameObject',
+      classId: 1,
+      name: 'Player',
+      mark: 'changed',
+      hasChangedDescendant: true,
+    },
+    {
+      id: '101',
+      parent: 0,
+      depth: 1,
+      kind: 'component',
+      classId: 4,
+      name: 'Transform',
+      mark: 'changed',
+      hasChangedDescendant: false,
+    },
+  ];
+
+  /** その Prefab を展開できたか。`.prefab` 以外やバイナリの画面を試すときに変える。 */
+  unityFormat: UnityFormatDto = 'yaml';
+  unityStageable = true;
+  unityRefusal: string | null = null;
+
+  /** 索引を作ったか（作った後のヒエラルキーの名前を差し替えるのに使う）。 */
+  unityScriptNames = false;
+  /** 索引で引けるようになった guid の数。 */
+  unityResolvedCount = 3;
+
+  /** unityGetNode が返す表。ノード id で引く。 */
+  unityNodeDetails = new Map<string, UnityNodeDetailDto>();
+
+  unityViewFor(path: string, staged: boolean): UnityViewDto {
+    return {
+      path,
+      staged,
+      format: this.unityFormat,
+      nodes: this.unityFormat === 'yaml' ? this.unityHierarchy : [],
+      stageable: this.unityStageable,
+      refusal: this.unityRefusal,
+      changedNodeCount:
+        this.unityFormat === 'yaml'
+          ? this.unityHierarchy.filter((n) => n.mark !== 'same').length
+          : 0,
+    };
+  }
 
   /** conflictGet が返す中身。パスが分かるようにしておく。 */
   conflictFor(path: string): ConflictFileDto {
@@ -669,6 +728,31 @@ export class FakeBridge {
         this.record('conflictResolve', id, req);
         this.conflictSections = this.conflictSections.filter((s) => s.index !== req.section.index);
         return Promise.resolve(ok({ remaining: this.conflictSections.length }));
+      },
+      unityGetView: (id: string, path: string, staged: boolean) => {
+        this.record('unityGetView', id, path, staged);
+        const view = this.unityViewFor(path, staged);
+        // diff と同じ遅延を掛けられるようにしておく。
+        // 「読み込み中に他の操作をされたら破棄する」（要件 12）の検証に要る
+        return this.diffDelayMs === 0
+          ? Promise.resolve(ok(view))
+          : new Promise((resolve) => {
+              setTimeout(() => resolve(ok(view)), this.diffDelayMs);
+            });
+      },
+      unityIndexScripts: (id: string) => {
+        this.record('unityIndexScripts', id);
+        this.unityScriptNames = true;
+        return Promise.resolve(ok({ resolved: this.unityResolvedCount }));
+      },
+      unityGetNode: (id: string, path: string, staged: boolean, nodeId: string) => {
+        this.record('unityGetNode', id, path, staged, nodeId);
+        const detail = this.unityNodeDetails.get(nodeId) ?? null;
+        return this.diffDelayMs === 0
+          ? Promise.resolve(ok(detail))
+          : new Promise((resolve) => {
+              setTimeout(() => resolve(ok(detail)), this.diffDelayMs);
+            });
       },
       stageHunks: (id: string, req: HunkStageRequest) => {
         this.record('stageHunks', id, req);
