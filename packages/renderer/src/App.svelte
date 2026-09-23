@@ -225,10 +225,25 @@
   /**
    * 失敗の件数。ログボタンの丸に出すだけで、画面は塞がない。
    * 実体は「実行ログ」パネルの「エラー」タブ（CommandLogPanel）にある。
+   *
+   * **パネルで実際に見える件数**（表示範囲で絞った後）を数える。2026-09-23 改定。
+   * 以前はここだけ全件を数えていたため、「ログ ③」と出ているのに開くとエラータブが空、
+   * ということが普通に起きていた。丸の数字とパネルの中身は必ず一致させる。
    */
-  const errorCount = $derived(app.errorLog.length);
+  const errorCount = $derived(app.visibleErrorLog.length);
   /** 3 桁以上は丸める（ボタンの幅が動くと押し間違いを招く）。 */
   const errorBadge = $derived(errorCount > 99 ? '99+' : String(errorCount));
+  /** 表示範囲の外にある分。丸には出さない（一致させるため）ので、ツールチップで補う。 */
+  const hiddenErrorCount = $derived(app.errorLog.length - errorCount);
+
+  const logButtonTitle = $derived.by((): string => {
+    const lines: string[] = [];
+    if (errorCount > 0) lines.push(`失敗が ${String(errorCount)} 件あります`);
+    if (hiddenErrorCount > 0) {
+      lines.push(`表示範囲の外にさらに ${String(hiddenErrorCount)} 件（「開いているすべてのリポジトリ」で出ます）`);
+    }
+    return lines.length === 0 ? '実行ログを開く' : lines.join('\n');
+  });
 
   let optionsOpen = $state(false);
   /** ようこそ画面の銘を押したときに出る、出典を見せるだけのダイアログ。 */
@@ -317,7 +332,7 @@
         -->
         <button
           class:has-errors={errorCount > 0}
-          title={errorCount > 0 ? `失敗が ${String(errorCount)} 件あります` : '実行ログを開く'}
+          title={logButtonTitle}
           onclick={() => void app.toggleCommandLog()}
         >
           ログ

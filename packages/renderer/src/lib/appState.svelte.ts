@@ -313,8 +313,12 @@ export class AppState {
   }
 
   /**
-   * 直近の失敗（エラー帯）。**自動では消さない**——同期的に読む呼び出し元が多いため。
+   * 直近の失敗。**自動では消さない**——同期的に読む呼び出し元が多いため。
    * 消える口は次の操作の開始（`#run` の冒頭）と `dismissError()`。履歴は `errorLog`。
+   *
+   * **これ自体は描画しない**（決定 26 の 2026-09-19 改定で画面下端のエラー帯を廃止した）。
+   * 利用者に見える口は実行ログパネルの「エラー」タブで、そこへ導くのは `#revealErrorLog()`。
+   * ここに残しているのは「直近の失敗」を同期的に問い合わせる先が要るため。
    */
   error = $state<FtErrorDto | null>(null);
 
@@ -351,6 +355,14 @@ export class AppState {
   /** 実行ログ（全タブ分、新しい順）。main の追記通知（onCommandLogged）で増える。 */
   commandLog = $state<CommandLogEntryDto[]>([]);
   showCommandLog = $state(false);
+  /**
+   * パネルのどちらの内容を見せるか。
+   *
+   * **パネルのローカル状態ではなく AppState に置く。** 失敗したときに `#setError` が
+   * 「エラー」へ切り替えるので、パネルの外から決められる必要がある
+   * （ローカルに持つと、開くたび必ず「コマンド」から始まり、自動で開いても失敗が見えない）。
+   */
+  commandLogView = $state<'log' | 'errors'>('log');
   /**
    * 実行ログの表示範囲。tab はアクティブなタブの実行だけ、all はすべて
    * （クローンのようにタブに属さない実行や、閉じたタブの実行も含む）。
@@ -2180,7 +2192,8 @@ export class AppState {
         };
         return;
       }
-      this.error = result.error;
+      // 直接代入にすると履歴にもパネルにも残らない（#setError だけが唯一の口）
+      this.#setError(result.error);
     });
   }
 
@@ -2432,10 +2445,10 @@ export class AppState {
   }
 
   /**
-   * 失敗を履歴へ積む。**エラー帯（error）には出さない。**
+   * 失敗を履歴へ積む。**パネルは開かない。**
    *
    * 利用者が操作を始めた覚えの無い失敗（選択に伴う diff の読み取り、設定の保存）は
-   * これを使う。帯を出すと「何もしていないのに壊れた」と読まれるため。
+   * これを使う。勝手にパネルが出ると「何もしていないのに壊れた」と読まれるため。
    * 履歴は実行ログパネルのエラータブから追える（docs/01-architecture.md 5 章）。
    *
    * @param sessionId 省略時はアクティブなタブ。タブの外の失敗なら null を明示する。
@@ -2451,18 +2464,51 @@ export class AppState {
   }
 
   /**
-   * 失敗を履歴へ積み、**エラー帯にも出す**。
+   * 失敗を履歴へ積み、**その場で見せる**（実行ログパネルのエラータブを開く）。
    *
-   * 利用者が始めた操作が失敗したときはこちら。帯は次の操作の開始（#run の冒頭）で消えるが、
-   * 履歴には残るので情報は失わない。
+   * 利用者が始めた操作が失敗したときはこちら。`#logError` との違いはパネルを開くかどうかで、
+   * 履歴への積み方は同じ。
    */
   #setError(error: FtErrorDto, sessionId: string | null = this.activeId): void {
     this.#logError(error, sessionId);
     this.error = error;
+    this.#revealErrorLog(sessionId);
   }
+
+  /**
+   * 積んだばかりの失敗を利用者の目に入れる。
+   *
+   * 押したのに何も起きない（ように見える）のがいちばん困るので、**操作起点の失敗
+   * （`#setError`）に限ってパネルを開く。** モーダルにはしない——決定 26 のとおり操作は止めない。
+   *
+   * **表示範囲も合わせる。** 積んだ失敗が今の範囲（既定はアクティブなタブの分だけ）で
+   * 見えないなら「開いているすべてのリポジトリ」へ広げる。広げずに開くと、
+   * ようこそ画面で非 git フォルダを選んだ場合のように **`sessionId` が null の失敗**が
+   * 絞り込みで落ち、「タブを開いていません」とだけ書かれた空のパネルが出てしまう。
+   */
+  #revealErrorLog(sessionId: string | null): void {
+    /*
+     * 「今の範囲に出るか」は visibleErrorLog と同じ規則で見る。**条件を写している**ので、
+     * 片方を直すときは必ず両方直すこと。`sessionId !== this.activeId` だけで判定すると、
+     * タブが無いとき（どちらも null）に一致してしまい、広げるべき場面で広がらない。
+     */
+    const willShow =
+      this.commandLogScope === 'all' || (this.activeId !== null && sessionId === this.activeId);
+    if (!willShow) this.commandLogScope = 'all';
+    this.commandLogView = 'errors';
+    if (this.showCommandLog) return;
+    this.showCommandLog = true;
+    /*
+     * 開くときは toggleCommandLog と同じく main の保持分を取り直す。
+     * ここは同期の呼び出し元（`#run` の catch 等）から呼ばれるので待てない。
+     * 取り直せなくても追記通知で増えた分は出るし、そもそも今見せたいのはエラータブなので、
+     * ここで失敗しても**パネルを開くこと自体は止めない**（握り潰してよい唯一の理由）。
+     */
+    void this.reloadCommandLog().catch(() => undefined);
+  }
+
   #check<T>(result: Result<T>): result is { ok: true; value: T } {
     if (result.ok) return true;
-    // 帯だけに出して履歴に残さないと、帯が消えた後に何が起きたか追えなくなる
     this.#setError(result.error);
     return false;
   }

@@ -298,6 +298,101 @@ describe('ペイン幅', () => {
   });
 });
 
+/*
+ * 失敗の自動表示（2026-09-23 追加）。
+ *
+ * 押したのに何も起きない（ように見える）のがいちばん困るので、**操作起点の失敗
+ * （#setError）のときだけ**パネルを開いてエラータブに合わせる。
+ * 始めた覚えの無い失敗（#logError）では開かない——「何もしていないのに壊れた」と読まれるため。
+ */
+describe('失敗したときの実行ログパネルの自動表示', () => {
+  /** 非 git フォルダを選んだときの main の応答（#1 の rev-parse が落ちる）。 */
+  const notARepository = {
+    ok: false as const,
+    error: {
+      kind: 'not-a-repository' as const,
+      message: 'git リポジトリではありません。',
+      detail: 'fatal: not a git repository',
+    },
+  };
+
+  it('タブが無いときに非 git フォルダを選ぶと、パネルが開きエラータブに中身がある', async () => {
+    const bridge = new FakeBridge();
+    bridge.sessions = [];
+    bridge.activeId = null;
+    const app = await load({
+      ...bridge.build(),
+      sessionPickAndCreate: () => Promise.resolve(notARepository),
+    });
+
+    expect(app.showCommandLog).toBe(false);
+
+    await app.openRepository();
+
+    expect(app.showCommandLog).toBe(true);
+    expect(app.commandLogView).toBe('errors');
+    /*
+     * タブが無い＝失敗の sessionId が null なので、既定の絞り込み（アクティブなタブの分だけ）
+     * のままでは落ちてしまう。**開いた先が空では自動表示の意味が無い**ので範囲を広げる。
+     */
+    expect(app.commandLogScope).toBe('all');
+    expect(app.visibleErrorLog.map((e) => e.message)).toEqual(['git リポジトリではありません。']);
+  });
+
+  it('アクティブなタブの失敗なら、表示範囲は広げない（利用者の絞り込みを壊さない）', async () => {
+    const bridge = new FakeBridge();
+    const app = await load({
+      ...bridge.build(),
+      settingsUpdate: () =>
+        Promise.resolve({ ok: false, error: { kind: 'internal', message: '設定ファイルを書けません' } }),
+    });
+    expect(app.activeId).toBe('s1');
+
+    await app.setBranchExpanded(['local:obana']);
+
+    expect(app.showCommandLog).toBe(true);
+    expect(app.commandLogView).toBe('errors');
+    // 既定の絞り込みのままで見えるので、広げる必要が無い
+    expect(app.commandLogScope).toBe('tab');
+    expect(app.visibleErrorLog.map((e) => e.message)).toEqual(['設定ファイルを書けません']);
+  });
+
+  it('パネルを開いてコマンドを見ている最中に失敗すると、エラータブへ切り替わる', async () => {
+    const bridge = new FakeBridge();
+    const app = await load({
+      ...bridge.build(),
+      settingsUpdate: () =>
+        Promise.resolve({ ok: false, error: { kind: 'internal', message: '設定ファイルを書けません' } }),
+    });
+
+    await app.toggleCommandLog();
+    expect(app.commandLogView).toBe('log');
+
+    await app.setBranchExpanded(['local:obana']);
+
+    expect(app.showCommandLog).toBe(true);
+    expect(app.commandLogView).toBe('errors');
+  });
+
+  /*
+   * 始めた覚えの無い失敗では開かない。ここで使う setBranchExpanded は
+   * **タブが無いとき**だけ #logError を通る（リポジトリが決まらないので保存できない）。
+   */
+  it('操作起点でない失敗（#logError）ではパネルを開かない', async () => {
+    const { app } = await boot((b) => {
+      b.sessions = [];
+      b.activeId = null;
+    });
+
+    await app.setBranchExpanded(['local:feature']);
+
+    expect(app.errorLog.length).toBeGreaterThan(0);
+    expect(app.showCommandLog).toBe(false);
+    expect(app.commandLogView).toBe('log');
+    expect(app.commandLogScope).toBe('tab');
+  });
+});
+
 describe('タブの並び替え', () => {
   it('ドラッグ中はローカルの表示順だけを更新し、IPC は呼ばない', async () => {
     const { app, bridge } = await boot();

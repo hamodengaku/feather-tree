@@ -11,11 +11,12 @@
    * 「コマンド」＝終わった git の記録、「エラー」＝操作の失敗。
    * 画面下端のエラー帯を廃止して、失敗をここへ集めた。突き合わせて読めるのが利点。
    *
-   * 選択はこのコンポーネントの中だけに持つ（パネルを閉じるとコマンドへ戻る）。
-   * 失敗が出ていることはタブのバッジが知らせるので、
-   * 開いた時点でどちらを見るかは利用者が決められる。
+   * **選択は AppState が持つ**（2026-09-23 改定。以前はこのコンポーネントのローカル状態だった）。
+   * 操作が失敗したときに `#setError` がエラー側へ切り替えてパネルを開くので、
+   * 外から決められる必要がある。ローカルに持つと、自動で開いても必ず「コマンド」から始まり、
+   * 肝心の失敗が見えない。
    */
-  let view = $state<'log' | 'errors'>('log');
+  const view = $derived(app.commandLogView);
 
   /**
    * 表示範囲。チェックボックスは「開いているすべてのリポジトリ」で、**既定はオフ**
@@ -49,8 +50,17 @@
     return app.sessions.find((s) => s.id === sessionId)?.displayName ?? '閉じたタブ';
   }
 
-  /** 失敗の時刻は Date.now() の数値で届く（実行ログの ISO 文字列とは形が違う）。 */
-  function clock(at: number): string {
+  /**
+   * 時刻の表示（2 つのタブで共用する）。
+   *
+   * 届く形が違う——**実行ログは ISO 8601 の文字列**（main の `new Date().toISOString()` = UTC）、
+   * **失敗は `Date.now()` の数値**（epoch ms）。`new Date()` はどちらも解釈できる。
+   *
+   * **必ずこれを通すこと。** 以前は実行ログ側が ISO 文字列を `slice(11, 19)` で切り出していて、
+   * UTC のまま表示されていた。失敗側はローカル時刻なので、同じパネルの中で時差の分だけ
+   * （JST なら 9 時間）ずれ、突き合わせて読むというこのパネルの狙いが成立していなかった。
+   */
+  function clock(at: number | string): string {
     const d = new Date(at);
     const pad = (n: number): string => String(n).padStart(2, '0');
     return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
@@ -101,14 +111,14 @@
         type="button"
         class:active={view === 'log'}
         aria-pressed={view === 'log'}
-        onclick={() => (view = 'log')}>コマンド</button
+        onclick={() => (app.commandLogView = 'log')}>コマンド</button
       >
       <button
         type="button"
         class:active={view === 'errors'}
         class:has-errors={errors.length > 0}
         aria-pressed={view === 'errors'}
-        onclick={() => (view = 'errors')}
+        onclick={() => (app.commandLogView = 'errors')}
         >エラー{#if errors.length > 0}<span class="badge">{errors.length}</span>{/if}</button
       >
     </div>
@@ -167,7 +177,8 @@
         <tbody>
           {#each entries as entry (entry.seq)}
             <tr class:failed={entry.exitCode !== 0}>
-              <td class="time">{entry.at.slice(11, 19)}</td>
+              <!-- ISO 文字列を切り出さない（UTC のまま出てしまう）。clock() でローカル時刻へ -->
+              <td class="time">{clock(entry.at)}</td>
               <!-- タブ名は常に出す（「このタブ」の切替で列数が動くと行がずれて読みにくいため） -->
               <td class="tab" title={entry.cwd}>{tabName(entry.sessionId)}</td>
               <td class="args">git {entry.args.join(' ')}</td>
