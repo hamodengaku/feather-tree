@@ -12,7 +12,10 @@ export interface StatusOptions {
    * 既定値は Phase 10 の実測で決める（docs/02-git-command-map.md rename 検出）。
    */
   readonly noRenames?: boolean;
-  /** 既定は 'normal'。'all' は Unity プロジェクトで極端に遅くなるため使わない。 */
+  /**
+   * 既定は 'all'（未追跡を 1 件ずつ列挙する。docs/02-git-command-map.md
+   * 「未追跡は 1 件ずつ列挙する」）。アプリはこの既定値だけを使う。'normal' はテスト用に残してある。
+   */
   readonly untrackedFiles?: 'no' | 'normal' | 'all';
 }
 
@@ -29,7 +32,7 @@ export async function getStatus(ctx: GitContext, options: StatusOptions = {}): P
     '--porcelain=v2',
     '-z',
     '--branch',
-    `--untracked-files=${options.untrackedFiles ?? 'normal'}`,
+    `--untracked-files=${options.untrackedFiles ?? 'all'}`,
   ];
   if (options.noRenames === true) args.push('--no-renames');
 

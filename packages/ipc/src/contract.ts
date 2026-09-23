@@ -205,7 +205,6 @@ export interface SettingsDto {
   readonly sshKeyPaths: Readonly<Record<string, string>>;
   readonly theme: 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
   readonly noRenames: boolean;
-  readonly untrackedFiles: 'normal' | 'all';
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;

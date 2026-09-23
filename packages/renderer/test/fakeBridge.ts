@@ -53,7 +53,6 @@ const SETTINGS: SettingsDto = {
   sshKeyPaths: {},
   theme: 'classic-dark',
   noRenames: false,
-  untrackedFiles: 'normal',
   diffContextLines: 3,
   diffMaxLines: 20000,
   logPageSize: 200,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getFileDiff, getUntrackedFileDiff } from '../src/index.js';
+import { getFileDiff, getStatus, getUntrackedFileDiff } from '../src/index.js';
 import { commitAll, createFixture, type Fixture } from './fixture.js';
 
 const LF = String.fromCharCode(10);
@@ -85,6 +85,18 @@ describe('diff (対応表 #18 / #19)', () => {
     await fx.write('new.bin', Buffer.from([0x41, 0x00, 0x42]).toString('latin1'));
     const diff = await getUntrackedFileDiff(fx.ctx, 'new.bin');
     expect(diff.binary).toBe(true);
+    expect(diff.hunks).toHaveLength(0);
+  });
+
+  it('入れ子のリポジトリ（all でも dir/ で来る）は EISDIR にせず差分なしで返す', async () => {
+    await fx.write('nested/a.txt', 'x' + LF);
+    await fx.run('init', '--quiet', 'nested');
+
+    const status = await getStatus(fx.ctx);
+    expect(status.entries.map((e) => e.path)).toEqual(['nested/']);
+
+    const diff = await getUntrackedFileDiff(fx.ctx, 'nested/');
+    expect(diff.binary).toBe(false);
     expect(diff.hunks).toHaveLength(0);
   });
 

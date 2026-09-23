@@ -68,6 +68,11 @@ export async function getUntrackedFileDiff(
     buf = await readFile(absolute, ctx.signal === undefined ? {} : { signal: ctx.signal });
   } catch (err) {
     if (ctx.signal?.aborted === true) throw new GitCancelledError();
+    // 中に .git を持つ未追跡ディレクトリ（入れ子のリポジトリ）は --untracked-files=all でも
+    // `dir/` の 1 件で来る。読める中身が無いので「差分なし」にする
+    if ((err as { code?: unknown } | null)?.code === 'EISDIR') {
+      return { path, oldPath: null, binary: false, hunks: [], truncated: false, preamble: [] };
+    }
     throw err;
   }
 

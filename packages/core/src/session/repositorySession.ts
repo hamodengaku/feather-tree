@@ -188,10 +188,7 @@ export class RepositorySession {
   async refreshStatus(signal?: AbortSignal): Promise<void> {
     const settings = this.#deps.settings();
     this.#status = await this.track(['status'], () =>
-      getStatus(this.context(signal), {
-        noRenames: settings.noRenames,
-        untrackedFiles: settings.untrackedFiles,
-      }),
+      getStatus(this.context(signal), { noRenames: settings.noRenames }),
     );
     this.#statusSeq += 1;
     this.#emit('status');

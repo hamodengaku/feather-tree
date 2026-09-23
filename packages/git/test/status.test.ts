@@ -39,17 +39,17 @@ describe('getStatus (対応表 #2)', () => {
   it('未追跡ディレクトリは normal では 1 エントリに畳まれる（git の仕様）', async () => {
     await fx.write('dir with space/a b (1).txt', 'x');
     await fx.write('絵文字😀/ファイル.txt', 'y');
-    const s = await getStatus(fx.ctx);
+    const s = await getStatus(fx.ctx, { untrackedFiles: 'normal' });
     const paths = s.entries.map((e) => e.path).sort();
     // --untracked-files=normal はディレクトリ単位で報告する。
-    // 巨大な未追跡ツリーを持つ Unity プロジェクトで status が軽く済む理由でもある。
+    // アプリは使わない（既定は all）。畳まれた `dir/` を選ぶと EISDIR になっていた
     expect(paths).toEqual(['dir with space/', '絵文字😀/']);
   });
 
-  it('空白・記号・絵文字を含むパスを all では 1 件ずつ返す', async () => {
+  it('既定（all）では空白・記号・絵文字を含むパスを 1 件ずつ返す', async () => {
     await fx.write('dir with space/a b (1).txt', 'x');
     await fx.write('絵文字😀/ファイル.txt', 'y');
-    const s = await getStatus(fx.ctx, { untrackedFiles: 'all' });
+    const s = await getStatus(fx.ctx);
     const paths = s.entries.map((e) => e.path);
     expect(paths).toContain('dir with space/a b (1).txt');
     expect(paths).toContain('絵文字😀/ファイル.txt');

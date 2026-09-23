@@ -47,7 +47,7 @@ export type { StashMessageRejection } from './policy/stashMessage.js';
 
 export { DEFAULT_SETTINGS, normalizeSettings } from './settings/schema.js';
 export { AppSettingsStore } from './settings/settingsStore.js';
-export type { AppSettings, PaneWidths, ThemeName, UntrackedMode } from './settings/schema.js';
+export type { AppSettings, PaneWidths, ThemeName } from './settings/schema.js';
 
 export { RepositorySession, toMappedError } from './session/repositorySession.js';
 export type { CommandStart, SessionChange, SessionDeps } from './session/repositorySession.js';

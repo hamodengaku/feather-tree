@@ -12,7 +12,6 @@ import {
 import { isAbsolute } from 'node:path';
 
 export type ThemeName = 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'phoenix-light';
-export type UntrackedMode = 'normal' | 'all';
 /**
  * ペイン領域のモード（決定 27 / 31）。
  *
@@ -52,7 +51,6 @@ export interface AppSettings {
   readonly theme: ThemeName;
   /** status の rename 検出を切る。巨大リポで所要時間に効く。 */
   readonly noRenames: boolean;
-  readonly untrackedFiles: UntrackedMode;
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
@@ -126,7 +124,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sshKeyPaths: {},
   theme: 'phoenix-light',
   noRenames: false,
-  untrackedFiles: 'normal',
   diffContextLines: 3,
   diffMaxLines: 20000,
   logPageSize: 200,
@@ -152,7 +149,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 const THEMES: readonly ThemeName[] = ['classic-dark', 'classic-light', 'phoenix-dark', 'phoenix-light'];
-const UNTRACKED: readonly UntrackedMode[] = ['normal', 'all'];
 const REFOCUS_MODES: readonly RefocusUpdateMode[] = ['auto', 'modal', 'none'];
 const VIEW_MODES: readonly ViewMode[] = ['diff', 'log', 'stash', 'stash-list', 'unity'];
 
@@ -220,7 +216,6 @@ export function normalizeSettings(raw: unknown): AppSettings {
     sshKeyPaths: absolutePathRecord(o['sshKeyPaths'], MAX_SSH_KEY_ENTRIES),
     theme: pickFrom(o['theme'], THEMES, DEFAULT_SETTINGS.theme),
     noRenames: boolOr(o['noRenames'], DEFAULT_SETTINGS.noRenames),
-    untrackedFiles: pickFrom(o['untrackedFiles'], UNTRACKED, DEFAULT_SETTINGS.untrackedFiles),
     diffContextLines: clampInt(o['diffContextLines'], 0, 20, DEFAULT_SETTINGS.diffContextLines),
     diffMaxLines: clampInt(o['diffMaxLines'], 100, 200000, DEFAULT_SETTINGS.diffMaxLines),
     logPageSize: clampInt(o['logPageSize'], 20, 2000, DEFAULT_SETTINGS.logPageSize),
