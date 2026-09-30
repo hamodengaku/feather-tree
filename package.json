@@ -30,6 +30,7 @@
     "postinstall": "node scripts/postinstall.mjs",
     "test:perf": "node scripts/test-perf.mjs",
     "icon": "node scripts/make-icon.mjs",
+    "icon:sizes": "powershell -NoProfile -ExecutionPolicy Bypass -File build/icon/make-sizes.ps1",
     "clean": "node scripts/clean.mjs out release",
     "demo:repo": "node scripts/make-demo-repo.mjs",
     "dist:dir": "npm run icon && npm run build && node scripts/dist.mjs --dir",

@@ -97,6 +97,10 @@
 ## 5. 差し替え手順
 
 1. このフォルダの PNG を置き換える（1 枚ずつでもよい）
+   - 9 枚まとめて機械的に作り直したいときは `source.png`（正方形・8bit RGBA）を置いた上で
+     `npm run icon:sizes` を実行する（`make-sizes.ps1` が GDI+ の高品質リサイズで 9 枚を上書きする）
+   - ただし機械的な縮小だけでは小さいサイズ（特に 16px・20px）で細部が潰れがちなので、
+     `16.png` 〜 `24.png` あたりは S5 に沿って手で調整するのが望ましい
 2. `npm run icon` で `build/icon.ico` を作り直す
    - 素材の検査だけなら `npm run icon -- --check`
 3. 上の「4. 検査で防げないこと」の目視確認を行う
@@ -125,6 +129,7 @@
 ## 8. 関連するファイル
 
 - `scripts/make-icon.mjs` — ここの PNG を `build/icon.ico` に詰める（画像は作らない）
+- `build/icon/make-sizes.ps1`（`npm run icon:sizes`） — `元画像.png` から 9 サイズの PNG を作る（画像を作る側）
 - `electron-builder.yml` — `win.icon: build/icon.ico` を指す
 - `build/icon.ico` — 生成物。版管理しない（`.gitignore` 済み）
 - `build/icon-app.png` — 元絵のマスター。配布には使われない。
