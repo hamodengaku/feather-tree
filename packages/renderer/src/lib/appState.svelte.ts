@@ -13,6 +13,7 @@ import type {
   ConflictFileDto,
   ConflictSectionDto,
   ConfirmationDto,
+  ExcelRowDiffDto,
   EnvironmentDto,
   GitIdentityDto,
   FileDiffDto,
@@ -37,6 +38,8 @@ import { ft } from '../bridge.js';
 import { applyTheme } from './theme.js';
 import { nextSelectionAfterRemoval } from './selection.js';
 import { initialUnityExpansion } from './unityTree.js';
+import { ExcelState } from './excelState.svelte.js';
+import { isOpenableExcelPath } from './excelPath.js';
 import { TabActivity } from './tabActivity.js';
 
 /** ブランチペインの展開状態が無いときに返す共通の空配列（毎回作り直さない）。 */
@@ -71,6 +74,9 @@ const VIEW_ONLY_COMMANDS: ReadonlySet<string> = new Set([
   'diff',
   'read-untracked',
   'read-conflict',
+  // 作業ツリーの直接読み（Unity / Excel の新側）と、Excel の HEAD 版（#49）。どちらも読むだけ
+  'read-worktree',
+  'cat-file',
   'show',
   'log',
   'stash list',
@@ -166,7 +172,15 @@ export class AppState {
   constructor(bridge: FeatherTreeBridge, options: { readonly tabActivity?: TabActivity } = {}) {
     this.#ft = bridge;
     this.#tabActivity = options.tabActivity ?? new TabActivity();
+    this.excel = new ExcelState(
+      bridge,
+      () => this.activeId,
+      (error, sessionId) => this.#logError(error, sessionId),
+    );
   }
+
+  /** Excel 差分モード（決定 33）の状態。 */
+  readonly excel: ExcelState;
 
   environment = $state<EnvironmentDto | null>(null);
   settings = $state<SettingsDto | null>(null);
@@ -233,6 +247,14 @@ export class AppState {
   conflict = $state<ConflictFileDto | null>(null);
   /** 選択中のファイルが未マージか（差分ペインの出し分け）。 */
   selectedUnmerged = $state(false);
+
+  /**
+   * 差分モードで Excel ファイルを選んでいるときの、行単位の比較（決定 33 の C 案）。
+   *
+   * `diff` / `conflict` と**排他**。Excel は ZIP なので `git diff` はバイナリ（LFS ならポインタの差分）
+   * しか出さない。比較は HEAD ↔ 作業ツリーで、ステージ済み／未ステージを区別しない。
+   */
+  excelRowDiff = $state<ExcelRowDiffDto | null>(null);
 
   /* ---------------------------------------------------------------- コミットログモード（決定 27） */
 
@@ -436,6 +458,8 @@ export class AppState {
       stashFiles: readonly CommitFileChangeDto[];
       selectedStashPath: string | null;
       stashDiff: FileDiffDto | null;
+      /** Excel 差分モードで選んでいたファイル。中身は戻ったときに取り直す（main のキャッシュに当たる）。 */
+      excelPath: string | null;
     }
   >();
 
@@ -826,6 +850,12 @@ export class AppState {
     this.selectedStashPath = cached.selectedStashPath;
     this.stashDiff = cached.stashDiff;
     this.#invalidateDiff();
+    if (this.viewMode === 'excel') {
+      // Excel 差分モードは作業ツリーの選択を見ていない。選んでいた Excel だけを戻す
+      this.excel.restore(cached.excelPath);
+      await this.excel.ensure();
+      return;
+    }
     if (cached.selected !== null) await this.loadDiff(cached.selected);
   }
 
@@ -943,8 +973,13 @@ export class AppState {
        * （「見えていないもののために git を起動しない」。docs/00-decisions.md やらないこと）。
        */
       if (this.viewMode === 'unity') await this.loadUnity(this.selected);
-      else await this.loadDiff(this.selected);
+      else if (this.viewMode !== 'excel') await this.loadDiff(this.selected);
     }
+    /*
+     * Excel 差分モードは一覧と選んでいるファイルを取り直す（status の世代が進んだので、
+     * main は HEAD 側を #49 で読み直す）。対応表の例外「更新（Excel 差分モード）: #2 → #3 → #49」。
+     */
+    if (this.viewMode === 'excel' && id === this.activeId) await this.excel.reload();
   }
 
   /** 仮想リストのスクロールに応じて追加のページを取る。 */
@@ -1011,7 +1046,9 @@ export class AppState {
     }
     // 読み込み中なら、その要求は選択中のファイル（＝この file）のもの
     if (this.diffLoading) return true;
-    return this.diff?.path === file.path || this.conflict?.path === file.path;
+    return (
+      this.diff?.path === file.path || this.conflict?.path === file.path || this.excelRowDiff?.path === file.path
+    );
   }
 
   /**
@@ -1037,10 +1074,31 @@ export class AppState {
         if (result.ok) {
           this.diff = null;
           this.conflict = result.value;
+          this.excelRowDiff = null;
           this.diffError = null;
           return;
         }
         this.#failDiff(result.error, id);
+        return;
+      }
+
+      /*
+       * Excel ファイル（決定 33）。`diff:get` は打たず、行単位の比較を取る
+       * （HEAD ↔ 作業ツリー。ステージ済みの行を選んでも同じものを出す）。
+       */
+      if (isOpenableExcelPath(file.path)) {
+        const rows = await this.#ft.excelGetRowDiff(id, file.path);
+        if (seq !== this.#diffSeq) return;
+        // 「Excel モードで開く」で止められた要求（main は最新の要求だけを生かす）は失敗ではない
+        if (!rows.ok && rows.error.kind === 'cancelled') return;
+        if (rows.ok) {
+          this.diff = null;
+          this.conflict = null;
+          this.excelRowDiff = rows.value;
+          this.diffError = null;
+          return;
+        }
+        this.#failDiff(rows.error, id);
         return;
       }
 
@@ -1049,6 +1107,7 @@ export class AppState {
       if (result.ok) {
         this.diff = result.value;
         this.conflict = null;
+        this.excelRowDiff = null;
         this.diffError = null;
         return;
       }
@@ -1069,6 +1128,7 @@ export class AppState {
   #failDiff(error: FtErrorDto, id: string): void {
     this.diff = null;
     this.conflict = null;
+    this.excelRowDiff = null;
     this.diffError = error;
     this.#logError(error, id);
   }
@@ -1090,6 +1150,7 @@ export class AppState {
     this.#diffSeq += 1;
     this.diff = null;
     this.conflict = null;
+    this.excelRowDiff = null;
     this.selectedUnmerged = false;
     this.diffError = null;
   }
@@ -1152,7 +1213,41 @@ export class AppState {
   }
 
   async setViewMode(mode: SettingsDto['viewMode']): Promise<void> {
+    this.#leavingExcel(mode);
     await this.#writeSettings({ viewMode: mode });
+  }
+
+  // ---------------------------------------------------------------- Excel 差分モード（決定 33）
+
+  /**
+   * Excel 差分モードへ入る。**ブランチペインには触れない**（Unity モードと違い畳まない。
+   * Excel 差分モードではブランチペインを不可視にして、その位置を Excel ファイル一覧に使う）。
+   * 差分モードで Excel ファイルを選んでいたら、それを開いた状態で入る。
+   */
+  async enterExcelMode(): Promise<void> {
+    const selected = this.selected;
+    if (selected !== null && isOpenableExcelPath(selected.path)) this.excel.preselect(selected.path);
+    await this.#writeSettings({ viewMode: 'excel' });
+  }
+
+  /** 差分ペインの「Excel モードで開く」。main のキャッシュに当たるので git は走らない。 */
+  async openInExcelMode(path: string): Promise<void> {
+    this.excel.preselect(path);
+    await this.#writeSettings({ viewMode: 'excel' });
+  }
+
+  async setExcelFileListCollapsed(collapsed: boolean): Promise<void> {
+    await this.#writeSettings({ excelFileListCollapsed: collapsed });
+  }
+
+  async setExcelFileListWidth(px: number): Promise<void> {
+    const clamped = Math.min(1200, Math.max(120, Math.round(px)));
+    await this.#writeSettings({ excelFileListWidth: clamped });
+  }
+
+  /** Excel 差分モードを離れるなら、重いもの（幾何・行）を手放す。main 側も同時に手放す。 */
+  #leavingExcel(next: SettingsDto['viewMode']): void {
+    if (this.viewMode === 'excel' && next !== 'excel') this.excel.release();
   }
 
   // ---------------------------------------------------------------- Unity Prefab 差分モード（決定 32）
@@ -1190,6 +1285,7 @@ export class AppState {
 
   /** Unity モードへ入る。**ブランチペインを畳むのは入るときだけ**（決定 32）。 */
   async enterUnityMode(): Promise<void> {
+    this.#leavingExcel('unity');
     // 1 回の書き込みで両方を書く。2 回に分けると設定ファイルを 2 度書き、
     // sessionChanged も 2 度飛ぶ
     await this.#writeSettings({ viewMode: 'unity', branchPaneCollapsed: true });
@@ -2553,6 +2649,7 @@ export class AppState {
       stashFiles: this.stashFiles,
       selectedStashPath: this.selectedStashPath,
       stashDiff: this.stashDiff,
+      excelPath: this.excel.selectedPath,
     });
   }
 
@@ -2566,6 +2663,7 @@ export class AppState {
     this.#invalidateDiff();
     this.#clearLog();
     this.#clearStash();
+    this.excel.reset();
     this.commitMessage = '';
     this.amend = false;
   }

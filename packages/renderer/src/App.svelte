@@ -5,6 +5,8 @@
   import WorkingTreePane from './panes/WorkingTreePane.svelte';
   import DiffPane from './panes/DiffPane.svelte';
   import UnityPane from './panes/UnityPane.svelte';
+  import ExcelPane from './panes/ExcelPane.svelte';
+  import ExcelFileListPane from './panes/ExcelFileListPane.svelte';
   import CommitLogPane from './panes/CommitLogPane.svelte';
   import CommitDetailPane from './panes/CommitDetailPane.svelte';
   import StashListPane from './panes/StashListPane.svelte';
@@ -54,6 +56,22 @@
    */
   const unityMode = $derived(app.viewMode === 'unity');
   /**
+   * Excel 差分モード（決定 33）。ブランチペインの位置に Excel ファイル一覧、残り全部に Excel ペイン。
+   * 作業ツリーペインは出さない（読むだけのビューア）。
+   *
+   * **ブランチペインは破棄しない。** 幅 0 の列に退避して不可視にする（.branch-slot.parked）。
+   * 破棄すると、利用者が意図的に畳んだフォルダが開き直される（下のマークアップの注記と同じ理由）。
+   */
+  const excelMode = $derived(app.viewMode === 'excel');
+  const excelListCollapsed = $derived(app.settings?.excelFileListCollapsed ?? false);
+  let liveExcelListWidth = $state<number | null>(null);
+  const excelListWidth = $derived(liveExcelListWidth ?? app.settings?.excelFileListWidth ?? 260);
+
+  function commitExcelListWidth(nextPx: number): void {
+    liveExcelListWidth = null;
+    void app.setExcelFileListWidth(nextPx);
+  }
+  /**
    * 右側が上下 2 分割になるモード（コミットログ / Stash 解放）。
    * 列の作りは同じなので、gridColumns はこれ 1 つで足りる。
    */
@@ -95,6 +113,11 @@
    * PaneSplitter の col-resize の感触を保つ。
    */
   const gridColumns = $derived.by(() => {
+    if (excelMode) {
+      // ブランチペイン（と分割線）は幅 0 の列に退避する。畳まれていればそもそも居ない
+      const excel = excelListCollapsed ? 'minmax(0, 1fr)' : `${String(excelListWidth)}px 6px minmax(0, 1fr)`;
+      return leftCollapsed ? excel : `0px 0px ${excel}`;
+    }
     const right = splitMode
       ? 'minmax(0, 1fr)'
       : liveCenterWidth !== null
@@ -388,16 +411,22 @@
           planCurrentBranchSeed の注記）。モードが替えるのは右側だけ。
         -->
         <main class="panes" style:grid-template-columns={gridColumns} bind:clientWidth={panesWidth}>
-          {#if !leftCollapsed}
-            <BranchPane />
-            <PaneSplitter
-              value={leftWidth}
-              min={120}
-              max={1200}
-              onchange={(w) => (liveLeftWidth = w)}
-              oncommit={commitLeftWidth}
-            />
-          {/if}
+          <!--
+            Excel 差分モードでは、ブランチペインを破棄せずに幅 0 の列へ退避して不可視にする（決定 33）。
+            display: contents の枠なので、中身はこれまでどおり .panes のグリッドアイテムのまま。
+          -->
+          <div class="branch-slot" class:parked={excelMode} aria-hidden={excelMode}>
+            {#if !leftCollapsed}
+              <BranchPane />
+              <PaneSplitter
+                value={leftWidth}
+                min={120}
+                max={1200}
+                onchange={(w) => (liveLeftWidth = w)}
+                oncommit={commitLeftWidth}
+              />
+            {/if}
+          </div>
 
           {#if logMode}
             <!--
@@ -417,6 +446,19 @@
               />
               <CommitDetailPane />
             </div>
+          {:else if excelMode}
+            <!-- Excel 差分モード（決定 33）。一覧は縦帯の折り畳みボタンで畳める -->
+            {#if !excelListCollapsed}
+              <ExcelFileListPane />
+              <PaneSplitter
+                value={excelListWidth}
+                min={120}
+                max={1200}
+                onchange={(w) => (liveExcelListWidth = w)}
+                oncommit={commitExcelListWidth}
+              />
+            {/if}
+            <ExcelPane />
           {:else if stashListMode}
             <!-- Stash 解放モード（決定 31）。上＝ stash 一覧／下＝選んだ stash の中身。 -->
             <div class="stash-split" style:grid-template-rows={stashRows}>
@@ -764,6 +806,25 @@
     display: grid;
     min-width: 0;
     min-height: 0;
+  }
+
+  /*
+   * ブランチペインの枠。普段は display: contents で「無いもの」として振る舞う。
+   * Excel 差分モードでは中身を不可視にし（visibility は継承する）、幅 0 の列からはみ出た分も切る。
+   * 実体は残るので、畳んだフォルダ・スクロール位置は戻ってきたときにそのまま。
+   */
+  .branch-slot {
+    display: contents;
+  }
+
+  .branch-slot.parked {
+    visibility: hidden;
+  }
+
+  .branch-slot.parked > :global(*) {
+    overflow: hidden;
+    min-width: 0;
+    pointer-events: none;
   }
 
   .center {

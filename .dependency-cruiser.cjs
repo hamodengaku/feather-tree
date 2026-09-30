@@ -7,7 +7,7 @@
  *      → 土台は FeatherTree を一切知らない。これが流用可能性の担保
  *   2. 層の境界（git -> core -> main / renderer は View から git に到達できない）
  */
-const APP_PACKAGES = '^packages/(git|unity|core|ipc|main|preload|renderer)/';
+const APP_PACKAGES = '^packages/(git|unity|excel|core|ipc|main|preload|renderer)/';
 
 module.exports = {
   forbidden: [
@@ -53,9 +53,9 @@ module.exports = {
     // ---------------------------------------------- 層の境界（FeatherTree 側）
     {
       name: 'no-electron-in-git-core',
-      comment: 'git 層 / core 層 / unity 層は electron を知らない（Electron を捨てても動く）',
+      comment: 'git 層 / core 層 / unity 層 / excel 層は electron を知らない（Electron を捨てても動く）',
       severity: 'error',
-      from: { path: '^packages/(git|unity|core)/' },
+      from: { path: '^packages/(git|unity|excel|core)/' },
       to: { path: '^electron$|^node_modules/electron' },
     },
     {
@@ -71,6 +71,20 @@ module.exports = {
       comment: 'unity 層は Node 組み込みを使わない。テキストを入れるとモデルが出るだけの純関数（決定 32）',
       severity: 'error',
       from: { path: '^packages/unity/' },
+      to: { dependencyTypes: ['core'] },
+    },
+    {
+      name: 'no-upward-from-excel',
+      comment: 'excel 層は純関数の塊。git も core も知らない（決定 33。deflate の展開は関数の注入で受ける）',
+      severity: 'error',
+      from: { path: '^packages/excel/' },
+      to: { path: '^packages/(?!excel/)' },
+    },
+    {
+      name: 'no-node-in-excel',
+      comment: 'excel 層は Node 組み込みを使わない。バイト列を入れるとモデルが出るだけの純関数（決定 33）',
+      severity: 'error',
+      from: { path: '^packages/excel/' },
       to: { dependencyTypes: ['core'] },
     },
     {
@@ -92,14 +106,14 @@ module.exports = {
       comment: 'View 層が参照できるのは @feathertree/ipc と土台の base-ui / base-contract だけ',
       severity: 'error',
       from: { path: '^packages/renderer/' },
-      to: { path: '^packages/(git|unity|core|main|preload|base-core|base-electron)/' },
+      to: { path: '^packages/(git|unity|excel|core|main|preload|base-core|base-electron)/' },
     },
     {
       name: 'no-upward-from-git',
       comment: 'git 層は上位層を参照しない',
       severity: 'error',
       from: { path: '^packages/git/' },
-      to: { path: '^packages/(unity|core|ipc|main|preload|renderer)/' },
+      to: { path: '^packages/(unity|excel|core|ipc|main|preload|renderer)/' },
     },
     {
       name: 'no-upward-from-core',
@@ -113,7 +127,7 @@ module.exports = {
       comment: 'ipc は契約のみ。実装を持つパッケージを参照しない（土台の base-contract は可）',
       severity: 'error',
       from: { path: '^packages/ipc/' },
-      to: { path: '^packages/(git|unity|core|main|preload|renderer|base-core|base-electron|base-ui)/' },
+      to: { path: '^packages/(git|unity|excel|core|main|preload|renderer|base-core|base-electron|base-ui)/' },
     },
     {
       name: 'no-circular',

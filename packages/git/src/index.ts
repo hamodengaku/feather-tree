@@ -12,6 +12,7 @@ export {
   GitNotFoundError,
   GitParseError,
   GitTimeoutError,
+  WorktreeFileLockedError,
 } from './execution/errors.js';
 
 export { DIFF_EXTRA, READ_PREFIX, WRITE_PREFIX } from './execution/gitEnvironment.js';
@@ -66,8 +67,8 @@ export { readUserIdentity, setLocalUserIdentity } from './commands/config.js';
 export type { IdentityField, IdentityKey, IdentityScope, UserIdentity } from './commands/config.js';
 export { getCommitFileDiff, getCommitFiles, getLog } from './commands/history.js';
 export type { LogOptions } from './commands/history.js';
-export { readBlobText, readWorktreeText } from './commands/blob.js';
-export type { BlobRevision, BlobText } from './commands/blob.js';
+export { readBlobText, readHeadBlobFiltered, readWorktreeBytes, readWorktreeText } from './commands/blob.js';
+export type { BlobBytes, BlobBytesOptions, BlobRevision, BlobText } from './commands/blob.js';
 export { getFileDiff, getUntrackedFileDiff } from './commands/diff.js';
 export type { DiffOptions } from './commands/diff.js';
 export {

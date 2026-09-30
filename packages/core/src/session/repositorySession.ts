@@ -39,6 +39,8 @@ import type { AppSettings } from '../settings/schema.js';
 import { pageEntries, type StatusFilter, type StatusPage, type StatusSummary } from './statusView.js';
 import { buildScriptIndex, type ScriptIndex } from './scriptIndex.js';
 import { buildUnityView, type UnityView } from './unityView.js';
+import { buildExcelComparison, excelToken, type ExcelComparison } from './excelView.js';
+import { isExcelPath, listExcelFiles, type ExcelFileList } from './excelFiles.js';
 
 /** パッチ適用のために diff を取り直すときの行数上限（設定の上限値と同じ）。 */
 const PATCH_MAX_LINES = 200000;
@@ -116,6 +118,16 @@ export class RepositorySession {
    * 作るのに数千ファイルを読むので、モードを行き来するたびに作り直したくない。
    */
   #scriptIndex: ScriptIndex | null = null;
+
+  /**
+   * Excel 差分の比較（決定 33）。**セッションあたり 1 件だけ**持つ（Unity と同じ理由）。
+   *
+   * `#excelGen` は組み立てを始めるたびに進める世代。組み終わったとき世代が進んでいれば、
+   * 後から始まった組み立てがあるということなので、自分の結果をキャッシュに書かない
+   * （遅れて終わった古い組み立てに、新しい結果を上書きさせない）。
+   */
+  #excel: ExcelComparison | null = null;
+  #excelGen = 0;
 
   readonly #listeners = new Set<(change: SessionChange) => void>();
 
@@ -229,6 +241,7 @@ export class RepositorySession {
 
   /** 対応表 #18 / #19。選択された 1 件に対してのみ実行する。 */
   async getDiff(path: string, staged: boolean, signal?: AbortSignal): Promise<FileDiff | null> {
+    this.#releaseExcelUnless(path);
     const settings = this.#deps.settings();
     const options = { contextLines: settings.diffContextLines, maxLines: settings.diffMaxLines };
 
@@ -250,6 +263,7 @@ export class RepositorySession {
    * ファイルが作業ツリーに無ければ（削除との衝突）null。
    */
   async getConflict(path: string, signal?: AbortSignal): Promise<ConflictFile | null> {
+    this.#releaseExcelUnless(path);
     const settings = this.#deps.settings();
     return this.track(['read-conflict', path], () =>
       readConflictFile(this.context(signal), path, {
@@ -314,6 +328,7 @@ export class RepositorySession {
    * ステージした、更新した）と作り直すので、古い座標のまま当てることが起きない。
    */
   async getUnityView(path: string, staged: boolean, signal?: AbortSignal): Promise<UnityView> {
+    this.#dropExcel();
     const cached = this.#unityView;
     if (
       cached !== null &&
@@ -365,6 +380,56 @@ export class RepositorySession {
   /** Unity モードを離れたときに持ち物を手放す（100MB を掴み続けない）。 */
   releaseUnityView(): void {
     this.#unityView = null;
+  }
+
+  /* ---------------------------------------------------------------- Excel 差分（決定 33） */
+
+  /** Excel ファイルの一覧。status のスナップショットを絞るだけで、git は 0 プロセス。 */
+  listExcelFiles(): ExcelFileList {
+    return listExcelFiles(this.#status);
+  }
+
+  /**
+   * Excel の比較（HEAD ↔ 作業ツリー）。鍵は**パスと status の世代**。
+   * 世代が進む（更新した・ウィンドウに戻った）と、HEAD 側（#49）から読み直す。
+   */
+  async getExcelComparison(path: string, signal?: AbortSignal): Promise<ExcelComparison> {
+    const cached = this.#excel;
+    if (cached !== null && cached.path === path && cached.statusSeq === this.#statusSeq) return cached;
+    // 先に捨てる。組み立てに失敗しても古いものが残らないようにする
+    this.#excel = null;
+    this.#unityView = null;
+    const gen = ++this.#excelGen;
+    const built = await buildExcelComparison(this, path, gen, signal);
+    if (this.#excelGen === gen) this.#excel = built;
+    return built;
+  }
+
+  /** トークンが今のキャッシュを指していればそれを返す。作り直されていれば null（呼び出し側は diff-stale）。 */
+  excelByToken(token: string): ExcelComparison | null {
+    const cached = this.#excel;
+    // status の世代が進んだら、作業ツリーも HEAD も変わっているかもしれない。古い比較の行番号で答えない
+    if (cached === null || cached.statusSeq !== this.#statusSeq) return null;
+    return excelToken(cached) === token ? cached : null;
+  }
+
+  /** Excel の比較を手放す（モードを離れたとき）。 */
+  releaseExcel(): void {
+    this.#dropExcel();
+  }
+
+  /** 差分モードで Excel 以外のファイルを見たら、抱えているブックを手放す。 */
+  #releaseExcelUnless(path: string): void {
+    if (!isExcelPath(path)) this.#dropExcel();
+  }
+
+  /**
+   * 比較を手放す。**世代も進める**——組み立て中の getExcelComparison が後から終わっても、
+   * 手放した後のキャッシュに書き戻さないため（数百 MB のブックが見えないまま残る）。
+   */
+  #dropExcel(): void {
+    this.#excel = null;
+    this.#excelGen += 1;
   }
 
   /** 対応表 #20。範囲は git 層で `--all` 固定。 */

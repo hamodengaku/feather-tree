@@ -29,6 +29,23 @@
   /* コンフリクトの各側。追加・削除（緑／赤）とは別系統の色にする（意味が違うため）。 */
   --app-conflict-ours-bg: #eaf0f7;
   --app-conflict-theirs-bg: #f1eaf6;
+  /*
+   * Excel 差分モードの紙面（決定 33）。**全テーマで白地に固定する**ので、theme.ts は流し込まない。
+   * Excel の配色（黒字・薄い灰色の枠線）を再現するためで、暗いテーマでも紙面だけは明るい。
+   * 見出し（列文字・行番号）はテーマに合わせるので、そちらは既存のトークンを使う。
+   */
+  --app-excel-paper: #ffffff;
+  --app-excel-ink: #1f1f1f;
+  --app-excel-grid-line: #d9d9d9;
+  /* 値が変わったセル・行の追加 / 削除・片側に無い行（埋め行） */
+  --app-excel-changed-bg: #fff0a8;
+  --app-excel-changed-outline: #d19a00;
+  --app-excel-added-bg: #dcf3df;
+  --app-excel-removed-bg: #fadcdc;
+  --app-excel-filler-bg: #eeeeee;
+  --app-excel-filler-stripe: #e0e0e0;
+  /* 選んだセルの枠（Excel の緑） */
+  --app-excel-selection: #217346;
   /* マーブル模様は起動時に JS が乱数で決める（lib/theme.ts）。CSS では固定できないので none。 */
   --app-bg-app-image: none;
 

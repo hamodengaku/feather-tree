@@ -172,6 +172,17 @@ describe('設定の正規化', () => {
 
   /* コミットログモード（決定 27）の 4 キー。 */
 
+  it('Excel 差分モード（決定 33）の設定: モード・一覧の幅・畳み', () => {
+    expect(normalizeSettings({ viewMode: 'excel' }).viewMode).toBe('excel');
+    expect(normalizeSettings({}).excelFileListWidth).toBe(260);
+    expect(normalizeSettings({ excelFileListWidth: 50 }).excelFileListWidth).toBe(120);
+    expect(normalizeSettings({ excelFileListWidth: 400 }).excelFileListWidth).toBe(400);
+    expect(normalizeSettings({}).excelFileListCollapsed).toBe(false);
+    expect(normalizeSettings({ excelFileListCollapsed: true }).excelFileListCollapsed).toBe(true);
+    // ブランチペインの畳みとは独立
+    expect(normalizeSettings({ excelFileListCollapsed: true }).branchPaneCollapsed).toBe(false);
+  });
+
   it('viewMode は既定が差分モードで、知らない値なら既定へ落ちる', () => {
     expect(normalizeSettings({}).viewMode).toBe('diff');
     expect(normalizeSettings({ viewMode: 'log' }).viewMode).toBe('log');
@@ -187,13 +198,14 @@ describe('設定の正規化', () => {
   });
 
   /*
-   * 畳めるペインはブランチペインだけ（決定 27）。コミットログモードでも
-   * 縦帯の折り畳みボタンはそれを相手にするので、折り畳み状態のキーは 1 つしかない。
-   * logDetailCollapsed のような二重のキーを足さないことを、ここで固定しておく。
+   * 畳めるペインはブランチペインと Excel ファイル一覧の 2 つだけ（決定 27 / 決定 33 による改定）。
+   * 縦帯の折り畳みボタンは Excel 差分モードでだけ一覧を相手にし、それ以外のモードでは
+   * ブランチペインを相手にする。logDetailCollapsed のような三つ目のキーを足さないことを、
+   * ここで固定しておく。
    */
-  it('折り畳みの状態は branchPaneCollapsed の 1 つだけ', () => {
+  it('折り畳みの状態は branchPaneCollapsed と excelFileListCollapsed の 2 つだけ', () => {
     const keys = Object.keys(normalizeSettings({})).filter((k) => k.toLowerCase().includes('collapsed'));
-    expect(keys).toEqual(['branchPaneCollapsed']);
+    expect(keys).toEqual(['excelFileListCollapsed', 'branchPaneCollapsed']);
   });
 
   it('commitFileListWidth は範囲外を既定値に丸め、有効な値は保持する', () => {

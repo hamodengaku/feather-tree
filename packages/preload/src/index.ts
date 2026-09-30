@@ -89,6 +89,15 @@ const bridge: FeatherTreeBridge = {
   unityGetNode: (id: string, path: string, staged: boolean, nodeId: string) =>
     ipcRenderer.invoke(CHANNELS.unityGetNode, id, path, staged, nodeId),
   unityIndexScripts: (id: string) => ipcRenderer.invoke(CHANNELS.unityIndexScripts, id),
+  excelListFiles: (id: string) => ipcRenderer.invoke(CHANNELS.excelListFiles, id),
+  excelGetView: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.excelGetView, id, path),
+  excelGetSheet: (id: string, token: string, sheet: number) =>
+    ipcRenderer.invoke(CHANNELS.excelGetSheet, id, token, sheet),
+  excelGetRows: (id: string, token: string, sheet: number, start: number, count: number) =>
+    ipcRenderer.invoke(CHANNELS.excelGetRows, id, token, sheet, start, count),
+  excelGetCell: (id: string, token: string, sheet: number, row: number, col: number) =>
+    ipcRenderer.invoke(CHANNELS.excelGetCell, id, token, sheet, row, col),
+  excelGetRowDiff: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.excelGetRowDiff, id, path),
   conflictResolve: (id: string, req: ConflictResolveRequest) =>
     ipcRenderer.invoke(CHANNELS.conflictResolve, id, req),
   logGetPage: (id: string, skip: number) => ipcRenderer.invoke(CHANNELS.logGetPage, id, skip),

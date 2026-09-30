@@ -26,6 +26,11 @@ import {
   type TerminalLaunch,
   rowsFor,
   selectionForNode,
+  EXCEL_LIMITS,
+  geometryOf,
+  rowDiffOf,
+  type ExcelComparison,
+  type SheetComparison,
 } from '@feathertree/core';
 import type {
   AppInfoDto,
@@ -70,12 +75,27 @@ import type {
   UnityNodeDetailDto,
   UnityScriptIndexDto,
   UnityViewDto,
+  ExcelCellDetailDto,
+  ExcelFileListDto,
+  ExcelRowDiffDto,
+  ExcelRowPageDto,
+  ExcelSheetLayoutDto,
+  ExcelViewDto,
 } from '@feathertree/ipc';
 import { stat } from 'node:fs/promises';
 import { basename, isAbsolute, join } from 'node:path';
 import { assertInsideRoot, assertRealPathInsideRoot } from '@feathertree/base-core';
 import { HandlerError } from '../errors.js';
 import { toCommandLogEntryDto } from './commandLogDto.js';
+import {
+  EXCEL_ROW_PAGE_LIMIT,
+  toCellDetailDto,
+  toExcelFileListDto,
+  toExcelViewDto,
+  toRowDiffDto,
+  toRowPageDto,
+  toSheetLayoutDto,
+} from './excelDto.js';
 import { createProgressThrottle } from './progressThrottle.js';
 
 /** ページで一度に返す最大件数。renderer が巨大な要求を投げても抑える。 */
@@ -206,6 +226,12 @@ export interface Service {
     nodeId: string,
   ): Promise<UnityNodeDetailDto | null>;
   unityIndexScripts(id: string): Promise<UnityScriptIndexDto>;
+  excelListFiles(id: string): Promise<ExcelFileListDto>;
+  excelGetView(id: string, path: string): Promise<ExcelViewDto>;
+  excelGetSheet(id: string, token: string, sheet: number): Promise<ExcelSheetLayoutDto>;
+  excelGetRows(id: string, token: string, sheet: number, start: number, count: number): Promise<ExcelRowPageDto>;
+  excelGetCell(id: string, token: string, sheet: number, row: number, col: number): Promise<ExcelCellDetailDto>;
+  excelGetRowDiff(id: string, path: string): Promise<ExcelRowDiffDto>;
   logGetPage(id: string, skip: number): Promise<readonly CommitSummaryDto[]>;
   commitGetFiles(id: string, oid: string): Promise<readonly CommitFileChangeDto[]>;
   commitGetDiff(id: string, oid: string, path: string): Promise<FileDiffDto | null>;
@@ -625,6 +651,52 @@ export function createService(deps: ServiceDeps): Service {
     }
   };
 
+  /**
+   * Excel の比較の組み立て（excelGetView / excelGetRowDiff）は**セッションごとに最新の要求だけを生かす**（決定 33）。
+   *
+   * 別のファイルを選び直したら、前のファイルの #49（LFS の実体のダウンロードを含みうる）を止める。
+   * 置き去りにすると、見なくなったファイルのために git-lfs が走り続ける。
+   * 止めた側の応答は cancelled で返り、renderer は世代番号で捨てる。
+   */
+  const excelLatest = new Map<string, AbortController>();
+  const latestExcel = <T>(id: string, run: (signal: AbortSignal) => Promise<T>): Promise<T> =>
+    withSignal(id, async (signal) => {
+      excelLatest.get(id)?.abort();
+      const own = new AbortController();
+      excelLatest.set(id, own);
+      const relay = (): void => own.abort();
+      signal.addEventListener('abort', relay, { once: true });
+      try {
+        return await run(own.signal);
+      } finally {
+        signal.removeEventListener('abort', relay);
+        if (excelLatest.get(id) === own) excelLatest.delete(id);
+      }
+    });
+
+  /** Excel の比較をトークンで引く。作り直されていれば diff-stale（renderer は getView から取り直す）。 */
+  const requireExcel = (id: string, token: string): ExcelComparison => {
+    const view = typeof token === 'string' ? requireSession(id).excelByToken(token) : null;
+    if (view === null) {
+      throw new HandlerError({
+        kind: 'diff-stale',
+        message: '表示中の Excel の比較が古くなっています。取り直してください。',
+      });
+    }
+    return view;
+  };
+
+  /** シートの鍵を照合する（renderer から来た数値をそのまま添字に使わない）。 */
+  const requireSheet = (view: ExcelComparison, sheet: number): SheetComparison => {
+    const found = Number.isInteger(sheet) ? view.comparison.sheets[sheet] : undefined;
+    if (found === undefined) throw new HandlerError({ kind: 'internal', message: 'シートの指定が不正です。' });
+    return found;
+  };
+
+  /** 整数に丸めて範囲に収める。数値でなければ min。 */
+  const clampIndex = (value: number, min: number, max: number): number =>
+    Number.isFinite(value) ? Math.min(max, Math.max(min, Math.trunc(value))) : min;
+
   /** そのタブの走行中を全部止める。タブを閉じたときに呼ぶ。 */
   const abortSession = (id: string): void => {
     const bucket = inFlight.get(id);
@@ -743,6 +815,8 @@ export function createService(deps: ServiceDeps): Service {
       }
       const before = deps.settings().gitPath;
       const wasUnity = deps.settings().viewMode === 'unity';
+      const excelish = (mode: string): boolean => mode === 'excel' || mode === 'diff';
+      const wasExcelish = excelish(deps.settings().viewMode);
       const updated = await deps.updateSettings(patch);
       if (updated.gitPath !== before) await deps.reloadGit();
       /*
@@ -753,6 +827,15 @@ export function createService(deps: ServiceDeps): Service {
        */
       if (wasUnity && updated.viewMode !== 'unity') {
         for (const session of deps.sessions()?.all() ?? []) session.releaseUnityView();
+      }
+      /*
+       * Excel の比較も同じ（決定 33）。ただし差分モードでも行単位の比較に使うので、
+       * Excel 差分モードと差分モードのどちらでもなくなったときだけ手放す。
+       */
+      if (wasExcelish && !excelish(updated.viewMode)) {
+        for (const session of deps.sessions()?.all() ?? []) session.releaseExcel();
+        // 組み立て中のもの（LFS のダウンロードを含む）も止める
+        for (const controller of excelLatest.values()) controller.abort();
       }
       return updated;
     },
@@ -1093,6 +1176,59 @@ export function createService(deps: ServiceDeps): Service {
       const session = requireSession(id);
       const index = await withSignal(id, (signal) => session.indexUnityScripts(signal));
       return { resolved: index.names.size };
+    },
+
+    /*
+     * Excel 差分（決定 33 / 対応表 #49）。比較は常に HEAD ↔ 作業ツリー。
+     *
+     * getView / getRowDiff だけが git（#49）を打ちうる。getSheet 以降はトークンで引いたキャッシュから組むので
+     * git は 0 プロセス。どれもパスは assertInsideRoot を通し、数値は整数に丸めてから添字に使う。
+     */
+    excelListFiles: async (id) => toExcelFileListDto(requireSession(id).listExcelFiles()),
+
+    excelGetView: async (id, path) => {
+      const session = requireSession(id);
+      assertInsideRoot(session.root, path);
+      const view = await latestExcel(id, (signal) => session.getExcelComparison(path, signal));
+      return toExcelViewDto(view);
+    },
+
+    excelGetSheet: async (id, token, sheet) => {
+      const view = requireExcel(id, token);
+      const target = requireSheet(view, sheet);
+      const geometry = geometryOf(view, target.index);
+      if (geometry === null) throw new HandlerError({ kind: 'internal', message: 'シートの指定が不正です。' });
+      return toSheetLayoutDto(
+        token,
+        target.index,
+        geometry,
+        view.old.workbook?.styles ?? null,
+        view.new.workbook?.styles ?? null,
+      );
+    },
+
+    excelGetRows: async (id, token, sheet, start, count) => {
+      const view = requireExcel(id, token);
+      const target = requireSheet(view, sheet);
+      const from = clampIndex(start, 0, Math.max(0, target.oldRow.length));
+      const take = clampIndex(count, 1, EXCEL_ROW_PAGE_LIMIT);
+      return toRowPageDto(view, target, from, take, EXCEL_LIMITS.maxColumns);
+    },
+
+    excelGetCell: async (id, token, sheet, row, col) => {
+      const view = requireExcel(id, token);
+      const target = requireSheet(view, sheet);
+      const validRow = Number.isInteger(row) && row >= 0 && row < target.oldRow.length;
+      const validCol = Number.isInteger(col) && col >= 0 && col < EXCEL_LIMITS.maxColumns;
+      if (!validRow || !validCol) throw new HandlerError({ kind: 'internal', message: 'セルの指定が不正です。' });
+      return toCellDetailDto(view, target, row, col);
+    },
+
+    excelGetRowDiff: async (id, path) => {
+      const session = requireSession(id);
+      assertInsideRoot(session.root, path);
+      const view = await latestExcel(id, (signal) => session.getExcelComparison(path, signal));
+      return toRowDiffDto(view, rowDiffOf(view, deps.settings().diffContextLines));
     },
 
     logGetPage: async (id, skip) => requireSession(id).getLogPage(Math.max(0, skip)),

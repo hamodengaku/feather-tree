@@ -69,6 +69,21 @@ export type {
 } from './session/unityView.js';
 export type { CloneOutcome, CloneTarget, SessionInfo } from './session/sessionManager.js';
 
+// Excel 差分（決定 33）
+export {
+  buildExcelComparison,
+  excelToken,
+  geometryOf,
+  rowDiffOf,
+} from './session/excelView.js';
+export type { ExcelComparison, ExcelSide, ExcelSideState, ExcelViewSource } from './session/excelView.js';
+export { isExcelPath, isOpenableExcelPath, listExcelFiles, MAX_EXCEL_FILES } from './session/excelFiles.js';
+export type { ExcelFileEntry, ExcelFileList } from './session/excelFiles.js';
+export { zlibInflater } from './session/zlibInflater.js';
+// main が excel 層を直接知らずに済むよう、DTO への写しに要るものだけを通す
+export { buildRowPage, cellDetail, DEFAULT_LIMITS as EXCEL_LIMITS } from '@feathertree/excel';
+export type { CellStyle, RowDiff, SheetComparison, SheetGeometry, SheetInfo, StyleTable } from '@feathertree/excel';
+
 // クローン（決定 9 / 対応表 #37〜#41）
 export { CloneProgressTracker, parseProgressLine, planStages } from './clone/cloneProgress.js';
 export type {

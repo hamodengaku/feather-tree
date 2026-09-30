@@ -195,6 +195,18 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     service.unityGetNode(id, path, staged, nodeId),
   );
   bind(CHANNELS.unityIndexScripts, (id: string) => service.unityIndexScripts(id));
+  bind(CHANNELS.excelListFiles, (id: string) => service.excelListFiles(id));
+  bind(CHANNELS.excelGetView, (id: string, path: string) => service.excelGetView(id, path));
+  bind(CHANNELS.excelGetSheet, (id: string, token: string, sheet: number) =>
+    service.excelGetSheet(id, token, sheet),
+  );
+  bind(CHANNELS.excelGetRows, (id: string, token: string, sheet: number, start: number, count: number) =>
+    service.excelGetRows(id, token, sheet, start, count),
+  );
+  bind(CHANNELS.excelGetCell, (id: string, token: string, sheet: number, row: number, col: number) =>
+    service.excelGetCell(id, token, sheet, row, col),
+  );
+  bind(CHANNELS.excelGetRowDiff, (id: string, path: string) => service.excelGetRowDiff(id, path));
   bind(CHANNELS.conflictResolve, (id: string, req: Parameters<Service['conflictResolve']>[1]) =>
     service.conflictResolve(id, req),
   );

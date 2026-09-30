@@ -21,8 +21,10 @@ export type ThemeName = 'classic-dark' | 'classic-light' | 'phoenix-dark' | 'pho
  *  - 'stash-list' Stash 解放モード。上下 2 分割（stash 一覧 / stash 詳細）
  *  - 'unity'      Unity Prefab 差分モード（決定 32）。**差分モードと同じ 2 ペインの土台**で、
  *                 右が Unity ペイン（ヒエラルキー / プロパティ表の左右 2 分割）に替わる
+ *  - 'excel'      Excel 差分モード（決定 33）。ブランチペインの位置に Excel ファイル一覧、
+ *                 残り全部に旧版・新版のグリッド。作業ツリーペインは出さない
  */
-export type ViewMode = 'diff' | 'log' | 'stash' | 'stash-list' | 'unity';
+export type ViewMode = 'diff' | 'log' | 'stash' | 'stash-list' | 'unity' | 'excel';
 /** ウィンドウ復帰時の更新方式（決定14の唯一の自動入口の挙動）。 */
 export type RefocusUpdateMode = 'auto' | 'modal' | 'none';
 
@@ -84,6 +86,18 @@ export interface AppSettings {
    */
   readonly unityHierarchyWidth: number;
   /**
+   * Excel 差分モードの、左の Excel ファイル一覧の幅（px。決定 33）。
+   *
+   * ブランチペインの幅（`paneWidths.left`）と共有しない。同じ位置に座るが中身が違い、
+   * 片方で決めた幅がもう片方に伝染すると、モードを行き来するたびに直すことになる。
+   */
+  readonly excelFileListWidth: number;
+  /**
+   * Excel ファイル一覧を畳んでいるか（決定 33 による決定 27 の改定）。
+   * `branchPaneCollapsed` と共有しないのは幅と同じ理由。
+   */
+  readonly excelFileListCollapsed: boolean;
+  /**
    * リポジトリタブに現在情報（ブランチ名と HEAD の件名）を出すか（決定 24）。
    * 切ると従来どおりリポジトリ名だけになる。
    */
@@ -133,6 +147,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   stashDetailHeight: 260,
   stashFileListWidth: 260,
   unityHierarchyWidth: 320,
+  excelFileListWidth: 260,
+  excelFileListCollapsed: false,
   tabShowCurrentInfo: true,
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
@@ -150,7 +166,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 const THEMES: readonly ThemeName[] = ['classic-dark', 'classic-light', 'phoenix-dark', 'phoenix-light'];
 const REFOCUS_MODES: readonly RefocusUpdateMode[] = ['auto', 'modal', 'none'];
-const VIEW_MODES: readonly ViewMode[] = ['diff', 'log', 'stash', 'stash-list', 'unity'];
+const VIEW_MODES: readonly ViewMode[] = ['diff', 'log', 'stash', 'stash-list', 'unity', 'excel'];
 
 /** 絶対パスの上限。Windows の MAX_PATH は 260 だが、長パス有効時はもっと長くなりうる。 */
 const MAX_PATH_LENGTH = 4096;
@@ -235,6 +251,8 @@ export function normalizeSettings(raw: unknown): AppSettings {
       1200,
       DEFAULT_SETTINGS.unityHierarchyWidth,
     ),
+    excelFileListWidth: clampInt(o['excelFileListWidth'], 120, 1200, DEFAULT_SETTINGS.excelFileListWidth),
+    excelFileListCollapsed: boolOr(o['excelFileListCollapsed'], DEFAULT_SETTINGS.excelFileListCollapsed),
     tabShowCurrentInfo: boolOr(o['tabShowCurrentInfo'], DEFAULT_SETTINGS.tabShowCurrentInfo),
     paneWidths: {
       left: clampInt(record(o['paneWidths'])['left'], 120, 1200, DEFAULT_SETTINGS.paneWidths.left),

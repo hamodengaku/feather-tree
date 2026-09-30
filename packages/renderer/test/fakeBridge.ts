@@ -12,6 +12,12 @@ import type {
   ConflictFileDto,
   ConflictResolveRequest,
   ConflictSectionDto,
+  ExcelCellDetailDto,
+  ExcelFileEntryDto,
+  ExcelRowDiffDto,
+  ExcelRowPageDto,
+  ExcelSheetLayoutDto,
+  ExcelViewDto,
   UnityFormatDto,
   UnityNodeDetailDto,
   UnityNodeDto,
@@ -62,6 +68,8 @@ const SETTINGS: SettingsDto = {
   stashDetailHeight: 260,
   stashFileListWidth: 260,
   unityHierarchyWidth: 320,
+  excelFileListWidth: 260,
+  excelFileListCollapsed: false,
   tabShowCurrentInfo: true,
   paneWidths: { left: 260, center: 420, centerRatio: null },
   branchLocalHeight: 180,
@@ -401,6 +409,164 @@ export class FakeBridge {
     };
   }
 
+  /* ------------------------------------------ Excel 差分モード（決定 33） */
+
+  /** excelListFiles が返す一覧。 */
+  excelFiles: ExcelFileEntryDto[] = [
+    { kind: 'ordinary', path: 'data/item.xlsx', staged: '.', worktree: 'M', openable: true },
+    { kind: 'ordinary', path: 'data/legacy.xls', staged: '.', worktree: 'M', openable: false },
+    { kind: 'untracked', path: 'data/new.xlsx', staged: '?', worktree: '?', openable: true },
+  ];
+  /** getView が失敗を返す（テストで差し替える）。 */
+  excelViewError: FtErrorDto | null = null;
+  /** 次の getSheet / getRows / getCell を 1 回だけ diff-stale にする。 */
+  excelStaleOnce = false;
+  /** getView のたびに進むトークンの世代。 */
+  excelTokenSeq = 0;
+  /** 今のトークン。 */
+  excelToken = '';
+
+  excelViewFor(path: string): ExcelViewDto {
+    this.excelTokenSeq += 1;
+    this.excelToken = 't' + String(this.excelTokenSeq);
+    return {
+      token: this.excelToken,
+      path,
+      headPath: path,
+      old: { state: 'ok', bytes: 100, detail: null },
+      new: { state: 'ok', bytes: 120, detail: null },
+      sheets: [
+        {
+          index: 0,
+          oldName: 'メモ',
+          newName: 'メモ',
+          mark: 'same',
+          renamed: false,
+          kind: 'worksheet',
+          hidden: false,
+          oldProblem: null,
+          newProblem: null,
+          changedRows: 0,
+          addedRows: 0,
+          removedRows: 0,
+          changedCells: 0,
+          positional: false,
+          columnsTruncated: false,
+        },
+        {
+          index: 1,
+          oldName: '売上',
+          newName: '売上',
+          mark: 'changed',
+          renamed: false,
+          kind: 'worksheet',
+          hidden: false,
+          oldProblem: null,
+          newProblem: null,
+          changedRows: 1,
+          addedRows: 1,
+          removedRows: 0,
+          changedCells: 3,
+          positional: false,
+          columnsTruncated: false,
+        },
+      ],
+      vbaChanged: null,
+    };
+  }
+
+  /** 5 行 × 3 列。1 行目が変更、3 行目が追加。 */
+  excelLayoutFor(sheet: number): ExcelSheetLayoutDto {
+    return {
+      token: this.excelToken,
+      sheet,
+      rowCount: 5,
+      oldRow: [0, 1, 2, -1, 3],
+      newRow: [0, 1, 2, 3, 4],
+      rowState: [0, 1, 0, 2, 0],
+      rowHeight: [20, 20, 20, 20, 20],
+      rowHidden: [0, 0, 0, 0, 0],
+      colCount: 3,
+      colWidth: [64, 64, 64],
+      colHidden: [0, 0, 0],
+      oldMerges: [],
+      newMerges: [],
+      changedRows: sheet === 1 ? [1, 3] : [],
+      frozen: null,
+      oldStyles: [],
+      newStyles: [],
+      oldDefaultFontPt: 11,
+      newDefaultFontPt: 11,
+      oldRowStyle: [-1, -1, -1, -1, -1],
+      newRowStyle: [-1, -1, -1, -1, -1],
+      oldColStyle: [-1, -1, -1],
+      newColStyle: [-1, -1, -1],
+    };
+  }
+
+  excelRowsFor(sheet: number, start: number, count: number): ExcelRowPageDto {
+    const layout = this.excelLayoutFor(sheet);
+    const rows = [];
+    for (let i = start; i < Math.min(layout.rowCount, start + count); i += 1) {
+      const o = layout.oldRow[i] ?? -1;
+      const n = layout.newRow[i] ?? -1;
+      const side = (row: number) => ({ row, cols: [0, 1], text: ['r' + String(row), String(row * 10)], kind: [2, 1], style: [0, 0] });
+      rows.push({
+        old: o >= 0 ? side(o) : null,
+        new: n >= 0 ? side(n) : null,
+        changedCols: layout.rowState[i] === 1 ? [1] : layout.rowState[i] === 2 ? [0, 1] : [],
+      });
+    }
+    return { token: this.excelToken, sheet, start, rows };
+  }
+
+  excelRowDiffFor(path: string): ExcelRowDiffDto {
+    return {
+      token: this.excelToken,
+      path,
+      old: { state: 'ok', bytes: 100, detail: null },
+      new: { state: 'ok', bytes: 120, detail: null },
+      sheets: [
+        {
+          index: 1,
+          oldName: '売上',
+          newName: '売上',
+          mark: 'changed',
+          renamed: false,
+          positional: false,
+          hunks: [
+            {
+              columns: [0, 1],
+              rows: [
+                { kind: 'changed', oldRow: 1, newRow: 1, old: ['剣', '1000'], new: ['剣', '1200'], changed: [1] },
+              ],
+            },
+          ],
+        },
+      ],
+      truncated: false,
+      vbaChanged: null,
+    };
+  }
+
+  /** diff と同じ遅延を掛ける（世代番号による競合排除の検証用）。 */
+  #later<T>(value: Result<T>): Promise<Result<T>> {
+    return this.diffDelayMs === 0
+      ? Promise.resolve(value)
+      : new Promise((resolve) => {
+          setTimeout(() => resolve(value), this.diffDelayMs);
+        });
+  }
+
+  /** トークンの照合（main の requireExcel を模す）。 */
+  #staleUnlessCurrent(token: string): FtErrorDto | null {
+    if (this.excelStaleOnce || token !== this.excelToken) {
+      this.excelStaleOnce = false;
+      return { kind: 'diff-stale', message: '表示中の Excel の比較が古くなっています。' };
+    }
+    return null;
+  }
+
   /** conflictGet が返す中身。パスが分かるようにしておく。 */
   conflictFor(path: string): ConflictFileDto {
     return {
@@ -738,6 +904,40 @@ export class FakeBridge {
           : new Promise((resolve) => {
               setTimeout(() => resolve(ok(view)), this.diffDelayMs);
             });
+      },
+      excelListFiles: (id: string) => {
+        this.record('excelListFiles', id);
+        return Promise.resolve(ok({ entries: [...this.excelFiles], truncated: false }));
+      },
+      excelGetView: (id: string, path: string) => {
+        this.record('excelGetView', id, path);
+        if (this.excelViewError !== null) return this.#later<ExcelViewDto>({ ok: false, error: this.excelViewError });
+        return this.#later(ok(this.excelViewFor(path)));
+      },
+      excelGetSheet: (id: string, token: string, sheet: number) => {
+        this.record('excelGetSheet', id, token, sheet);
+        const stale = this.#staleUnlessCurrent(token);
+        if (stale !== null) return Promise.resolve<Result<ExcelSheetLayoutDto>>({ ok: false, error: stale });
+        return Promise.resolve(ok(this.excelLayoutFor(sheet)));
+      },
+      excelGetRows: (id: string, token: string, sheet: number, start: number, count: number) => {
+        this.record('excelGetRows', id, token, sheet, start, count);
+        const stale = this.#staleUnlessCurrent(token);
+        if (stale !== null) return Promise.resolve<Result<ExcelRowPageDto>>({ ok: false, error: stale });
+        return Promise.resolve(ok(this.excelRowsFor(sheet, start, count)));
+      },
+      excelGetCell: (id: string, token: string, sheet: number, row: number, col: number) => {
+        this.record('excelGetCell', id, token, sheet, row, col);
+        const stale = this.#staleUnlessCurrent(token);
+        if (stale !== null) return Promise.resolve<Result<ExcelCellDetailDto>>({ ok: false, error: stale });
+        const side = (address: string) => ({ address, raw: '1', display: '1', kind: 1, formula: null });
+        return Promise.resolve(ok({ row, col, old: side('B2'), new: side('B2'), changed: row === 1 }));
+      },
+      excelGetRowDiff: (id: string, path: string) => {
+        this.record('excelGetRowDiff', id, path);
+        if (this.excelViewError !== null) return this.#later<ExcelRowDiffDto>({ ok: false, error: this.excelViewError });
+        if (this.excelToken === '') this.excelViewFor(path);
+        return this.#later(ok(this.excelRowDiffFor(path)));
       },
       unityIndexScripts: (id: string) => {
         this.record('unityIndexScripts', id);

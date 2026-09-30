@@ -19,6 +19,8 @@ export interface Fixture {
   readonly ctx: GitContext;
   run(...args: string[]): Promise<string>;
   write(relPath: string, content: string): Promise<void>;
+  /** バイト列をそのまま書く（Excel などのバイナリ）。 */
+  writeBytes(relPath: string, content: Uint8Array): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -34,6 +36,11 @@ export async function createFixture(): Promise<Fixture> {
       const target = join(dir, relPath);
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, content, 'utf8');
+    },
+    writeBytes: async (relPath: string, content: Uint8Array) => {
+      const target = join(dir, relPath);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, content);
     },
     cleanup: () => cleanupDir(dir),
   };

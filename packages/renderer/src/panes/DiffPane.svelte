@@ -15,8 +15,15 @@
   } from '@feathertree/ipc';
   import { app } from '../lib/appState.svelte.js';
   import { hunkAllowsLines, singleLineSelection, wholeHunkSelection } from '../lib/diffSelection.js';
+  import { isOpenableExcelPath } from '../lib/excelPath.js';
+  import ExcelRowDiffView from '../components/ExcelRowDiffView.svelte';
 
   const diff = $derived(app.diff);
+  /** Excel ファイル（決定 33）。行の diff ではなく行単位の比較を出し、Excel モードへの口を添える。 */
+  const excelRows = $derived(app.excelRowDiff);
+  const excelPath = $derived(
+    app.selected !== null && isOpenableExcelPath(app.selected.path) ? app.selected.path : null,
+  );
   const lineCount = $derived(diff?.hunks.reduce((n, h) => n + h.lines.length, 0) ?? 0);
   const staged = $derived(app.selected?.staged === true);
 
@@ -165,6 +172,8 @@
       <span class="meta conflict">
         コンフリクト{#if conflictCount > 0}・{conflictCount} 件{/if}
       </span>
+    {:else if excelRows !== null}
+      <span class="meta">HEAD ↔ 作業ツリー（行単位の比較）</span>
     {:else if diff !== null}
       <span class="meta">
         {staged ? 'ステージ済み' : '未ステージ'}
@@ -175,6 +184,13 @@
   </header>
 
   <div class="body">
+    {#if excelPath !== null && !unmerged}
+      <!-- 見出しの下に 1 行だけ置く（見出しの中に置くと長いパスに押し出される） -->
+      <div class="excel-open">
+        <button onclick={() => void app.openInExcelMode(excelPath)}>Excel モードで開く</button>
+        <span>旧版と新版を Excel の見た目で左右に並べて見られます。</span>
+      </div>
+    {/if}
     {#if app.diffLoading}
       <p class="empty">読み込み中…</p>
     {:else if app.selected === null}
@@ -237,6 +253,8 @@
           {/each}
         </div>
       {/if}
+    {:else if excelRows !== null}
+      <ExcelRowDiffView diff={excelRows} />
     {:else if diff === null}
       <p class="empty">差分はありません。</p>
     {:else if diff.binary}
@@ -361,6 +379,21 @@
   .empty {
     margin: 16px;
     color: var(--app-text-muted);
+  }
+
+  /* 「Excel モードで開く」の帯。横スクロールしても表示領域の左端に留まる */
+  .excel-open {
+    position: sticky;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--app-metric-gap);
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--app-border-subtle);
+    background: var(--app-bg-surface);
+    color: var(--app-text-secondary);
+    font-size: var(--app-font-size-ui);
+    white-space: nowrap;
   }
 
   .meta.conflict {

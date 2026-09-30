@@ -73,6 +73,14 @@ export const CHANNELS = {
   unityGetNode: 'unity:getNode',
   unityIndexScripts: 'unity:indexScripts',
 
+  // Excel 差分モード（決定 33）
+  excelListFiles: 'excel:listFiles',
+  excelGetView: 'excel:getView',
+  excelGetSheet: 'excel:getSheet',
+  excelGetRows: 'excel:getRows',
+  excelGetCell: 'excel:getCell',
+  excelGetRowDiff: 'excel:getRowDiff',
+
   remoteList: 'remote:list',
   remoteFetch: 'remote:fetch',
   remotePull: 'remote:pull',
@@ -208,8 +216,8 @@ export interface SettingsDto {
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
-  /** ペイン領域のモード（決定 27 / 31 / 32）。core の ViewMode と同じ 5 値。 */
-  readonly viewMode: 'diff' | 'log' | 'stash' | 'stash-list' | 'unity';
+  /** ペイン領域のモード（決定 27 / 31 / 32 / 33）。core の ViewMode と同じ 6 値。 */
+  readonly viewMode: 'diff' | 'log' | 'stash' | 'stash-list' | 'unity' | 'excel';
   readonly logDetailHeight: number;
   readonly commitFileListWidth: number;
   /** Stash 解放モードの下部（stash 詳細）ペインの高さ（px）。 */
@@ -218,6 +226,10 @@ export interface SettingsDto {
   readonly stashFileListWidth: number;
   /** Unity ペインの、左の Prefab ヒエラルキーの幅（px）。決定 32。 */
   readonly unityHierarchyWidth: number;
+  /** Excel 差分モードの、左の Excel ファイル一覧の幅（px）。決定 33。 */
+  readonly excelFileListWidth: number;
+  /** Excel ファイル一覧を畳んでいるか（決定 33。ブランチペインの畳みとは別）。 */
+  readonly excelFileListCollapsed: boolean;
   /** リポジトリタブに現在情報（ブランチ名と HEAD の件名）を出すか（決定 24）。 */
   readonly tabShowCurrentInfo: boolean;
   readonly paneWidths: { readonly left: number; readonly center: number; readonly centerRatio: number | null };
@@ -563,6 +575,238 @@ export interface UnityNodeDetailDto {
   readonly rows: readonly UnityRowDto[];
   /** 「コンポーネントをステージ」で送る座標。null ならボタンを出さない。 */
   readonly selection: readonly HunkSelectionDto[] | null;
+}
+
+// ---------------------------------------------------------------- Excel 差分（決定 33）
+
+/*
+ * 比較は常に HEAD ↔ 作業ツリー（ステージ済み／未ステージを区別しない）。
+ *
+ * 数値の並びは**型付き配列ではなく number[] で送る。** contextBridge を型付き配列が通るかを
+ * 実機で確かめていないので、確実に通る形にしてある（上限の範囲では複写の重さは問題にならない）。
+ */
+
+/** 側ごとの状態。ok 以外は画面で案内に写す。 */
+export type ExcelSideStateDto =
+  | 'ok'
+  | 'absent'
+  | 'lfs-pointer'
+  | 'lfs-failed'
+  /** HEAD 側を取り出せない（タイムアウトなど LFS 以外の失敗）。detail に原文。 */
+  | 'unavailable'
+  | 'encrypted-or-legacy'
+  | 'not-spreadsheet'
+  | 'not-zip'
+  | 'broken'
+  | 'too-large'
+  | 'locked'
+  | 'empty';
+
+export interface ExcelFileEntryDto extends FileEntryDto {
+  /** 中身を開けるか（`.xls` / `.xlsb` は false で、案内だけを出す）。 */
+  readonly openable: boolean;
+}
+
+export interface ExcelFileListDto {
+  readonly entries: readonly ExcelFileEntryDto[];
+  readonly truncated: boolean;
+}
+
+export interface ExcelSideDto {
+  readonly state: ExcelSideStateDto;
+  readonly bytes: number;
+  /** git の stderr など、案内に添える原文。 */
+  readonly detail: string | null;
+}
+
+export type ExcelSheetMarkDto = 'same' | 'changed' | 'added' | 'removed';
+export type ExcelSheetProblemDto = 'too-large' | 'broken' | 'missing-part' | 'unsupported';
+
+export interface ExcelSheetSummaryDto {
+  /** シートの鍵（比較の中での添字）。 */
+  readonly index: number;
+  readonly oldName: string | null;
+  readonly newName: string | null;
+  readonly mark: ExcelSheetMarkDto;
+  readonly renamed: boolean;
+  readonly kind: 'worksheet' | 'chartsheet' | 'other';
+  /** どちらかの側で非表示のシート。 */
+  readonly hidden: boolean;
+  readonly oldProblem: ExcelSheetProblemDto | null;
+  readonly newProblem: ExcelSheetProblemDto | null;
+  readonly changedRows: number;
+  readonly addedRows: number;
+  readonly removedRows: number;
+  readonly changedCells: number;
+  /** 行の対応付けが予算を超え、位置で対にした区間がある。 */
+  readonly positional: boolean;
+  /** 列の上限より右を読んでいない。 */
+  readonly columnsTruncated: boolean;
+}
+
+export interface ExcelViewDto {
+  /** 以降の getSheet / getRows / getCell に添える。キャッシュが作り直されていれば diff-stale になる。 */
+  readonly token: string;
+  readonly path: string;
+  /** HEAD 側を読んだパス（リネームなら元のパス）。 */
+  readonly headPath: string;
+  readonly old: ExcelSideDto;
+  readonly new: ExcelSideDto;
+  readonly sheets: readonly ExcelSheetSummaryDto[];
+  /** マクロが変わったか。どちらにもマクロが無ければ null。 */
+  readonly vbaChanged: boolean | null;
+}
+
+/** 罫線 1 辺（決定 33 の M2）。style は SpreadsheetML の線の種類（thin / medium / dashed …）。 */
+export interface ExcelBorderDto {
+  readonly style: string;
+  /** #rrggbb。既定（自動）なら null。 */
+  readonly color: string | null;
+}
+
+/**
+ * セルの書式（決定 33 の M2）。`cellXfs` の 1 件を解決したもの。
+ * **色は必ず #rrggbb か null**（excel 層で形を検証済み。renderer でも CSS に流す前にもう一度確かめる）。
+ * フォント名は送らない（CSS に流す値を増やさない）。
+ */
+export interface ExcelCellStyleDto {
+  readonly bold: boolean;
+  readonly italic: boolean;
+  readonly underline: boolean;
+  readonly strike: boolean;
+  readonly color: string | null;
+  readonly sizePt: number | null;
+  readonly fill: string | null;
+  readonly borderTop: ExcelBorderDto | null;
+  readonly borderRight: ExcelBorderDto | null;
+  readonly borderBottom: ExcelBorderDto | null;
+  readonly borderLeft: ExcelBorderDto | null;
+  readonly horizontal: string | null;
+  readonly vertical: string | null;
+  readonly wrap: boolean;
+  readonly indent: number;
+}
+
+/** 揃えた行の状態。0 = 同じ / 1 = 変更 / 2 = 追加 / 3 = 削除。 */
+export type ExcelRowStateDto = 0 | 1 | 2 | 3;
+
+/**
+ * シート 1 枚の幾何（決定 33）。**新旧で同一**なので、左右のグリッドはこれ 1 つで描く。
+ * 行の添字はすべて「揃えた行」の添字。
+ */
+export interface ExcelSheetLayoutDto {
+  readonly token: string;
+  readonly sheet: number;
+  readonly rowCount: number;
+  /** 揃えた行ごとの、その側のシートの行番号（0 始まり。無い側は -1）。 */
+  readonly oldRow: readonly number[];
+  readonly newRow: readonly number[];
+  readonly rowState: readonly number[];
+  readonly rowHeight: readonly number[];
+  /** bit0 = 旧側で非表示、bit1 = 新側で非表示。 */
+  readonly rowHidden: readonly number[];
+  readonly colCount: number;
+  readonly colWidth: readonly number[];
+  readonly colHidden: readonly number[];
+  /** 結合セル（揃えた座標）。r1, c1, r2, c2 の 4 つ組の並び。 */
+  readonly oldMerges: readonly number[];
+  readonly newMerges: readonly number[];
+  /** 状態が同じでない揃えた行（前後の変更への移動用）。 */
+  readonly changedRows: readonly number[];
+  readonly frozen: { readonly rows: number; readonly cols: number } | null;
+  /** 側ごとの書式の表（cellXfs の添字で引く。M2）。書式の部品が無いブックは空。 */
+  readonly oldStyles: readonly ExcelCellStyleDto[];
+  readonly newStyles: readonly ExcelCellStyleDto[];
+  /** 側ごとの既定のフォントの大きさ（pt）。 */
+  readonly oldDefaultFontPt: number;
+  readonly newDefaultFontPt: number;
+  /** 揃えた行ごとの、その側の行の書式（無ければ -1）。セルの無い位置に効く。 */
+  readonly oldRowStyle: readonly number[];
+  readonly newRowStyle: readonly number[];
+  /** 列ごとの、その側の列の書式（無ければ -1）。行の書式もセルも無い位置に効く。 */
+  readonly oldColStyle: readonly number[];
+  readonly newColStyle: readonly number[];
+}
+
+export interface ExcelRowSideDto {
+  /** その側のシートの行番号（0 始まり）。 */
+  readonly row: number;
+  readonly cols: readonly number[];
+  readonly text: readonly string[];
+  /** 値の大分類（0 空 / 1 数値 / 2 文字 / 3 真偽 / 4 エラー / 5 日時）。数値は右寄せにする。 */
+  readonly kind: readonly number[];
+  readonly style: readonly number[];
+}
+
+export interface ExcelRowDto {
+  readonly old: ExcelRowSideDto | null;
+  readonly new: ExcelRowSideDto | null;
+  readonly changedCols: readonly number[];
+}
+
+export interface ExcelRowPageDto {
+  readonly token: string;
+  readonly sheet: number;
+  readonly start: number;
+  readonly rows: readonly ExcelRowDto[];
+}
+
+export interface ExcelCellSideDto {
+  readonly address: string;
+  /** 丸めない値（数値は 15 桁のまま）。 */
+  readonly raw: string;
+  readonly display: string;
+  readonly kind: number;
+  /** 数式（先頭の = なし）。 */
+  readonly formula: string | null;
+}
+
+export interface ExcelCellDetailDto {
+  readonly row: number;
+  readonly col: number;
+  readonly old: ExcelCellSideDto | null;
+  readonly new: ExcelCellSideDto | null;
+  readonly changed: boolean;
+}
+
+export type ExcelRowDiffKindDto = 'same' | 'changed' | 'added' | 'removed';
+
+export interface ExcelRowDiffRowDto {
+  readonly kind: ExcelRowDiffKindDto;
+  readonly oldRow: number;
+  readonly newRow: number;
+  readonly old: readonly string[] | null;
+  readonly new: readonly string[] | null;
+  /** 値が違う列（hunk の columns の添字）。 */
+  readonly changed: readonly number[];
+}
+
+export interface ExcelRowDiffHunkDto {
+  /** 0 始まりの列番号。 */
+  readonly columns: readonly number[];
+  readonly rows: readonly ExcelRowDiffRowDto[];
+}
+
+export interface ExcelRowDiffSheetDto {
+  readonly index: number;
+  readonly oldName: string | null;
+  readonly newName: string | null;
+  readonly mark: ExcelSheetMarkDto;
+  readonly renamed: boolean;
+  readonly positional: boolean;
+  readonly hunks: readonly ExcelRowDiffHunkDto[];
+}
+
+/** 差分モードの行単位比較（決定 33 の C 案）。読むだけで、ステージの口は持たない。 */
+export interface ExcelRowDiffDto {
+  readonly token: string;
+  readonly path: string;
+  readonly old: ExcelSideDto;
+  readonly new: ExcelSideDto;
+  readonly sheets: readonly ExcelRowDiffSheetDto[];
+  /** 行の上限で打ち切った。 */
+  readonly truncated: boolean;
+  readonly vbaChanged: boolean | null;
 }
 
 export interface CommitSummaryDto {
@@ -985,6 +1229,37 @@ export interface FeatherTreeBridge {
    * 1 度作ったらセッションの間は使い回す。
    */
   unityIndexScripts(id: string): Promise<Result<UnityScriptIndexDto>>;
+  /**
+   * Excel ファイルの一覧（決定 33）。status のスナップショットを拡張子で絞るだけで、**git は 0 プロセス**。
+   * `~$` で始まるロックファイルは出さない。
+   */
+  excelListFiles(id: string): Promise<Result<ExcelFileListDto>>;
+  /**
+   * ブックの比較の概要（HEAD ↔ 作業ツリー）。HEAD 側を対応表 #49 で読む（未追跡・新規なら 0 プロセス）。
+   * 同じファイル・同じ status の世代ならキャッシュを返す。側ごとの問題（LFS・パスワード付き・大きすぎる）は
+   * エラーにせず `old` / `new` の state に入れる。**セッションごとに最新の要求だけを生かす**。
+   */
+  excelGetView(id: string, path: string): Promise<Result<ExcelViewDto>>;
+  /** シート 1 枚の幾何。git は 0 プロセス。トークンが古ければ diff-stale。 */
+  excelGetSheet(id: string, token: string, sheet: number): Promise<Result<ExcelSheetLayoutDto>>;
+  /** 揃えた行 start から count 行（最大 256）の中身。git は 0 プロセス。 */
+  excelGetRows(
+    id: string,
+    token: string,
+    sheet: number,
+    start: number,
+    count: number,
+  ): Promise<Result<ExcelRowPageDto>>;
+  /** 値バー用の 1 セルの詳細。git は 0 プロセス。 */
+  excelGetCell(
+    id: string,
+    token: string,
+    sheet: number,
+    row: number,
+    col: number,
+  ): Promise<Result<ExcelCellDetailDto>>;
+  /** 差分モードの行単位比較（C 案）。excelGetView とキャッシュを共有する。 */
+  excelGetRowDiff(id: string, path: string): Promise<Result<ExcelRowDiffDto>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
   /** 対応表 #21。マージコミットでは空配列（`git show` の既定）。 */
   commitGetFiles(id: string, oid: string): Promise<Result<readonly CommitFileChangeDto[]>>;

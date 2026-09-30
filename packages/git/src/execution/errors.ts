@@ -83,6 +83,23 @@ export class GitTimeoutError extends Error {
   }
 }
 
+/**
+ * 作業ツリーのファイルが、他のアプリに読み取りも許さない形で開かれている（EBUSY / EPERM / EACCES）。
+ *
+ * Excel は通常、開いているブックを他のアプリが読むことは許すが、ネットワークドライブや
+ * 保存の最中などで読めないことがある。画面には「読めません（開いているアプリを閉じて更新）」を出す。
+ */
+export class WorktreeFileLockedError extends Error {
+  readonly path: string;
+
+  constructor(path: string, cause?: unknown) {
+    super(`作業ツリーのファイルを読めませんでした（他のアプリが使用中の可能性があります）: ${path}`);
+    this.name = 'WorktreeFileLockedError';
+    this.path = path;
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
 export class GitParseError extends Error {
   constructor(message: string) {
     super(`git の出力を解釈できませんでした: ${message}`);

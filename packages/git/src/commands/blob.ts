@@ -1,7 +1,7 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { commandFor } from '../execution/gitCommand.js';
-import { GitCancelledError, GitCommandError } from '../execution/errors.js';
+import { GitCancelledError, GitCommandError, WorktreeFileLockedError } from '../execution/errors.js';
 import { READ_PREFIX } from '../execution/gitEnvironment.js';
 import { DIFF_TIMEOUT_MS, runGitStream } from '../execution/spawnGit.js';
 import { looksBinary } from '../parsing/diff.js';
@@ -75,8 +75,135 @@ function isMissingPath(stderr: string): boolean {
     text.includes('exists on disk, but not in') ||
     text.includes('unknown revision') ||
     text.includes('path ') ||
+    text.includes('invalid object name') ||
+    // コミットが 1 つも無いリポジトリの HEAD:<path>
+    text.includes('not a valid object name')
+  );
+}
+
+/**
+ * #49 用の「HEAD にそのパスが無い」。`isMissingPath` より狭く取る。
+ *
+ * `cat-file --filters` は smudge（git-lfs）の失敗もここに流れてくる。その文面は
+ * `<path>: smudge filter lfs failed` のようにパスを含むので、`path ` のような広い語で拾うと
+ * 「LFS の実体が取れない」を「HEAD に無い（新規ファイル）」と取り違えて黙ってしまう。
+ */
+function isMissingInHead(stderr: string): boolean {
+  const text = stderr.toLowerCase();
+  // フィルタの失敗の定型文（<path>: smudge filter <name> failed）。パスに filter という語が入っていても誤らないよう、
+  // 語の有無ではなく定型文で見る
+  if (/smudge filter [^ ]+ failed|clean filter [^ ]+ failed|external filter .* failed/.test(text)) return false;
+  return (
+    text.includes('does not exist in') ||
+    text.includes('exists on disk, but not in') ||
+    text.includes('not a valid object name') ||
     text.includes('invalid object name')
   );
+}
+
+/** 利用者が中止したか（await を挟むと変わるので、式の型の絞り込みに頼らず毎回読む）。 */
+function userAborted(ctx: GitContext): boolean {
+  return ctx.signal?.aborted === true;
+}
+
+/** バイト列の読み出しの結果。上限を超えたら中身を持たずに大きさだけを返す。 */
+export type BlobBytes =
+  | { readonly kind: 'ok'; readonly bytes: Buffer }
+  | { readonly kind: 'too-large'; readonly bytes: number };
+
+export interface BlobBytesOptions {
+  /** これを超えたら読むのをやめる（git ならプロセスを落とす）。 */
+  readonly maxBytes: number;
+}
+
+/**
+ * 対応表 #49: HEAD 版の**実体**を読む（Excel 差分用。決定 33）。
+ *
+ * `show HEAD:<path>`（#48）は blob をそのまま返すので、Git LFS 管理のファイルではポインタしか
+ * 得られない。`cat-file --filters` は smudge（git-lfs を含む）と改行変換を通すので、
+ * チェックアウトしたときと同じバイト列になる。LFS でないバイナリはそのまま返る。
+ *
+ * **`--` を置けない理由は #48 と同じ。** トークンは必ず `HEAD:` で始まるので、先頭が `-` になる
+ * 余地が無い（`<rev>` は固定文字列で renderer からは渡らない）。
+ *
+ * **上限を超えたらプロセスを落とす。** 呼び出し側の signal に連結した内側の AbortController を
+ * 引き、`killTree` で孫の git-lfs まで止める（LFS の実体をダウンロードしている最中でも止まる）。
+ *
+ * HEAD にそのパスが無い（新規ファイル・コミットが無いリポジトリ）なら null。
+ */
+export async function readHeadBlobFiltered(
+  ctx: GitContext,
+  path: string,
+  options: BlobBytesOptions,
+): Promise<BlobBytes | null> {
+  if (ctx.signal?.aborted === true) throw new GitCancelledError();
+  const inner = new AbortController();
+  const relay = (): void => inner.abort();
+  ctx.signal?.addEventListener('abort', relay, { once: true });
+
+  const chunks: Buffer[] = [];
+  let total = 0;
+  let overflow = false;
+  try {
+    const { exit } = await runGitStream(
+      commandFor(ctx, [...READ_PREFIX, 'cat-file', '--filters', 'HEAD:' + path], { timeoutMs: DIFF_TIMEOUT_MS }),
+      {
+        push: (chunk: Buffer) => {
+          if (overflow) return;
+          total += chunk.length;
+          if (total > options.maxBytes) {
+            overflow = true;
+            chunks.length = 0;
+            inner.abort();
+            return;
+          }
+          chunks.push(chunk);
+        },
+        finish: () => undefined,
+      },
+      inner.signal,
+    );
+    if (overflow) return { kind: 'too-large', bytes: total };
+    if (exit.code !== 0) {
+      if (isMissingInHead(exit.stderr)) return null;
+      throw new GitCommandError(['cat-file', '--filters'], exit.code, exit.stderr);
+    }
+    return { kind: 'ok', bytes: Buffer.concat(chunks) };
+  } catch (err) {
+    // 上限で自分から止めたときの中断は「大きすぎる」。利用者の中止はそのまま投げる
+    if (overflow && !userAborted(ctx)) return { kind: 'too-large', bytes: total };
+    throw err;
+  } finally {
+    ctx.signal?.removeEventListener('abort', relay);
+  }
+}
+
+/**
+ * 作業ツリーのファイルをバイト列のまま読む（**git は 0 プロセス**。Excel 差分の新側。決定 33）。
+ *
+ * 先に大きさを見て、上限を超えていれば読まない。無ければ null（削除されたファイル）。
+ * Excel が読み取りも許さない形で開いている（EBUSY / EPERM）ときは `WorktreeFileLockedError`。
+ */
+export async function readWorktreeBytes(
+  ctx: GitContext,
+  path: string,
+  options: BlobBytesOptions,
+): Promise<BlobBytes | null> {
+  const absolute = join(ctx.cwd, path);
+  try {
+    const info = await stat(absolute);
+    if (!info.isFile()) return null;
+    if (info.size > options.maxBytes) return { kind: 'too-large', bytes: info.size };
+    const bytes = await readFile(absolute, ctx.signal === undefined ? {} : { signal: ctx.signal });
+    if (bytes.length > options.maxBytes) return { kind: 'too-large', bytes: bytes.length };
+    return { kind: 'ok', bytes };
+  } catch (err) {
+    if (ctx.signal?.aborted === true) throw new GitCancelledError();
+    if (isNotFound(err)) return null;
+    const code = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
+    if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') throw new WorktreeFileLockedError(path, err);
+    throw err;
+  }
 }
 
 /**

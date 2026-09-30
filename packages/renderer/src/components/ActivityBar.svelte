@@ -7,16 +7,17 @@
    * （docs/01-architecture.md 8 章）。
    * ペインが畳まれていても消えないので、畳んだペインを呼び戻す口がここにある。
    *
-   * 上端の内訳（決定 27 / 31）:
-   *   1. 折り畳みボタン。**どのモードでもブランチペインが相手**
-   *   2. モード切替の 4 ボタン（差分 / コミットログ / Stash 保存 / Stash 解放。排他）
+   * 上端の内訳（決定 27 / 31 / 32 / 33）:
+   *   1. 折り畳みボタン。相手はブランチペイン。**Excel 差分モードでだけ Excel ファイル一覧**
+   *      （そのモードではブランチペインを使わず、位置ごと一覧に明け渡すため。決定 33 による決定 27 の改定）
+   *   2. モード切替の 6 ボタン（差分 / コミットログ / Stash 保存 / Stash 解放 / Unity / Excel。排他）
    *
-   * ブランチペインは 4 つのモードで共通（左に居続ける）。モードが変えるのは
-   * その右側だけなので、折り畳みボタンの意味もモードで変わらない。
+   * ブランチペインは Excel 差分モード以外で共通（左に居続ける）。Excel 差分モードでは
+   * 不可視にして残し（破棄しない）、同じ位置に Excel ファイル一覧を出す。
    *
-   * 並びは「差分 → コミットログ → 区切り線 → Stash 保存 → Stash 解放」。
-   * **既存 2 つの位置を動かさず**、新しい対を区切り線の下にまとめる
-   * （stash の 2 つは互いに対なので隣り合わせる）。
+   * 並びは「差分 → コミットログ → 区切り線 → Stash 保存 → Stash 解放 → 区切り線 → Unity → Excel」。
+   * **既存のボタンの位置を動かさず**、新しい組を区切り線の下にまとめる
+   * （stash の 2 つは互いに対、Unity と Excel は「特定のファイルの差分」の組なので隣り合わせる）。
    */
   import { app } from '../lib/appState.svelte.js';
   import { isDarkTheme } from '../lib/theme.js';
@@ -30,7 +31,17 @@
   const { optionsOpen, onopenoptions }: Props = $props();
 
   const mode = $derived(app.viewMode);
-  const collapsed = $derived(app.settings?.branchPaneCollapsed ?? false);
+  /** 折り畳みの相手。Excel 差分モードでだけ Excel ファイル一覧（決定 33）。 */
+  const excelMode = $derived(mode === 'excel');
+  const collapsed = $derived(
+    excelMode ? (app.settings?.excelFileListCollapsed ?? false) : (app.settings?.branchPaneCollapsed ?? false),
+  );
+  const collapseTarget = $derived(excelMode ? 'Excel ファイル一覧' : 'ブランチペイン');
+
+  function toggleCollapse(): void {
+    if (excelMode) void app.setExcelFileListCollapsed(!collapsed);
+    else void app.setBranchPaneCollapsed(!collapsed);
+  }
   const dark = $derived(isDarkTheme(app.settings?.theme ?? 'phoenix-light'));
   /** 新版があるとき、設定ボタンに小さなバッジを出す（決定 29）。 */
   const hasUpdate = $derived(app.hasUpdateAvailable);
@@ -45,9 +56,9 @@
   <div class="group">
     <button
       class="activity-btn"
-      title={collapsed ? 'ブランチペインを開く' : 'ブランチペインを閉じる'}
+      title={collapsed ? collapseTarget + 'を開く' : collapseTarget + 'を閉じる'}
       aria-pressed={!collapsed}
-      onclick={() => void app.setBranchPaneCollapsed(!collapsed)}
+      onclick={toggleCollapse}
     >
       {collapsed ? '›' : '‹'}
     </button>
@@ -203,6 +214,28 @@
           stroke="currentColor"
           stroke-width="1.6"
           stroke-linejoin="round"
+        />
+      </svg>
+    </button>
+
+    <!--
+      Excel 差分モード（決定 33）。**公式のロゴは使わない**——表計算の格子（見出し行と見出し列の
+      付いた 3 × 3 のマス）を描く。HEAD と作業ツリーを左右に並べて見るモード。
+    -->
+    <button
+      class="activity-btn icon"
+      class:active={mode === 'excel'}
+      title="Excel 差分モード（HEAD と作業ツリーのブックを左右に並べて見る）"
+      aria-pressed={mode === 'excel'}
+      onclick={() => void app.enterExcelMode()}
+    >
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+        <path
+          d="M3.5 9h17M3.5 14.2h17M8.5 4.5v15M14.5 4.5v15"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
         />
       </svg>
     </button>
