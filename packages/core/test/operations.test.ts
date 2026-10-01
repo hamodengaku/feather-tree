@@ -176,6 +176,78 @@ describe('SessionOperations (対応表 #5〜#11 の統合)', () => {
     expect(await diffNames()).toEqual([]);
   });
 
+  it('ignore にかかる追跡済みファイルが混ざっても一括ステージできる（追跡済みは add -u）', async () => {
+    await write('ign/a.txt', '1');
+    await write('ign/b.txt', '1');
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', 'init']);
+    // 後から ignore に足したフォルダの中の追跡済みファイル（Unity の生成物で典型）
+    await write('.gitignore', 'ign/\n');
+    await write('ign/a.txt', '2');
+    await rm(join(dir, 'ign/b.txt'));
+    await write('new.txt', 'n');
+
+    const session = await manager.open(dir);
+    const ops = new SessionOperations(session);
+    const before = commandLog.size;
+
+    await ops.stage({ kind: 'filtered', filter: { group: 'changes' } });
+
+    const added = commandLog.recent(10).slice(0, commandLog.size - before);
+    expect(added.map((e) => e.args.join(' ')).sort()).toEqual(['add', 'add -u', 'status']);
+    expect((await diffCachedNames()).sort()).toEqual(['.gitignore', 'ign/a.txt', 'ign/b.txt', 'new.txt']);
+    expect(session.getStatusSummary().counts.unstaged).toBe(0);
+  });
+
+  it('追跡済みだけならステージは add -u の 1 本', async () => {
+    await write('a.txt', 'one');
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', 'init']);
+    await write('a.txt', 'two');
+
+    const session = await manager.open(dir);
+    const ops = new SessionOperations(session);
+    const before = commandLog.size;
+
+    await ops.stage({ kind: 'paths', paths: ['a.txt'] });
+
+    const added = commandLog.recent(10).slice(0, commandLog.size - before);
+    expect(added.map((e) => e.args.join(' ')).sort()).toEqual(['add -u', 'status']);
+  });
+
+  it('破棄の選択に未追跡・競合が混ざっても失敗しない（追跡済みは #7、未追跡は #9、競合は触らない）', async () => {
+    await write('mod.txt', 'one');
+    await write('conf.txt', 'base');
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', 'init']);
+    await git(dir, ['switch', '-c', 'topic']);
+    await write('conf.txt', 'topic');
+    await git(dir, ['commit', '-am', 'topic']);
+    await git(dir, ['switch', 'main']);
+    await write('conf.txt', 'main');
+    await git(dir, ['commit', '-am', 'main']);
+    await git(dir, ['merge', 'topic']).catch(() => undefined);
+    await write('mod.txt', 'two');
+    await write('untracked.txt', 'trash');
+
+    const session = await manager.open(dir);
+    const ops = new SessionOperations(session);
+    const before = commandLog.size;
+
+    const outcome = await ops.discard({
+      kind: 'paths',
+      paths: ['mod.txt', 'untracked.txt', 'conf.txt'],
+    });
+
+    expect(outcome.affected).toBe(2);
+    const added = commandLog.recent(10).slice(0, commandLog.size - before);
+    expect(added.map((e) => e.args[0]).sort()).toEqual(['clean', 'restore', 'status']);
+    expect(await readFile(join(dir, 'mod.txt'), 'utf8')).toBe('one');
+    await expect(stat(join(dir, 'untracked.txt'))).rejects.toThrow();
+    // 競合中のファイルは解決の途中経過を捨てない
+    expect(await readFile(join(dir, 'conf.txt'), 'utf8')).toContain('<<<<<<<');
+  });
+
   it('未追跡削除は未追跡エントリだけに絞る（追跡ファイルを誤って消さない）', async () => {
     await write('tracked.txt', 'keep');
     await git(dir, ['add', '-A']);

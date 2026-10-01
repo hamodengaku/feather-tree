@@ -24,6 +24,10 @@ export interface MergedNode {
   readonly kind: NodeKind;
   readonly classId: number;
   readonly name: string;
+  /** stripped（ネスト Prefab / Variant の元から継承した代理）か。 */
+  readonly inherited: boolean;
+  /** MonoBehaviour の `m_Script` がまだスクリプト名に解決できていないか。 */
+  readonly unresolvedScript: boolean;
   readonly mark: NodeMark;
   /**
    * 子孫のどこかに `same` 以外が居るか。
@@ -41,6 +45,10 @@ interface MutableNode {
   readonly kind: NodeKind;
   readonly classId: number;
   readonly name: string;
+  /** stripped（ネスト Prefab / Variant の元から継承した代理）か。 */
+  readonly inherited: boolean;
+  /** MonoBehaviour の `m_Script` がまだスクリプト名に解決できていないか。 */
+  readonly unresolvedScript: boolean;
   readonly mark: NodeMark;
   hasChangedDescendant: boolean;
 }
@@ -134,6 +142,8 @@ function makeNode(
     kind: shown?.kind ?? 'component',
     classId: shown?.classId ?? 0,
     name: shown?.name ?? id,
+    inherited: shown?.inherited ?? false,
+    unresolvedScript: shown?.unresolvedScript ?? false,
     mark,
     hasChangedDescendant: false,
   };

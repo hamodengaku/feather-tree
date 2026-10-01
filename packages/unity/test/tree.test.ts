@@ -266,6 +266,84 @@ describe('PrefabInstance（Variant / ネスト Prefab）', () => {
   });
 });
 
+/*
+ * Variant（2026-09-30）。自前の GameObject を持たず、ルートは PrefabInstance。
+ * 元 Prefab のオブジェクトは stripped な代理として並ぶ:
+ *   - stripped GameObject（名前は m_Modifications の m_Name で上書きされている）
+ *   - stripped Transform
+ *   - stripped MonoBehaviour（m_Script を持たない）
+ *   - Variant 側で stripped GameObject に**足した** MonoBehaviour（本体あり）
+ */
+describe('stripped（継承した代理）の配置', () => {
+  const VARIANT = text(
+    ...HEADER,
+    '--- !u!1 &900 stripped',
+    'GameObject:',
+    '  m_CorrespondingSourceObject: {fileID: 111, guid: bbbbbbbbcccccccc, type: 3}',
+    '  m_PrefabInstance: {fileID: 50}',
+    '  m_PrefabAsset: {fileID: 0}',
+    '--- !u!4 &901 stripped',
+    'Transform:',
+    '  m_CorrespondingSourceObject: {fileID: 112, guid: bbbbbbbbcccccccc, type: 3}',
+    '  m_PrefabInstance: {fileID: 50}',
+    '  m_PrefabAsset: {fileID: 0}',
+    '--- !u!114 &902 stripped',
+    'MonoBehaviour:',
+    '  m_CorrespondingSourceObject: {fileID: 113, guid: bbbbbbbbcccccccc, type: 3}',
+    '  m_PrefabInstance: {fileID: 50}',
+    '  m_PrefabAsset: {fileID: 0}',
+    '--- !u!114 &903',
+    'MonoBehaviour:',
+    '  m_GameObject: {fileID: 900}',
+    '  m_Script: {fileID: 11500000, guid: ddddddddeeeeeeee, type: 3}',
+    '--- !u!1001 &50',
+    'PrefabInstance:',
+    '  m_Modification:',
+    '    m_TransformParent: {fileID: 0}',
+    '    m_Modifications:',
+    '    - target: {fileID: 111, guid: bbbbbbbbcccccccc, type: 3}',
+    '      propertyPath: m_Name',
+    '      value: EnemyVariant',
+    '      objectReference: {fileID: 0}',
+    '  m_SourcePrefab: {fileID: 100100000, guid: bbbbbbbbcccccccc, type: 3}',
+    '',
+  );
+  const tree = treeOf(VARIANT);
+
+  it('stripped はすべて持ち込んだ PrefabInstance の下に入り、ルートに散らばらない', () => {
+    expect(tree.roots).toEqual(['50']);
+    expect(tree.nodes.get('900')?.parent).toBe('50');
+    expect(tree.nodes.get('901')?.parent).toBe('50');
+    expect(tree.nodes.get('902')?.parent).toBe('50');
+  });
+
+  it('stripped には継承の印が付き、名前は m_Modifications の上書きから取る', () => {
+    expect(tree.nodes.get('900')).toMatchObject({ name: 'EnemyVariant', inherited: true });
+    expect(tree.nodes.get('902')).toMatchObject({ name: 'MonoBehaviour', inherited: true });
+    expect(tree.nodes.get('903')?.inherited).toBe(false);
+  });
+
+  it('継承した GameObject に足したコンポーネントはその GameObject の下（PrefabInstance ＞ GO ＞ 足した物）', () => {
+    expect(tree.nodes.get('903')?.parent).toBe('900');
+  });
+
+  it('m_Script が解決できない MonoBehaviour は unresolvedScript が立ち、解決すれば下りる', () => {
+    expect(tree.nodes.get('903')).toMatchObject({ name: 'MonoBehaviour (dddddddd)', unresolvedScript: true });
+    // stripped は m_Script を持たないので「検索」しても変わらない。ボタンも出さない
+    expect(tree.nodes.get('902')?.unresolvedScript).toBe(false);
+
+    const resolved = buildSideTree(parseUnityFile(VARIANT), (guid) =>
+      guid === 'ddddddddeeeeeeee' ? 'EnemyAI' : null,
+    );
+    expect(resolved.nodes.get('903')).toMatchObject({ name: 'EnemyAI', unresolvedScript: false });
+  });
+
+  it('名前の上書きが無い stripped GameObject は GameObject と出す', () => {
+    const plain = treeOf(VARIANT.replace('propertyPath: m_Name', 'propertyPath: m_IsActive'));
+    expect(plain.nodes.get('900')?.name).toBe('GameObject');
+  });
+});
+
 describe('壊れた・変わった入力', () => {
   it('Transform が無い GameObject もルートとして出す（消さない）', () => {
     const tree = treeOf(

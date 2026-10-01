@@ -101,6 +101,7 @@ const bridge: FeatherTreeBridge = {
   conflictResolve: (id: string, req: ConflictResolveRequest) =>
     ipcRenderer.invoke(CHANNELS.conflictResolve, id, req),
   logGetPage: (id: string, skip: number) => ipcRenderer.invoke(CHANNELS.logGetPage, id, skip),
+  logHeadMessage: (id: string) => ipcRenderer.invoke(CHANNELS.logHeadMessage, id),
   commitGetFiles: (id: string, oid: string) => ipcRenderer.invoke(CHANNELS.commitGetFiles, id, oid),
   commitGetDiff: (id: string, oid: string, path: string) =>
     ipcRenderer.invoke(CHANNELS.commitGetDiff, id, oid, path),

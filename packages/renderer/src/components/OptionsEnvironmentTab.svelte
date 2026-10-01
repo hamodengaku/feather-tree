@@ -64,6 +64,16 @@
 </label>
 <p class="note">アクティブなタブに、ブランチ名と今のコミットの件名を並べます。</p>
 
+<label class="check">
+  <input
+    type="checkbox"
+    checked={app.settings?.confirmCommitAndPush ?? true}
+    onchange={(e) => void app.setConfirmCommitAndPush(e.currentTarget.checked)}
+  />
+  <span>コミット&プッシュの前に確認する</span>
+</label>
+<p class="note">確認ダイアログで「再表示しない」を選ぶとオフになります。全リポジトリ共通です。</p>
+
 <style>
   /*
     ラジオの束を、ごく薄い座布団に載せてひとまとまりに見せる。

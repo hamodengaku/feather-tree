@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getCommitFileDiff, getCommitFiles, getLog } from '../src/index.js';
+import { getCommitFileDiff, getCommitFiles, getHeadMessage, getLog } from '../src/index.js';
 import { commitAll, createFixture, type Fixture } from './fixture.js';
 
 describe('履歴 (対応表 #20 / #21 / #36)', () => {
@@ -54,6 +54,35 @@ describe('履歴 (対応表 #20 / #21 / #36)', () => {
     const second = await getLog(fx.ctx, { maxCount: 2, skip: 2 });
     expect(first.map((c) => c.subject)).toEqual(['c4', 'c3']);
     expect(second.map((c) => c.subject)).toEqual(['c2', 'c1']);
+  });
+
+  it("scope 'head' は HEAD から辿れるコミットだけを返す（他ブランチの先端は出さない）", async () => {
+    await fx.write('a.txt', 'x');
+    await commitAll(fx, 'base');
+    await fx.run('switch', '-c', 'topic');
+    await fx.write('b.txt', 'y');
+    await commitAll(fx, 'topic only');
+    await fx.run('switch', 'main');
+    await fx.write('c.txt', 'z');
+    await commitAll(fx, 'main only');
+
+    const all = await getLog(fx.ctx);
+    const head = await getLog(fx.ctx, { scope: 'head' });
+    expect(all.map((c) => c.subject).sort()).toEqual(['base', 'main only', 'topic only']);
+    expect(head.map((c) => c.subject)).toEqual(['main only', 'base']);
+  });
+
+  it("scope 'head' でもコミットが無ければ空配列", async () => {
+    expect(await getLog(fx.ctx, { scope: 'head' })).toEqual([]);
+  });
+
+  it('HEAD のメッセージ全文を取得する（#49）', async () => {
+    expect(await getHeadMessage(fx.ctx)).toBeNull();
+    await fx.write('a.txt', 'x');
+    await fx.run('add', '-A');
+    await fx.run('commit', '-m', '件名', '-m', '本文 1 行目\n本文 2 行目');
+
+    expect(await getHeadMessage(fx.ctx)).toBe('件名\n\n本文 1 行目\n本文 2 行目');
   });
 
   it('コミットの変更ファイル一覧を取得する', async () => {

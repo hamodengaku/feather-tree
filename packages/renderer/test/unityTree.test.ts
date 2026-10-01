@@ -27,6 +27,8 @@ function node(
     kind: 'gameObject',
     classId: 1,
     name: id,
+    inherited: false,
+    unresolvedScript: false,
     mark: 'same',
     hasChangedDescendant: false,
     ...over,

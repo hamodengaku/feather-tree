@@ -21,6 +21,7 @@
   import OptionsDialog from './components/OptionsDialog.svelte';
   import CreateBranchDialog from './components/CreateBranchDialog.svelte';
   import PushDialog from './components/PushDialog.svelte';
+  import CommitPushConfirmDialog from './components/CommitPushConfirmDialog.svelte';
   import FocusRefreshDialog from './components/FocusRefreshDialog.svelte';
   import MottoDialog from './components/MottoDialog.svelte';
   import OpenRepositoryMenu from './components/OpenRepositoryMenu.svelte';
@@ -519,6 +520,7 @@
 <ConfirmDialog />
 <CreateBranchDialog />
 <PushDialog />
+<CommitPushConfirmDialog />
 <CloneDialog />
 <CloneConfirmDialog />
 <OpenRepositoryMenu />

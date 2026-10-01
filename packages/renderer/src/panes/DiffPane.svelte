@@ -16,6 +16,7 @@
   import { app } from '../lib/appState.svelte.js';
   import { hunkAllowsLines, singleLineSelection, wholeHunkSelection } from '../lib/diffSelection.js';
   import { isOpenableExcelPath } from '../lib/excelPath.js';
+  import { rememberScroll } from '../lib/scrollMemory.js';
   import ExcelRowDiffView from '../components/ExcelRowDiffView.svelte';
 
   const diff = $derived(app.diff);
@@ -117,6 +118,15 @@
   });
 
   /**
+   * スクロールは**別のファイルを表示したときだけ**先頭へ戻す（lib/scrollMemory.ts）。
+   * ステージ済み側と未ステージ側は中身が別物なので「別のファイル」として扱う（fileKey に含む）。
+   * 中身は diff / conflict / Excel の行比較のどれか 1 つ（appState で排他）。
+   */
+  const scrollReady = $derived(
+    !app.diffLoading && (diff !== null || conflict !== null || excelRows !== null),
+  );
+
+  /**
    * 実際に行モードが効いている hunk。
    *
    * 1 行適用するたびに差分を取り直すので、hunk が消えて数が減ることがある。
@@ -183,7 +193,10 @@
     {/if}
   </header>
 
-  <div class="body">
+  <div
+    class="body"
+    use:rememberScroll={{ slot: 'diff:' + (app.activeId ?? ''), key: fileKey, ready: scrollReady }}
+  >
     {#if excelPath !== null && !unmerged}
       <!-- 見出しの下に 1 行だけ置く（見出しの中に置くと長いパスに押し出される） -->
       <div class="excel-open">

@@ -54,6 +54,7 @@ export const CHANNELS = {
   conflictGet: 'conflict:get',
   conflictResolve: 'conflict:resolve',
   logGetPage: 'log:getPage',
+  logHeadMessage: 'log:headMessage',
   commitGetFiles: 'commit:getFiles',
   commitGetDiff: 'commit:getDiff',
   branchList: 'branch:list',
@@ -216,6 +217,10 @@ export interface SettingsDto {
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
+  /** コミットログモードで HEAD から辿れるコミットだけを出すか（#20 の範囲。既定オフ = --all）。 */
+  readonly logCurrentBranchOnly: boolean;
+  /** 「コミット&プッシュ」の前に確認ダイアログを出すか（アプリ全体で 1 つ）。 */
+  readonly confirmCommitAndPush: boolean;
   /** ペイン領域のモード（決定 27 / 31 / 32 / 33）。core の ViewMode と同じ 6 値。 */
   readonly viewMode: 'diff' | 'log' | 'stash' | 'stash-list' | 'unity' | 'excel';
   readonly logDetailHeight: number;
@@ -507,6 +512,13 @@ export interface UnityNodeDto {
   readonly kind: UnityNodeKindDto;
   readonly classId: number;
   readonly name: string;
+  /**
+   * stripped（ネスト Prefab / Variant の元 Prefab から継承した代理）か。
+   * ヒエラルキーでは持ち込んだ PrefabInstance の下に並び、画面では「継承」の印を付ける。
+   */
+  readonly inherited: boolean;
+  /** MonoBehaviour の `m_Script` がまだスクリプト名に解決できていないか（行内の「スクリプト名を検索」の出し分け）。 */
+  readonly unresolvedScript: boolean;
   readonly mark: UnityNodeMarkDto;
   /**
    * 子孫のどこかに `same` 以外が居るか。
@@ -1261,6 +1273,8 @@ export interface FeatherTreeBridge {
   /** 差分モードの行単位比較（C 案）。excelGetView とキャッシュを共有する。 */
   excelGetRowDiff(id: string, path: string): Promise<Result<ExcelRowDiffDto>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
+  /** 対応表 #49: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
+  logHeadMessage(id: string): Promise<Result<string | null>>;
   /** 対応表 #21。マージコミットでは空配列（`git show` の既定）。 */
   commitGetFiles(id: string, oid: string): Promise<Result<readonly CommitFileChangeDto[]>>;
   /**

@@ -37,6 +37,9 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { ft } from '../bridge.js';
 import { applyTheme } from './theme.js';
 import { nextSelectionAfterRemoval } from './selection.js';
+import { commitPushTarget } from './pushTarget.js';
+import { copyText } from './clipboard.js';
+import { fileNameOf, fullPathOf } from './pathText.js';
 import { initialUnityExpansion } from './unityTree.js';
 import { ExcelState } from './excelState.svelte.js';
 import { isOpenableExcelPath } from './excelPath.js';
@@ -151,6 +154,11 @@ export interface Section {
   total: number;
 }
 
+/** 差分ペインに出すファイルの同一性。ステージ済み側と未ステージ側は中身が別物なので区別する。 */
+function diffKeyOf(file: SelectedFile): string {
+  return file.path + ':' + String(file.staged);
+}
+
 function emptySection(): Section {
   return { entries: [], total: 0 };
 }
@@ -229,6 +237,11 @@ export class AppState {
   selected = $state<SelectedFile | null>(null);
   diff = $state<FileDiffDto | null>(null);
   diffLoading = $state(false);
+  /**
+   * いま差分ペインに出している（最後に応答を受け取った）ファイル。diffKeyOf の値。
+   * 同じファイルの読み直しかどうかを見分け、読み込み表示への差し替えを省くのに使う。
+   */
+  #diffShownKey: string | null = null;
   /**
    * diff の取得に失敗したときの理由。成功なら null。
    *
@@ -319,6 +332,13 @@ export class AppState {
 
   commitMessage = $state('');
   amend = $state(false);
+  /**
+   * amend のチェックで流し込んだ HEAD のメッセージ（#49）。
+   * チェックを外したとき、流し込んだまま手を付けていなければ欄を空に戻すための控え。
+   */
+  #amendPrefill: string | null = null;
+  /** 「コミット&プッシュ」の確認ダイアログを出しているか。 */
+  commitPushConfirmOpen = $state(false);
 
   /**
    * 実行中の `#run` の本数。
@@ -476,6 +496,21 @@ export class AppState {
     if (this.busy || this.activeId === null) return false;
     if (this.commitMessage.trim().length === 0) return false;
     return this.amend || (this.summary?.counts.staged ?? 0) > 0;
+  }
+
+  /** amend できるか。コミットが 1 つも無いリポジトリでは直前のコミットが無い。 */
+  get canAmend(): boolean {
+    return (this.summary?.head?.oid ?? null) !== null;
+  }
+
+  /**
+   * 「コミット&プッシュ」を押せるか。
+   * amend とは組み合わせない（プッシュ済みを書き換えると非 fast-forward で必ず拒否される）。
+   * 行き先が決まらない場合（上流の枝名が違う等）はコミット後にプッシュダイアログを開くので、
+   * ここではブランチ上にいてリモートがあることだけを見る。
+   */
+  get canCommitAndPush(): boolean {
+    return this.canCommit && !this.amend && this.currentBranch !== null && this.remotes.length > 0;
   }
 
   /**
@@ -1063,14 +1098,22 @@ export class AppState {
     const id = this.activeId;
     if (id === null) return;
     const seq = (this.#diffSeq += 1);
+    const key = diffKeyOf(file);
     const unmerged = this.#isUnmerged(file);
     this.selectedUnmerged = unmerged;
-    this.diffLoading = true;
+    /*
+     * **同じファイルの読み直しでは「読み込み中…」に差し替えない**（2026-10-01、利用者の指示）。
+     * 差し替えると中身が縮んでスクロールが先頭へ戻る。hunk ステージや更新のたびに
+     * 見ていた位置を失わないよう、古い中身を出したまま裏で取り直す。
+     * 先頭へ戻すのは別のファイルを表示したときだけ（lib/scrollMemory.ts）。
+     */
+    if (this.#diffShownKey !== key) this.diffLoading = true;
     try {
       if (unmerged) {
         const result = await this.#ft.conflictGet(id, file.path);
         // 追い越された要求の応答は捨てる
         if (seq !== this.#diffSeq) return;
+        this.#diffShownKey = key;
         if (result.ok) {
           this.diff = null;
           this.conflict = result.value;
@@ -1104,6 +1147,7 @@ export class AppState {
 
       const result = await this.#ft.diffGet(id, file.path, file.staged);
       if (seq !== this.#diffSeq) return;
+      this.#diffShownKey = key;
       if (result.ok) {
         this.diff = result.value;
         this.conflict = null;
@@ -1148,6 +1192,7 @@ export class AppState {
   /** 飛んでいる diff 要求を無効にしてから差分を消す。 */
   #invalidateDiff(): void {
     this.#diffSeq += 1;
+    this.#diffShownKey = null;
     this.diff = null;
     this.conflict = null;
     this.excelRowDiff = null;
@@ -1530,6 +1575,9 @@ export class AppState {
     const id = this.activeId;
     const oid = this.selectedCommit;
     if (id === null || oid === null) return;
+    // 出している（読んでいる）ファイルを選び直しても取り直さない。差分モードの select と同じ理由
+    // （同じ内容で置き換えるとスクロールが先頭に戻る）。失敗して空なら再試行になる
+    if (path === this.selectedCommitPath && (this.commitDiffLoading || this.commitDiff?.path === path)) return;
 
     this.selectedCommitPath = path;
     const seq = (this.#commitDiffSeq += 1);
@@ -1625,6 +1673,8 @@ export class AppState {
     const id = this.activeId;
     const entry = this.selectedStashEntry;
     if (id === null || entry === null) return;
+    // selectCommitPath と同じ。出しているファイルの選び直しでは取り直さない
+    if (path === this.selectedStashPath && (this.stashDiffLoading || this.stashDiff?.path === path)) return;
 
     this.selectedStashPath = path;
     const seq = (this.#stashDiffSeq += 1);
@@ -1872,6 +1922,22 @@ export class AppState {
     if (this.settings === null) return;
     const clamped = Math.min(4000, Math.max(80, Math.round(px)));
     await this.#writeSettings({ stagedHeight: clamped });
+  }
+
+  /**
+   * コミットログを「現在のブランチ履歴のみ」にするかの永続化（#20 の範囲）。
+   * 範囲が変わると保持している履歴はまるごと無効なので、取り直す
+   * （コミットログモードでなければ捨てるだけで git は 0 回。#invalidateLog）。
+   */
+  async setLogCurrentBranchOnly(only: boolean): Promise<void> {
+    const applied = await this.#writeSettings({ logCurrentBranchOnly: only });
+    if (applied === null) return;
+    await this.#invalidateLog();
+  }
+
+  /** 「コミット&プッシュ」の確認ダイアログを出すかの永続化（アプリ全体で 1 つ）。 */
+  async setConfirmCommitAndPush(confirm: boolean): Promise<void> {
+    await this.#writeSettings({ confirmCommitAndPush: confirm });
   }
 
   /** リポジトリタブに現在情報を出すかの永続化（決定 24）。 */
@@ -2174,12 +2240,14 @@ export class AppState {
    * リポジトリタブに 1 つ前の件名が残る。
    * 読むのは main のスナップショットなので、ここで git は増えない（#3 は main が済ませている）。
    */
-  async commit(): Promise<void> {
+  async commit(onSuccess?: () => void): Promise<void> {
     const message = this.commitMessage;
     const amend = this.amend;
     const clear = (): void => {
       this.commitMessage = '';
       this.amend = false;
+      this.#amendPrefill = null;
+      onSuccess?.();
     };
     // ブランチ一覧の取り直しは #operate が成功したときだけ行う（確認待ちで止まったら取り直さない）
     await this.#operate(
@@ -2333,6 +2401,85 @@ export class AppState {
       log: true,
       reloadOnFailure: 'same',
     });
+  }
+
+  /**
+   * amend のチェックの切り替え。
+   *
+   * 入れたとき欄が空なら HEAD のメッセージ全文（#49）を流し込む。既に何か書いてあれば
+   * 上書きしない（書きかけを消さない）。外したとき、流し込んだまま手を付けていなければ空に戻す。
+   */
+  async setAmend(on: boolean): Promise<void> {
+    this.amend = on;
+    if (!on) {
+      if (this.#amendPrefill !== null && this.commitMessage === this.#amendPrefill) this.commitMessage = '';
+      this.#amendPrefill = null;
+      return;
+    }
+    const id = this.activeId;
+    if (id === null || this.commitMessage.trim().length > 0) return;
+    const result = await this.#ft.logHeadMessage(id);
+    // 待っている間にタブ・チェック・欄が変わっていたら何もしない
+    if (id !== this.activeId || !this.amend || this.commitMessage.trim().length > 0) return;
+    if (!this.#check(result) || result.value === null) return;
+    this.commitMessage = result.value;
+    this.#amendPrefill = result.value;
+  }
+
+  /**
+   * 右クリックメニューの「ファイル名をコピー」「フルパスをコピー」。
+   * path はリポジトリルート相対（git の表記）。git は起動しない。
+   */
+  async copyPath(path: string, form: 'name' | 'full'): Promise<void> {
+    const root = this.activeSession?.root ?? null;
+    if (form === 'full' && root === null) return;
+    const text = form === 'name' || root === null ? fileNameOf(path) : fullPathOf(root, path);
+    if (!(await copyText(text))) {
+      this.#setError({ kind: 'internal', message: 'クリップボードにコピーできませんでした。' });
+    }
+  }
+
+  /** 「コミット&プッシュ」ボタン。設定により確認ダイアログを挟む。 */
+  async requestCommitAndPush(): Promise<void> {
+    if (!this.canCommitAndPush) return;
+    if (this.settings?.confirmCommitAndPush ?? true) {
+      this.commitPushConfirmOpen = true;
+      return;
+    }
+    await this.commitAndPush();
+  }
+
+  /** 確認ダイアログの「実行」。dontShowAgain ならアプリ全体の設定を切ってから実行する。 */
+  async acceptCommitAndPush(dontShowAgain: boolean): Promise<void> {
+    this.commitPushConfirmOpen = false;
+    if (dontShowAgain) await this.setConfirmCommitAndPush(false);
+    await this.commitAndPush();
+  }
+
+  cancelCommitAndPush(): void {
+    this.commitPushConfirmOpen = false;
+  }
+
+  /**
+   * コミットしてからプッシュする（対応表の例外「コミット&プッシュ」）。
+   *
+   * 中身は既存の 2 操作を続けて呼ぶだけ（IPC も 2 回）。コミットが失敗したらプッシュしない。
+   * 行き先が決まらなければプッシュダイアログを開いて選ばせる（コミットは済んでいる）。
+   */
+  async commitAndPush(): Promise<void> {
+    if (!this.canCommitAndPush) return;
+    const id = this.activeId;
+    let committed = false;
+    await this.commit(() => (committed = true));
+    if (!committed || id !== this.activeId) return;
+
+    // コミット後の反映でブランチ一覧（上流）は取り直し済み
+    const target = commitPushTarget(this.currentBranch, this.branches, this.remotes);
+    if (target === null) {
+      this.openPushDialog();
+      return;
+    }
+    await this.push(target.remote, target.branch, target.setUpstream);
   }
 
   openPushDialog(): void {

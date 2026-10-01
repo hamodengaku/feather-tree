@@ -74,6 +74,39 @@ export function resolveTarget(snapshot: StatusSnapshot, target: OperationTarget)
   return filterEntries(snapshot, filter).map((e) => e.path);
 }
 
+/** 書き込み操作の対象を、打ち分けが要る種別ごとに分けたもの。 */
+export interface PartitionedPaths {
+  /** 索引にある通常・リネームのエントリ。 */
+  readonly tracked: readonly string[];
+  readonly untracked: readonly string[];
+  readonly unmerged: readonly string[];
+  /** スナップショットに無いパス（一覧が古い等）。 */
+  readonly unknown: readonly string[];
+}
+
+/**
+ * 解決済みのパスをスナップショットのエントリ種別で振り分ける。
+ *
+ * git のサブコマンドは種別によって受け付けるものが違う（`restore` は未追跡を、
+ * 素の `add <path>` は ignore にかかる追跡済みを、それぞれ拒否して**全体を**失敗させる）。
+ * 混在した選択を 1 本のコマンドに渡さないために、ここで分ける。
+ */
+export function partitionPaths(snapshot: StatusSnapshot, paths: readonly string[]): PartitionedPaths {
+  const kinds = new Map(snapshot.entries.map((e) => [e.path, e.kind] as const));
+  const tracked: string[] = [];
+  const untracked: string[] = [];
+  const unmerged: string[] = [];
+  const unknown: string[] = [];
+  for (const path of paths) {
+    const kind = kinds.get(path);
+    if (kind === 'ordinary' || kind === 'renamed') tracked.push(path);
+    else if (kind === 'untracked') untracked.push(path);
+    else if (kind === 'unmerged') unmerged.push(path);
+    else unknown.push(path);
+  }
+  return { tracked, untracked, unmerged, unknown };
+}
+
 function inGroup(entry: FileEntry, group: StatusGroup): boolean {
   switch (group) {
     case 'untracked':

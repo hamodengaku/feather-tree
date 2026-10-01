@@ -5,6 +5,7 @@ import {
   getCommitFileDiff,
   getCommitFiles,
   getFileDiff,
+  getHeadMessage,
   getLog,
   getStashFileDiff,
   getStashFiles,
@@ -432,12 +433,23 @@ export class RepositorySession {
     this.#excelGen += 1;
   }
 
-  /** 対応表 #20。範囲は git 層で `--all` 固定。 */
+  /* ---------------------------------------------------------------- コミットログ */
+
+  /** 対応表 #20。範囲は設定 `logCurrentBranchOnly`（オフなら `--all`、オンなら HEAD）。 */
   async getLogPage(skip: number, signal?: AbortSignal): Promise<CommitSummary[]> {
     const settings = this.#deps.settings();
     return this.track(['log'], () =>
-      getLog(this.context(signal), { maxCount: settings.logPageSize, skip }),
+      getLog(this.context(signal), {
+        maxCount: settings.logPageSize,
+        skip,
+        scope: settings.logCurrentBranchOnly ? 'head' : 'all',
+      }),
     );
+  }
+
+  /** 対応表 #49: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
+  async getHeadMessage(signal?: AbortSignal): Promise<string | null> {
+    return this.track(['log', '-1'], () => getHeadMessage(this.context(signal)));
   }
 
   /** 対応表 #21: コミットの変更ファイル一覧。マージコミットでは空になる（git の既定）。 */

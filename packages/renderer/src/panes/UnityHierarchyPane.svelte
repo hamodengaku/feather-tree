@@ -66,20 +66,12 @@
     <span class="title">ヒエラルキー</span>
 
     <!--
-      スクリプト名の解決（要件 11）。**押したときだけ走る。**
-      リポジトリ内の *.meta を数千件読むので、ファイルを選ぶたびに自動で
-      走らせてよい処理ではない（CLAUDE.md「ファイル I/O が非常に遅い」）。
+      スクリプト名の解決（要件 11）の入口は、未解決の MonoBehaviour の行に置く（2026-09-30）。
+      名前の分からない行のすぐ隣にあるほうが、何のためのボタンか説明が要らない。
+      ここには解決した後の件数だけを出す。
     -->
-    {#if app.unityScriptsResolved === null}
-      <button
-        class="resolve"
-        type="button"
-        disabled={app.unityScriptsIndexing}
-        title="リポジトリ内の .meta を読んで、MonoBehaviour のスクリプト名と PrefabInstance の元 Prefab 名を表示します（git は動きません。ファイル数によっては数秒かかります）"
-        onclick={() => void app.indexUnityScripts()}
-        >{app.unityScriptsIndexing ? '解決中…' : 'スクリプト名を解決'}</button
-      >
-    {:else}
+    <span class="push"></span>
+    {#if app.unityScriptsResolved !== null}
       <span class="hint" title="{String(app.unityScriptsResolved)} 件の guid に名前が付きました"
         >名前 {app.unityScriptsResolved} 件</span
       >
@@ -163,6 +155,38 @@
 
         <span class="name" title="{kindLabel(row.node.kind)}: {row.node.name}">{row.node.name}</span>
 
+        {#if row.node.inherited}
+          <!--
+            stripped（ネスト Prefab / Variant の元から継承した代理）。本体は元 Prefab にあり、
+            このファイルには参照しか無い。持ち込んだ PrefabInstance の下に並ぶ。
+          -->
+          <span
+            class="badge"
+            title="元 Prefab から継承したオブジェクトです（本体は上の Prefab インスタンスの元 Prefab にあり、このファイルには参照だけがあります）"
+            >継承</span
+          >
+        {/if}
+
+        <!--
+          スクリプト名の解決（要件 11）。**押したときだけ走る。**
+          リポジトリ内の *.meta を数千件読むので、ファイルを選ぶたびに自動で
+          走らせてよい処理ではない（CLAUDE.md「ファイル I/O が非常に遅い」）。
+          1 回走れば全行がまとめて解決する。索引を作っても名前が付かなかった行
+          （パッケージや DLL のスクリプト）には、もう押しても変わらないので出さない。
+        -->
+        {#if row.node.unresolvedScript && app.unityScriptsResolved === null}
+          <button
+            class="resolve"
+            type="button"
+            disabled={app.unityScriptsIndexing}
+            title="リポジトリ内の .meta を読んで、MonoBehaviour のスクリプト名と PrefabInstance の元 Prefab 名を表示します（git は動きません。ファイル数によっては数秒かかります）"
+            onclick={(event) => {
+              event.stopPropagation();
+              void app.indexUnityScripts();
+            }}>{app.unityScriptsIndexing ? '検索中…' : 'スクリプト名を検索'}</button
+          >
+        {/if}
+
         {#if row.node.mark !== 'same'}
           <span class="mark" title={markLabel(row.node.mark)} aria-label={markLabel(row.node.mark)}
             >{markSymbol(row.node.mark)}</span
@@ -203,15 +227,26 @@
     color: var(--app-text-primary);
   }
 
-  .resolve {
-    margin-left: auto;
-    flex: 0 0 auto;
-    font-size: calc(var(--app-font-size-ui) * 0.85);
+  /* 見出しの右寄せ。これより後ろのものは右端に詰める。 */
+  .push {
+    flex: 1 1 auto;
   }
 
-  /* 最初の 1 つだけを右へ押しやる（後ろに並ぶものは詰める）。 */
-  .hint:first-of-type {
-    margin-left: auto;
+  .resolve {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    font-size: calc(var(--app-font-size-ui) * 0.8);
+    line-height: 1.4;
+  }
+
+  .badge {
+    flex: 0 0 auto;
+    padding: 0 4px;
+    border: 1px solid var(--app-border-subtle);
+    border-radius: var(--app-metric-radius);
+    color: var(--app-text-secondary);
+    font-size: calc(var(--app-font-size-ui) * 0.8);
+    line-height: 1.3;
   }
 
   .hint {

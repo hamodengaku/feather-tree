@@ -24,7 +24,13 @@ import {
 } from '@feathertree/git';
 import type { DestructiveAction } from '../policy/destructiveActions.js';
 import type { RepositorySession } from './repositorySession.js';
-import { MAX_EXPLICIT_PATHS, filterEntries, resolveTarget, type OperationTarget } from './statusView.js';
+import {
+  MAX_EXPLICIT_PATHS,
+  filterEntries,
+  partitionPaths,
+  resolveTarget,
+  type OperationTarget,
+} from './statusView.js';
 
 export interface OperationOutcome {
   readonly affected: number;
@@ -140,12 +146,31 @@ export class SessionOperations {
     this.#session = session;
   }
 
-  /** 対応表 #5。確認不要。 */
+  /**
+   * 対応表 #5。確認不要。
+   *
+   * 追跡済み（競合中を含む）は `add -u`、未追跡は素の `add` に分けて打つ。
+   * 素の `add` に ignore にかかる追跡済みのパスが混ざると全体が失敗するため
+   * （`stagePaths` の注記）。両方が混ざるときだけ 2 プロセスになる
+   * （docs/02-git-command-map.md「複数プロセスを許可する例外」）。
+   */
   async stage(target: OperationTarget, signal?: AbortSignal): Promise<OperationOutcome> {
     const paths = this.#resolve(target);
-    await this.#session.track(['add'], () => stagePaths(this.#session.context(signal), paths));
+    const parts = partitionPaths(this.#snapshot(), paths);
+    const tracked = [...parts.tracked, ...parts.unmerged];
+    const untracked = parts.untracked;
+    // スナップショットに無いパス（一覧が古い）は渡さない。消えたパスが 1 つ混ざるだけで
+    // `add` は「pathspec did not match」で全体を失敗させるため
+    if (tracked.length > 0) {
+      await this.#session.track(['add', '-u'], () =>
+        stagePaths(this.#session.context(signal), tracked, { trackedOnly: true }),
+      );
+    }
+    if (untracked.length > 0) {
+      await this.#session.track(['add'], () => stagePaths(this.#session.context(signal), untracked));
+    }
     await this.#session.refreshStatus(signal);
-    return { affected: paths.length, statusSeq: this.#session.statusSeq };
+    return { affected: tracked.length + untracked.length, statusSeq: this.#session.statusSeq };
   }
 
   /** 対応表 #6。確認不要。 */
@@ -280,7 +305,7 @@ export class SessionOperations {
   }
 
   /**
-   * 対応表 #7。**不可逆なので確認必須。**
+   * 対応表 #7（選択に未追跡が混ざれば → #9）。**不可逆なので確認必須。**
    *
    * **インデックスには触れない**（2026-09-19 改定、決定 16 の追記）。
    * `restore --worktree` はインデックスから作業ツリーを復元するので、ステージ済みの内容は残る。
@@ -292,15 +317,29 @@ export class SessionOperations {
    * HEAD まで戻したいときは #6（ステージから戻す）→ #7（破棄）の 2 段階を踏む。
    */
   async discard(target: OperationTarget, signal?: AbortSignal): Promise<OperationOutcome> {
-    const paths = this.#resolve(target);
-    if (paths.length === 0) return { affected: 0, statusSeq: this.#session.statusSeq };
+    const parts = partitionPaths(this.#snapshot(), this.#resolve(target));
+    // 未追跡は #7 に渡すと「pathspec did not match」、競合中は「path is unmerged」で
+    // **全体が**失敗する。未追跡は #9 で消し（対応表の例外「追跡済みと未追跡が混在」）、
+    // 競合中は破棄の対象にしない（解決の途中経過を黙って捨てない）。一覧に無いパスも触らない
+    const tracked = parts.tracked;
+    const untracked = parts.untracked;
+    if (tracked.length === 0 && untracked.length === 0) {
+      return { affected: 0, statusSeq: this.#session.statusSeq };
+    }
 
-    await this.#session.track(['restore', '--worktree'], () =>
-      discardWorktree(this.#session.context(signal), paths),
-    );
+    if (tracked.length > 0) {
+      await this.#session.track(['restore', '--worktree'], () =>
+        discardWorktree(this.#session.context(signal), tracked),
+      );
+    }
+    if (untracked.length > 0) {
+      await this.#session.track(['clean', '-f', '-d'], () =>
+        removeUntracked(this.#session.context(signal), untracked),
+      );
+    }
 
     await this.#session.refreshStatus(signal);
-    return { affected: paths.length, statusSeq: this.#session.statusSeq };
+    return { affected: tracked.length + untracked.length, statusSeq: this.#session.statusSeq };
   }
 
   /** 対応表 #9。**不可逆なので確認必須。** */
