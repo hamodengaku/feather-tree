@@ -9,15 +9,20 @@
    * 行の描画とその CSS は両者で似るが、それは重複ではなく「同じ見た目の別の道具」。
    */
   import type { DiffHunkDto, DiffLineDto, FileDiffDto } from '@feathertree/ipc';
+  import { rememberScroll } from '../lib/scrollMemory.js';
 
   interface Props {
     diff: FileDiffDto | null;
     loading: boolean;
     /** 差分が無いときに出す文言。呼び出し側の文脈（未選択・マージ等）で変わる。 */
     emptyText: string;
+    /** スクロール位置を覚える枠（ペインの種類 + タブ id）。lib/scrollMemory.ts */
+    scrollSlot: string;
+    /** 表示中のファイルの同一性。これが変わったときだけ先頭へ戻す。 */
+    scrollKey: string;
   }
 
-  const { diff, loading, emptyText }: Props = $props();
+  const { diff, loading, emptyText, scrollSlot, scrollKey }: Props = $props();
 
   /** hunk ヘッダの表示。git の生ヘッダ末尾に付く関数名は出さず、行番号だけを組み立て直す。 */
   function headerText(hunk: DiffHunkDto): string {
@@ -32,7 +37,7 @@
   <span class="text">{line.text}</span>
 {/snippet}
 
-<div class="body">
+<div class="body" use:rememberScroll={{ slot: scrollSlot, key: scrollKey, ready: !loading && diff !== null }}>
   {#if loading}
     <p class="empty">読み込み中…</p>
   {:else if diff === null}

@@ -56,6 +56,8 @@ const SETTINGS: SettingsDto = {
   diffContextLines: 3,
   diffMaxLines: 20000,
   logPageSize: 200,
+  logCurrentBranchOnly: false,
+  confirmCommitAndPush: true,
   viewMode: 'diff',
   logDetailHeight: 260,
   commitFileListWidth: 260,
@@ -279,6 +281,8 @@ export class FakeBridge {
   branches: BranchDto[] = [];
   /** main が保持しているリモート名。複数リモートの分岐を再現するときに差し替える。 */
   remotes: string[] = ['origin'];
+  /** logHeadMessage が返す HEAD のメッセージ。null はコミットの無いリポジトリ。 */
+  headMessage: string | null = ['HEAD の件名', '', 'HEAD の本文'].join(String.fromCharCode(10));
   /** logGetPage が返す履歴の全体。skip / logPageSize で切り出す。 */
   commits: CommitSummaryDto[] = [];
   /** commitGetFiles が返す変更ファイル。マージコミットを再現するときは空にする。 */
@@ -358,6 +362,8 @@ export class FakeBridge {
       kind: 'gameObject',
       classId: 1,
       name: 'Player',
+      inherited: false,
+      unresolvedScript: false,
       mark: 'changed',
       hasChangedDescendant: true,
     },
@@ -368,6 +374,8 @@ export class FakeBridge {
       kind: 'component',
       classId: 4,
       name: 'Transform',
+      inherited: false,
+      unresolvedScript: false,
       mark: 'changed',
       hasChangedDescendant: false,
     },
@@ -762,6 +770,10 @@ export class FakeBridge {
         this.record('unstageHunks', id, req);
         this.seq += 1;
         return Promise.resolve(ok({ affected: req.hunks.length, statusSeq: this.seq }));
+      },
+      logHeadMessage: (id: string) => {
+        this.record('logHeadMessage', id);
+        return Promise.resolve(ok(this.headMessage));
       },
       logGetPage: (id: string, skip: number) => {
         this.record('logGetPage', id, skip);

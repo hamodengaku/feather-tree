@@ -16,8 +16,9 @@ import { shell, type BrowserWindow } from 'electron';
  *
  * 権限要求（カメラ・マイク等）は既定で全拒否する（脆弱性診断 §7 Low）。renderer は自作の
  * Svelte コードのみで、通常はこれらの Web API を呼ぶ経路が無いが、将来の実装ミス・依存の
- * 混入に備えて明示的に塞ぐ。例外はクローン完了ダイアログのコピーボタン（copyText、
- * `navigator.clipboard.writeText`）が使う 'clipboard-sanitized-write' のみ。読み取り
+ * 混入に備えて明示的に塞ぐ。例外はコピー操作（copyText、`navigator.clipboard.writeText`。
+ * クローン完了ダイアログのコピーボタンと、ファイル一覧の右クリック「ファイル名／フルパスを
+ * コピー」）が使う 'clipboard-sanitized-write' のみ。読み取り
  * （'clipboard-read'）は使っていないので許可しない。
  *
  * このモジュールはスプラッシュ・本体の 2 つの BrowserWindow から呼ばれるが、両者は

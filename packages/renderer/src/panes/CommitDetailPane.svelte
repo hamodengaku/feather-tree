@@ -12,6 +12,7 @@
   import type { CommitFileChangeDto } from '@feathertree/ipc';
   import { app } from '../lib/appState.svelte.js';
   import PaneSplitter from '../components/PaneSplitter.svelte';
+  import FileContextMenu from '../components/FileContextMenu.svelte';
   import ReadonlyDiffView from '../components/ReadonlyDiffView.svelte';
 
   const commit = $derived(app.commits.find((c) => c.oid === app.selectedCommit) ?? null);
@@ -41,6 +42,14 @@
     if (head === 'D') return 'removed';
     if (head === 'R' || head === 'C') return 'moved';
     return 'modified';
+  }
+
+  /** 右クリックしたファイル。メニューはコピー 2 種だけ（コミット時点のファイルは作業ツリーに無いこともあるので、開く系は出さない）。 */
+  let contextMenu = $state<{ x: number; y: number; path: string } | null>(null);
+
+  function openMenu(event: MouseEvent, path: string): void {
+    event.preventDefault();
+    contextMenu = { x: event.clientX, y: event.clientY, path };
   }
 
   function labelOf(file: CommitFileChangeDto): string {
@@ -117,7 +126,7 @@
       {:else}
         <ul class="files">
           {#each app.commitFiles as file (file.path)}
-            <li>
+            <li oncontextmenu={(event) => openMenu(event, file.path)}>
               <span class="status {statusClass(file.status)}">{file.status}</span>
               <span class="path">{labelOf(file)}</span>
             </li>
@@ -146,6 +155,7 @@
                 tabindex="-1"
                 title={labelOf(file)}
                 onclick={() => void app.selectCommitPath(file.path)}
+                oncontextmenu={(event) => openMenu(event, file.path)}
                 onkeydown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
@@ -176,6 +186,8 @@
         <ReadonlyDiffView
           diff={app.commitDiff}
           loading={app.commitDiffLoading}
+          scrollSlot={'commit:' + (app.activeId ?? '')}
+          scrollKey={app.selectedCommitPath === null ? '' : (app.selectedCommit ?? '') + ':' + app.selectedCommitPath}
           emptyText={app.selectedCommitPath === null
             ? 'ファイルを選択すると差分を表示します。'
             : '差分はありません。'}
@@ -184,6 +196,19 @@
     </div>
   {/if}
 </div>
+
+{#if contextMenu !== null}
+  {@const menu = contextMenu}
+  <FileContextMenu
+    x={menu.x}
+    y={menu.y}
+    onclose={() => (contextMenu = null)}
+    actions={[
+      { label: 'ファイル名をコピー', onclick: () => void app.copyPath(menu.path, 'name') },
+      { label: 'フルパスをコピー', onclick: () => void app.copyPath(menu.path, 'full') },
+    ]}
+  />
+{/if}
 
 <style>
   .pane {

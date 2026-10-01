@@ -207,6 +207,7 @@ export interface Service {
   ): Promise<UnityNodeDetailDto | null>;
   unityIndexScripts(id: string): Promise<UnityScriptIndexDto>;
   logGetPage(id: string, skip: number): Promise<readonly CommitSummaryDto[]>;
+  logHeadMessage(id: string): Promise<string | null>;
   commitGetFiles(id: string, oid: string): Promise<readonly CommitFileChangeDto[]>;
   commitGetDiff(id: string, oid: string, path: string): Promise<FileDiffDto | null>;
   branchList(id: string): readonly BranchDto[];
@@ -1096,6 +1097,7 @@ export function createService(deps: ServiceDeps): Service {
     },
 
     logGetPage: async (id, skip) => requireSession(id).getLogPage(Math.max(0, skip)),
+    logHeadMessage: async (id) => requireSession(id).getHeadMessage(),
 
     commitGetFiles: async (id, oid) => requireSession(id).getCommitFiles(validOid(oid)),
 

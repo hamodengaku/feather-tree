@@ -15,14 +15,18 @@ const LOG_FORMAT =
 export interface LogOptions {
   readonly maxCount?: number;
   readonly skip?: number;
+  /** 'all' は全 ref の先端から（既定）、'head' は HEAD から辿れるものだけ。 */
+  readonly scope?: 'all' | 'head';
 }
 
 /**
  * 対応表 #20: 履歴取得。
  *
- * 範囲は **`--all` 固定**（ローカル・リモート追跡・タグのすべての先端から辿る）。
+ * 範囲は既定で **`--all`**（ローカル・リモート追跡・タグのすべての先端から辿る）。
  * HEAD だけを辿るとまだマージしていないブランチの先端が 1 つも出ず、
  * グラフ（決定 20）がレーン 1 本の直線にしかならないため。
+ * `scope: 'head'` は利用者が「現在のブランチ履歴のみ」を選んだときだけ（2026-09-30）。
+ * マージで取り込んだ側枝のコミットは含む（`--first-parent` は付けない）。
  * 件数は必ず `--max-count` で打ち切るので、ref が何百あっても所要時間は件数で決まる。
  */
 export async function getLog(ctx: GitContext, options: LogOptions = {}): Promise<CommitSummary[]> {
@@ -33,7 +37,7 @@ export async function getLog(ctx: GitContext, options: LogOptions = {}): Promise
     `--max-count=${options.maxCount ?? 200}`,
   ];
   if (options.skip !== undefined && options.skip > 0) args.push(`--skip=${options.skip}`);
-  args.push('--all');
+  args.push(options.scope === 'head' ? 'HEAD' : '--all');
 
   const { exit, stdout } = await runGitText(
     // --max-count で打ち切っているので本来は短い。
@@ -51,6 +55,25 @@ export async function getLog(ctx: GitContext, options: LogOptions = {}): Promise
   }
 
   return parseLog(stdout);
+}
+
+/**
+ * 対応表 #49: HEAD のコミットメッセージ全文（件名 + 本文）。amend の初期値に使う。
+ *
+ * コミットが 1 つも無いリポジトリでは null。末尾の改行は落とす。
+ */
+export async function getHeadMessage(ctx: GitContext): Promise<string | null> {
+  const { exit, stdout } = await runGitText(
+    commandFor(ctx, [...READ_PREFIX, 'log', '-1', '--format=%B', 'HEAD'], { timeoutMs: DIFF_TIMEOUT_MS }),
+    ctx.signal,
+  );
+  if (exit.code !== 0) {
+    if (exit.stderr.includes('does not have any commits yet') || exit.stderr.includes('unknown revision')) {
+      return null;
+    }
+    throw new GitCommandError(['log', '-1'], exit.code, exit.stderr);
+  }
+  return stdout.trimEnd();
 }
 
 /** 対応表 #21: コミットの変更ファイル一覧。 */

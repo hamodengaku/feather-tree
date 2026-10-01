@@ -64,7 +64,7 @@ export type { LfsVersion } from './commands/lfs.js';
 export { FETCH_ALL_BRANCHES_REFSPEC, fetchUnshallow, setFetchAllBranches } from './commands/unshallow.js';
 export { readUserIdentity, setLocalUserIdentity } from './commands/config.js';
 export type { IdentityField, IdentityKey, IdentityScope, UserIdentity } from './commands/config.js';
-export { getCommitFileDiff, getCommitFiles, getLog } from './commands/history.js';
+export { getCommitFileDiff, getCommitFiles, getHeadMessage, getLog } from './commands/history.js';
 export type { LogOptions } from './commands/history.js';
 export { readBlobText, readWorktreeText } from './commands/blob.js';
 export type { BlobRevision, BlobText } from './commands/blob.js';

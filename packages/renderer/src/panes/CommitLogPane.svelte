@@ -24,6 +24,16 @@
         {app.commits.length} 件{app.logComplete ? '（すべて）' : ''}
       {/if}
     </span>
+    <!-- 範囲は #20 の --all / HEAD。設定はアプリ全体で 1 つ（切り替えると取り直す） -->
+    <label class="scope" title="オンにすると、今いるブランチから辿れるコミットだけを表示します（git log HEAD）">
+      <input
+        type="checkbox"
+        checked={app.settings?.logCurrentBranchOnly ?? false}
+        disabled={app.logLoading}
+        onchange={(e) => void app.setLogCurrentBranchOnly(e.currentTarget.checked)}
+      />
+      現在のブランチ履歴のみを表示
+    </label>
     <button
       class="reload"
       disabled={app.busy || app.logLoading || app.activeId === null}
@@ -82,6 +92,20 @@
     min-width: 0;
     color: var(--app-text-muted);
     font-size: var(--app-font-size-mono);
+  }
+
+  .scope {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--app-text-secondary);
+    font-size: var(--app-font-size-mono);
+    white-space: nowrap;
+  }
+
+  .scope input {
+    margin: 0;
   }
 
   .reload {

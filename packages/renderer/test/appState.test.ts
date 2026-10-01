@@ -507,6 +507,119 @@ describe('ステージングとコミット', () => {
     expect(bridge.countOf('branchList')).toBe(before + 1);
   });
 
+  it('amend のチェックを入れると、空の欄に HEAD のメッセージを流し込む（#49）', async () => {
+    const { app, bridge } = await boot();
+
+    await app.setAmend(true);
+
+    expect(bridge.countOf('logHeadMessage')).toBe(1);
+    expect(app.commitMessage).toBe(bridge.headMessage);
+
+    // 手を付けずに外すと空に戻る
+    await app.setAmend(false);
+    expect(app.commitMessage).toBe('');
+  });
+
+  it('amend のチェックは書きかけのメッセージを上書きせず、編集後に外しても消さない', async () => {
+    const { app, bridge } = await boot();
+    app.commitMessage = '書きかけ';
+
+    await app.setAmend(true);
+    expect(bridge.countOf('logHeadMessage')).toBe(0);
+    expect(app.commitMessage).toBe('書きかけ');
+
+    app.commitMessage = '';
+    await app.setAmend(false);
+    await app.setAmend(true);
+    app.commitMessage += ' 追記';
+    await app.setAmend(false);
+    expect(app.commitMessage).toBe(`${bridge.headMessage ?? ''} 追記`);
+  });
+
+  it('コミットが無いリポジトリでは amend できない', async () => {
+    const { app } = await boot((b) => {
+      b.head = { oid: null, branch: 'main', detached: false, upstream: null, ahead: 0, behind: 0 };
+    });
+    expect(app.canAmend).toBe(false);
+  });
+
+  it('コミット&プッシュ: 確認を挟み、承認でコミット → 上流へプッシュ', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+      b.branches = [branch('main', { upstream: 'origin/main' })];
+    });
+    app.commitMessage = 'まとめて';
+
+    await app.requestCommitAndPush();
+    expect(app.commitPushConfirmOpen).toBe(true);
+    expect(bridge.countOf('commit')).toBe(0);
+
+    await app.acceptCommitAndPush(false);
+
+    expect(bridge.countOf('commit')).toBe(1);
+    expect(bridge.lastArgsOf('remotePush')).toEqual([
+      's1',
+      { remote: 'origin', branch: 'main', setUpstream: false },
+    ]);
+    expect(app.settings?.confirmCommitAndPush).toBe(true);
+  });
+
+  it('コミット&プッシュ: 「再表示しない」で設定を切り、以後は確認なしで実行する', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+    app.commitMessage = '1 回目';
+    await app.requestCommitAndPush();
+    await app.acceptCommitAndPush(true);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ confirmCommitAndPush: false }]);
+    // 上流が無いので origin へ上流を張る（#25）
+    expect(bridge.lastArgsOf('remotePush')).toEqual([
+      's1',
+      { remote: 'origin', branch: 'main', setUpstream: true },
+    ]);
+
+    bridge.staged = [entry('b.txt', { staged: 'M' })];
+    await app.reloadActive();
+    app.commitMessage = '2 回目';
+    await app.requestCommitAndPush();
+    expect(app.commitPushConfirmOpen).toBe(false);
+    expect(bridge.countOf('commit')).toBe(2);
+  });
+
+  it('コミット&プッシュ: コミットが失敗したらプッシュしない', async () => {
+    const bridge = new FakeBridge();
+    bridge.staged = [entry('a.txt', { staged: 'M' })];
+    bridge.settings = { ...bridge.settings, confirmCommitAndPush: false };
+    const app = await load({
+      ...bridge.build(),
+      commit: () => Promise.resolve({ ok: false as const, error: { kind: 'internal', message: 'hook failed' } }),
+    });
+    app.commitMessage = '失敗する';
+
+    await app.requestCommitAndPush();
+
+    expect(bridge.countOf('remotePush')).toBe(0);
+    expect(app.error?.message).toBe('hook failed');
+  });
+
+  it('コミット&プッシュは amend 中・detached では押せない', async () => {
+    const { app } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+    app.commitMessage = 'x';
+    expect(app.canCommitAndPush).toBe(true);
+    app.amend = true;
+    expect(app.canCommitAndPush).toBe(false);
+
+    const { app: detached } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+      b.head = { oid: 'abc', branch: null, detached: true, upstream: null, ahead: 0, behind: 0 };
+    });
+    detached.commitMessage = 'x';
+    expect(detached.canCommitAndPush).toBe(false);
+  });
+
   it('確認待ちで止まったコミットではブランチ一覧を取り直さない', async () => {
     const { app, bridge } = await boot((b) => {
       b.staged = [entry('a.txt', { staged: 'M' })];
@@ -1329,6 +1442,47 @@ describe('diff の取得競合', () => {
 describe('hunk / 行単位のステージ (対応表 #33 / #34)', () => {
   const hunk = { index: 0, header: "@@ -1,3 +1,3 @@", lineCount: 4, lines: null };
 
+  /*
+   * スクロールは別のファイルを表示したときだけ先頭へ戻す（2026-10-01）。
+   * 同じファイルの読み直しで「読み込み中…」に差し替えると中身が縮み、位置が先頭に戻る。
+   */
+  it('同じファイルの読み直しでは読み込み表示に差し替えず、古い差分を出したまま取り直す', async () => {
+    const bridge = new FakeBridge();
+    bridge.changes = [entry('a.txt'), entry('b.txt')];
+    const base = bridge.build();
+    /** diff を取りに行った瞬間の画面の状態。 */
+    const seen: { loading: boolean; shown: string | null }[] = [];
+    let app: AppState | null = null;
+    app = await load({
+      ...base,
+      diffGet: (id, path, staged) => {
+        if (app !== null) seen.push({ loading: app.diffLoading, shown: app.diff?.path ?? null });
+        return base.diffGet(id, path, staged);
+      },
+    });
+    await app.select({ path: 'a.txt', staged: false });
+    seen.length = 0;
+
+    await app.stageHunks([hunk]);
+
+    // 読み直しの最中も a.txt の差分を出したまま（読み込み表示に差し替えていない）
+    expect(seen).toEqual([{ loading: false, shown: 'a.txt' }]);
+    expect(app.diffLoading).toBe(false);
+    expect(app.diff?.path).toBe('a.txt');
+  });
+
+  it('別のファイルを選んだときは読み込み表示を出す（＝先頭から）', async () => {
+    const { app } = await boot((b) => {
+      b.changes = [entry('a.txt'), entry('b.txt')];
+    });
+    await app.select({ path: 'a.txt', staged: false });
+
+    const pending = app.select({ path: 'b.txt', staged: false });
+    expect(app.diffLoading).toBe(true);
+    await pending;
+    expect(app.diffLoading).toBe(false);
+  });
+
   it('選択中のファイルのパスを添えて送る', async () => {
     const { app, bridge } = await boot((b) => {
       b.changes = [entry('a.txt')];
@@ -2116,6 +2270,20 @@ describe('コミットログモード（決定 27）', () => {
     expect(app.commitDiff?.hunkStageable).toBe(false);
   });
 
+  it('表示中のファイルを選び直しても取り直さない（スクロールを先頭に戻さない）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+      b.commitFiles = [{ status: 'M', path: 'src/a.ts', origPath: null }];
+    });
+
+    await app.ensureLog();
+    await app.selectCommit('aaa1111');
+    await app.selectCommitPath('src/a.ts');
+    await app.selectCommitPath('src/a.ts');
+
+    expect(bridge.countOf('commitGetDiff')).toBe(1);
+  });
+
   it('別のコミットを選ぶと、前のコミットのファイル選択と差分は消える', async () => {
     const { app } = await boot((b) => {
       b.commits = [commit('aaa1111'), commit('bbb2222')];
@@ -2221,6 +2389,21 @@ describe('HEAD の件名（リポジトリタブに出す）', () => {
     });
 
     expect(app.headSubject).toBeNull();
+  });
+
+  it('「現在のブランチ履歴のみ」を切り替えると設定を保存し、ログモードなら履歴を取り直す', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.commits = [commit('aaa1111')];
+    });
+    await app.setViewMode('log');
+    await app.ensureLog();
+    const before = bridge.countOf('logGetPage');
+
+    await app.setLogCurrentBranchOnly(true);
+
+    expect(bridge.lastArgsOf('settingsUpdate')).toEqual([{ logCurrentBranchOnly: true }]);
+    expect(app.settings?.logCurrentBranchOnly).toBe(true);
+    expect(bridge.countOf('logGetPage')).toBe(before + 1);
   });
 
   it('タブへの現在情報の表示は設定で切れる（既定はオン）', async () => {

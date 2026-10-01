@@ -13,11 +13,29 @@ async function runWrite(ctx: GitContext, args: readonly string[], label: readonl
   if (exit.code !== 0) throw new GitCommandError(label, exit.code, exit.stderr);
 }
 
-/** 対応表 #5: ステージへ追加。 */
-export async function stagePaths(ctx: GitContext, paths: readonly string[]): Promise<void> {
+/**
+ * 対応表 #5: ステージへ追加。
+ *
+ * `trackedOnly` は `add -u`。**追跡済みのパスは必ずこちらで渡す。**
+ * 素の `add <path>` は、追跡済みでも `.gitignore` にかかるパス（後から ignore に足した
+ * フォルダの中のファイル等）を明示されると「paths are ignored」で**全体を失敗させる**
+ * （2026-09-30 実測。`git add .` では起きないため、ターミナルでは通るのにアプリでは失敗する）。
+ * `-u` は索引にあるものだけを対象にするので ignore の検査をしない。未追跡は索引に無いので
+ * `-u` では入らない——呼び出し側で分けて渡す。
+ */
+export async function stagePaths(
+  ctx: GitContext,
+  paths: readonly string[],
+  options: { readonly trackedOnly?: boolean } = {},
+): Promise<void> {
   if (paths.length === 0) return;
+  const update = options.trackedOnly === true ? ['-u'] : [];
   await withPathspecFile(ctx.tempDir, paths, (file) =>
-    runWrite(ctx, [...WRITE_PREFIX, 'add', `--pathspec-from-file=${file}`, '--pathspec-file-nul'], ['add']),
+    runWrite(
+      ctx,
+      [...WRITE_PREFIX, 'add', ...update, `--pathspec-from-file=${file}`, '--pathspec-file-nul'],
+      ['add', ...update],
+    ),
   );
 }
 

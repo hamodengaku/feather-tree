@@ -98,6 +98,8 @@
         <ReadonlyDiffView
           diff={app.stashDiff}
           loading={app.stashDiffLoading}
+          scrollSlot={'stash:' + (app.activeId ?? '')}
+          scrollKey={app.selectedStashPath === null ? '' : (entry?.oid ?? '') + ':' + app.selectedStashPath}
           emptyText={app.selectedStashPath === null
             ? 'ファイルを選択すると差分を表示します。'
             : '差分はありません。'}

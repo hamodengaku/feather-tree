@@ -15,6 +15,7 @@
   } from '@feathertree/ipc';
   import { app } from '../lib/appState.svelte.js';
   import { hunkAllowsLines, singleLineSelection, wholeHunkSelection } from '../lib/diffSelection.js';
+  import { rememberScroll } from '../lib/scrollMemory.js';
 
   const diff = $derived(app.diff);
   const lineCount = $derived(diff?.hunks.reduce((n, h) => n + h.lines.length, 0) ?? 0);
@@ -110,6 +111,12 @@
   });
 
   /**
+   * スクロールは**別のファイルを表示したときだけ**先頭へ戻す（lib/scrollMemory.ts）。
+   * ステージ済み側と未ステージ側は中身が別物なので「別のファイル」として扱う（fileKey に含む）。
+   */
+  const scrollReady = $derived(!app.diffLoading && (diff !== null || conflict !== null));
+
+  /**
    * 実際に行モードが効いている hunk。
    *
    * 1 行適用するたびに差分を取り直すので、hunk が消えて数が減ることがある。
@@ -174,7 +181,10 @@
     {/if}
   </header>
 
-  <div class="body">
+  <div
+    class="body"
+    use:rememberScroll={{ slot: 'diff:' + (app.activeId ?? ''), key: fileKey, ready: scrollReady }}
+  >
     {#if app.diffLoading}
       <p class="empty">読み込み中…</p>
     {:else if app.selected === null}

@@ -14,6 +14,14 @@
  *
  * `PrefabInstance`(1001) だけは例外で、親は `m_Modification.m_TransformParent`。
  *
+ * **stripped なドキュメント**（`--- !u!N &X stripped`）はネスト Prefab / Variant の元 Prefab に
+ * 本体がある「継承した」オブジェクトの代理で、中身は `m_CorrespondingSourceObject` /
+ * `m_PrefabInstance` / `m_PrefabAsset` しか持たない（`m_GameObject` も `m_Script` も無い）。
+ * 親は `m_PrefabInstance` にする（2026-09-30）。以前はルートに散らばり、どの Prefab から
+ * 来たものか画面から読めなかった。stripped な GameObject に**このファイルで足した**
+ * コンポーネントは、自分の `m_GameObject` を辿ってその GameObject の下に入るので、
+ * 「PrefabInstance ＞ 継承した GameObject ＞ 足したコンポーネント」の形になる。
+ *
  * この関数は**ファイル内の全ドキュメントに走る**ので、`documentBody`（本体を全部
  * オブジェクトにする）は使わず `scanDocumentKey`（1 キーだけ引く）で済ませる。
  */
@@ -41,6 +49,8 @@ interface MutableNode {
   readonly classId: number;
   readonly typeName: string;
   readonly name: string;
+  readonly inherited: boolean;
+  readonly unresolvedScript: boolean;
   parent: string;
   readonly doc: UnityDocument;
   readonly children: string[];
@@ -54,6 +64,10 @@ export interface SideNode {
   readonly typeName: string;
   /** 画面に出す名前。 */
   readonly name: string;
+  /** stripped（元 Prefab から継承した代理）か。 */
+  readonly inherited: boolean;
+  /** MonoBehaviour で、`m_Script` の guid がまだスクリプト名に解決できていないか。 */
+  readonly unresolvedScript: boolean;
   /** 親ノードの id。ルートは空文字。 */
   readonly parent: string;
   readonly doc: UnityDocument;
@@ -92,16 +106,23 @@ export function buildSideTree(file: UnityFile, resolveGuid?: GuidResolver): Side
     if (instance !== '' && instance !== '0') prefabInstanceOfTransform.set(doc.anchor, instance);
   }
 
+  // stripped な GameObject の名前は本体（元 Prefab）にあるが、PrefabInstance で名前を
+  // 上書きしていれば m_Modifications に載っている。Variant のルートはまずこれで名前が付く
+  const overriddenNames = collectOverriddenNames(file);
+
   // 1 巡目: ノードを作る（親はまだ入れない）
   for (const doc of file.documents) {
     if (doc.anchor === '') continue;
     const kind = kindOf(doc.classId);
+    const label = displayName(file, doc, kind, resolveGuid, overriddenNames);
     nodes.set(doc.anchor, {
       id: doc.anchor,
       kind,
       classId: doc.classId,
       typeName: doc.typeName,
-      name: displayName(file, doc, kind, resolveGuid),
+      name: label.name,
+      inherited: doc.stripped,
+      unresolvedScript: label.unresolvedScript,
       parent: '',
       doc,
       children: [],
@@ -113,6 +134,13 @@ export function buildSideTree(file: UnityFile, resolveGuid?: GuidResolver): Side
   for (const doc of file.documents) {
     const node = nodes.get(doc.anchor);
     if (node === undefined) continue;
+
+    if (doc.stripped) {
+      // 継承した代理は、それを持ち込んだ PrefabInstance の下に置く
+      const instance = fileIdOf(file, scanDocumentKey(file, doc, 'm_PrefabInstance'));
+      if (nodes.has(instance)) parentOf.set(doc.anchor, instance);
+      continue;
+    }
 
     if (node.kind === 'component') {
       // コンポーネントは、自分が指す GameObject の子になる
@@ -242,42 +270,87 @@ function entryIn(value: UnityValue | null, key: string): UnityValue | null {
 }
 
 /**
+ * PrefabInstance ごとの「名前を上書きした対象」。
+ * `m_Modifications` の `propertyPath: m_Name` を拾い、`target.fileID`（元 Prefab 側の fileID）→ 名前。
+ * stripped な GameObject の `m_CorrespondingSourceObject.fileID` と突き合わせて使う。
+ */
+function collectOverriddenNames(file: UnityFile): ReadonlyMap<string, ReadonlyMap<string, string>> {
+  const out = new Map<string, Map<string, string>>();
+  for (const doc of file.documents) {
+    if (doc.classId !== CLASS_PREFAB_INSTANCE || doc.anchor === '') continue;
+    const mods = entryIn(scanDocumentKey(file, doc, 'm_Modification'), 'm_Modifications');
+    if (mods === null || mods.kind !== 'sequence') continue;
+    const names = new Map<string, string>();
+    for (const item of mods.items) {
+      const path = entryIn(item, 'propertyPath');
+      if (path === null || path.kind !== 'scalar' || readScalar(file, path) !== 'm_Name') continue;
+      const target = fileIdOf(file, entryIn(item, 'target'));
+      const value = entryIn(item, 'value');
+      if (target === '' || value === null || value.kind !== 'scalar') continue;
+      const text = readScalar(file, value);
+      if (text !== '') names.set(target, text);
+    }
+    if (names.size > 0) out.set(doc.anchor, names);
+  }
+  return out;
+}
+
+interface NodeLabel {
+  readonly name: string;
+  readonly unresolvedScript: boolean;
+}
+
+/**
  * 画面に出す名前。
  *
- * - GameObject    … `m_Name`
+ * - GameObject    … `m_Name`。stripped なら PrefabInstance の名前の上書き、無ければ `GameObject`
  * - MonoBehaviour … `MonoBehaviour (guid 先頭8桁)`。索引があればスクリプト名（要件 11）
  * - PrefabInstance… `PrefabInstance (guid 先頭8桁)`。索引があれば元 Prefab 名
  * - それ以外      … クラス名そのもの（`Transform` / `MeshRenderer`）
+ *
+ * stripped な MonoBehaviour は `m_Script` を持たないので guid も出せない（元 Prefab を開かないと
+ * スクリプトが分からない。docs/00-decisions.md 決定 32 の v2 候補「ネスト Prefab の参照先を辿る」）。
+ * 継承であることは `inherited` として別に渡し、画面側で印を付ける。
  */
 function displayName(
   file: UnityFile,
   doc: UnityDocument,
   kind: NodeKind,
-  resolveGuid?: GuidResolver,
-): string {
+  resolveGuid: GuidResolver | undefined,
+  overriddenNames: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): NodeLabel {
+  const plain = (name: string): NodeLabel => ({ name, unresolvedScript: false });
+
   if (kind === 'gameObject') {
     const name = scanDocumentKey(file, doc, 'm_Name');
     if (name !== null && name.kind === 'scalar') {
       const text = readScalar(file, name);
-      if (text !== '') return text;
+      if (text !== '') return plain(text);
     }
-    return doc.stripped ? 'GameObject (stripped)' : 'GameObject';
+    if (doc.stripped) {
+      const instance = fileIdOf(file, scanDocumentKey(file, doc, 'm_PrefabInstance'));
+      const source = fileIdOf(file, scanDocumentKey(file, doc, 'm_CorrespondingSourceObject'));
+      const overridden = overriddenNames.get(instance)?.get(source);
+      if (overridden !== undefined) return plain(overridden);
+    }
+    return plain('GameObject');
   }
 
   if (kind === 'prefabInstance') {
     const guid = guidOf(file, scanDocumentKey(file, doc, 'm_SourcePrefab'));
     const resolved = guid === '' ? null : (resolveGuid?.(guid) ?? null);
-    if (resolved !== null) return resolved;
-    return guid === '' ? 'PrefabInstance' : 'PrefabInstance (' + guid.slice(0, 8) + ')';
+    if (resolved !== null) return plain(resolved);
+    return plain(guid === '' ? 'PrefabInstance' : 'PrefabInstance (' + guid.slice(0, 8) + ')');
   }
 
   if (doc.classId === CLASS_MONO_BEHAVIOUR) {
     const guid = guidOf(file, scanDocumentKey(file, doc, 'm_Script'));
     const resolved = guid === '' ? null : (resolveGuid?.(guid) ?? null);
-    if (resolved !== null) return resolved;
+    if (resolved !== null) return plain(resolved);
     const base = doc.typeName === '' ? 'MonoBehaviour' : doc.typeName;
-    return guid === '' ? base : base + ' (' + guid.slice(0, 8) + ')';
+    if (guid === '') return plain(base);
+    return { name: base + ' (' + guid.slice(0, 8) + ')', unresolvedScript: true };
   }
 
-  return doc.typeName === '' ? 'Object ' + String(doc.classId) : doc.typeName;
+  return plain(doc.typeName === '' ? 'Object ' + String(doc.classId) : doc.typeName);
 }

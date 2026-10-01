@@ -54,6 +54,16 @@ export interface AppSettings {
   readonly diffContextLines: number;
   readonly diffMaxLines: number;
   readonly logPageSize: number;
+  /**
+   * コミットログモードで HEAD から辿れるコミットだけを出すか（対応表 #20 の範囲）。
+   * 既定はオフ（`--all`。決定 20 のグラフ表示）。リポジトリによらずアプリ全体で 1 つ。
+   */
+  readonly logCurrentBranchOnly: boolean;
+  /**
+   * 「コミット&プッシュ」の前に確認ダイアログを出すか。ダイアログの「再表示しない」で
+   * オフになり、オプション > 環境タブで戻せる。リポジトリによらずアプリ全体で 1 つ。
+   */
+  readonly confirmCommitAndPush: boolean;
   /** どのモードを出しているか（決定 27 / 31）。 */
   readonly viewMode: ViewMode;
   /**
@@ -127,6 +137,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   diffContextLines: 3,
   diffMaxLines: 20000,
   logPageSize: 200,
+  logCurrentBranchOnly: false,
+  confirmCommitAndPush: true,
   viewMode: 'diff',
   logDetailHeight: 260,
   commitFileListWidth: 260,
@@ -219,6 +231,8 @@ export function normalizeSettings(raw: unknown): AppSettings {
     diffContextLines: clampInt(o['diffContextLines'], 0, 20, DEFAULT_SETTINGS.diffContextLines),
     diffMaxLines: clampInt(o['diffMaxLines'], 100, 200000, DEFAULT_SETTINGS.diffMaxLines),
     logPageSize: clampInt(o['logPageSize'], 20, 2000, DEFAULT_SETTINGS.logPageSize),
+    logCurrentBranchOnly: boolOr(o['logCurrentBranchOnly'], DEFAULT_SETTINGS.logCurrentBranchOnly),
+    confirmCommitAndPush: boolOr(o['confirmCommitAndPush'], DEFAULT_SETTINGS.confirmCommitAndPush),
     viewMode: pickFrom(o['viewMode'], VIEW_MODES, DEFAULT_SETTINGS.viewMode),
     logDetailHeight: clampInt(o['logDetailHeight'], 120, 2000, DEFAULT_SETTINGS.logDetailHeight),
     commitFileListWidth: clampInt(

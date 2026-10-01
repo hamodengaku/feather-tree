@@ -177,11 +177,30 @@
         spellcheck="false"
       ></textarea>
       <div class="commit-actions">
-        <label>
-          <input type="checkbox" bind:checked={app.amend} />
-          直前のコミットを修正
+        <!--
+          中身は git commit --amend。メッセージの付け直しに加えて、**いまステージ済みの変更も
+          直前のコミットに入る**。ラベルと title でそれを言う（名前を「リネーム」にすると
+          ステージ済みが混ざる挙動を隠してしまう）。
+        -->
+        <label title="直前のコミットを作り直します。メッセージを変えられ、いまステージ済みの変更も直前のコミットに含まれます。">
+          <input
+            type="checkbox"
+            checked={app.amend}
+            disabled={!app.canAmend}
+            onchange={(e) => void app.setAmend(e.currentTarget.checked)}
+          />
+          直前のコミットをやり直す
         </label>
-        <button disabled={!app.canCommit} onclick={() => void app.commit()}>コミット</button>
+        <div class="commit-buttons">
+          <button disabled={!app.canCommit} onclick={() => void app.commit()}>コミット</button>
+          <button
+            disabled={!app.canCommitAndPush}
+            title={app.amend ? 'やり直し（amend）とは組み合わせられません' : 'コミットしてから上流へプッシュします'}
+            onclick={() => void app.requestCommitAndPush()}
+          >
+            コミット&プッシュ
+          </button>
+        </div>
       </div>
     </section>
   {/if}
@@ -221,6 +240,14 @@
       {
         label: 'フォルダを開く',
         onclick: () => void app.showInFolder(menu.entry.path),
+      },
+      {
+        label: 'ファイル名をコピー',
+        onclick: () => void app.copyPath(menu.entry.path, 'name'),
+      },
+      {
+        label: 'フルパスをコピー',
+        onclick: () => void app.copyPath(menu.entry.path, 'full'),
       },
     ]}
   />
@@ -333,5 +360,10 @@
     align-items: center;
     gap: 5px;
     color: var(--app-text-secondary);
+  }
+
+  .commit-buttons {
+    display: flex;
+    gap: var(--app-metric-gap);
   }
 </style>
