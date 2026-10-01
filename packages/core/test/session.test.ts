@@ -39,8 +39,17 @@ function git(cwd: string, args: readonly string[]): Promise<void> {
  * ssh の解決結果（実在しなくてよい。組み立てた文字列だけを検証する）。
  * 実際の解決は locateSsh が行い、テストは sshLocator.test.ts にある。
  */
-const SSH_PATH = 'C:' + String.fromCharCode(92) + 'ssh.exe';
-const SSH_PATH_Q = "'C:/ssh.exe'";
+const WIN = process.platform === 'win32';
+const SSH_PATH = WIN ? 'C:' + String.fromCharCode(92) + 'ssh.exe' : '/usr/bin/ssh';
+const SSH_PATH_Q = WIN ? "'C:/ssh.exe'" : "'/usr/bin/ssh'";
+/*
+ * 絶対パスかどうかの判定は実行している OS の規則に従うので、素材のパスは OS に合わせる
+ * （Windows 以外でドライブレター付きのパスを使うと相対パス扱いになる）。
+ */
+const KEY_PATH = WIN ? 'C:\\keys\\id_ed25519' : '/keys/id_ed25519';
+const KEY_PATH_Q = WIN ? "'C:/keys/id_ed25519'" : "'/keys/id_ed25519'";
+const CUSTOM_GIT = WIN ? 'C:/custom/git.exe' : '/custom/git';
+const ON_PATH_DIR = WIN ? 'C:\\onpath' : '/onpath';
 
 describe('RepositorySession / SessionManager', () => {
   let dir: string;
@@ -507,9 +516,9 @@ describe('RepositorySession / SessionManager', () => {
     it('鍵を登録すると GIT_SSH_COMMAND が文脈に載り、変更が次の実行から効く', async () => {
       const session = await manager.create(dir);
 
-      settings = withKey(session.root, 'C:\\keys\\id_ed25519');
+      settings = withKey(session.root, KEY_PATH);
       expect(session.context().env).toEqual({
-        GIT_SSH_COMMAND: SSH_PATH_Q + " -i 'C:/keys/id_ed25519' -o IdentitiesOnly=yes",
+        GIT_SSH_COMMAND: SSH_PATH_Q + ' -i ' + KEY_PATH_Q + ' -o IdentitiesOnly=yes',
       });
 
       settings = DEFAULT_SETTINGS;
@@ -534,7 +543,7 @@ describe('RepositorySession / SessionManager', () => {
       });
       const session = await noSsh.create(dir);
 
-      settings = withKey(session.root, 'C:\\keys\\id_ed25519');
+      settings = withKey(session.root, KEY_PATH);
       expect(session.context().env).toBeUndefined();
     });
   });
@@ -554,11 +563,11 @@ describe('補助関数', () => {
 
   it('設定パスが存在すればそれを最優先する', async () => {
     const found = await locateGit({
-      configuredPath: 'C:/custom/git.exe',
+      configuredPath: CUSTOM_GIT,
       env: process.env,
-      exists: (p) => Promise.resolve(p === 'C:/custom/git.exe'),
+      exists: (p) => Promise.resolve(p === CUSTOM_GIT),
     });
-    expect(found).toEqual({ gitPath: 'C:/custom/git.exe', source: 'configured' });
+    expect(found).toEqual({ gitPath: CUSTOM_GIT, source: 'configured' });
   });
 
   /*
@@ -572,9 +581,9 @@ describe('補助関数', () => {
     for (const configured of ['git.exe', './git.exe', 'tools\\git.exe']) {
       const found = await locateGit({
         configuredPath: configured,
-        env: { PATH: 'C:\\onpath' },
+        env: { PATH: ON_PATH_DIR },
         // 相対の候補も「存在する」と答えるが、それでも採ってはいけない
-        exists: (p) => Promise.resolve(p === configured || p.startsWith('C:\\onpath')),
+        exists: (p) => Promise.resolve(p === configured || p.startsWith(ON_PATH_DIR)),
         queryRegistry: () => Promise.resolve(null),
       });
       expect(found?.source).toBe('path');

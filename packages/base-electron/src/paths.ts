@@ -55,6 +55,24 @@ export function isInstalledBuild(
   return exists(join(exeDir, uninstallerFileName));
 }
 
+/**
+ * パッケージ版で Electron 既定の userData を使うべきかを判定する純関数。
+ *
+ * macOS では常に既定（`~/Library/Application Support/<package.json の name>`）を使う。実行ファイルは
+ * `<名前>.app/Contents/MacOS/` の中にあり、その隣へ書くと .app バンドルの中身を書き換える
+ * ことになる（署名が壊れる。/Applications や App Translocation 下ではそもそも書けず、
+ * 起動時の mkdir で落ちる）。アプリの置き換えでデータが消えるのもインストール版と同じ。
+ */
+export function usesDefaultUserData(
+  platform: NodeJS.Platform,
+  exeDir: string,
+  uninstallerFileName: string,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  if (platform === 'darwin') return true;
+  return isInstalledBuild(exeDir, uninstallerFileName, exists);
+}
+
 export function resolveUserDataDir(options: AppPathOptions): string {
   if (app.isPackaged) {
     const exePath = app.getPath('exe');
@@ -63,7 +81,8 @@ export function resolveUserDataDir(options: AppPathOptions): string {
 
     // インストール版: インストール先（%LOCALAPPDATA%\Programs\... 相当）は上書きインストールや
     // アンインストールで中身が消えるため exe の隣には置けない。Electron 既定を使う
-    if (isInstalledBuild(exeDir, uninstallerFileName)) return app.getPath('userData');
+    // （macOS は .app バンドルの中へ書けないので常にこちら）
+    if (usesDefaultUserData(process.platform, exeDir, uninstallerFileName)) return app.getPath('userData');
 
     // zip 展開版: 従来どおり exe の隣（release/win-unpacked はここに来る）
     return join(exeDir, options.dataDirName);

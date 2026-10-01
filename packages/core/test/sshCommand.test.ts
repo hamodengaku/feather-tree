@@ -9,10 +9,15 @@ import { DEFAULT_SETTINGS, buildSshCommand, gitSshEnv, sshKeyFor } from '../src/
  * 分かりにくい壊れ方をする。**期待値はベタ書きで固定する**（生成規則を
  * テスト側でも組み立てると、同じ間違いを両側でして緑になる）。
  */
+/*
+ * 以下 2 つの describe は Windows のパス（`C:\...`）を前提にしている。絶対パスかどうかの判定は
+ * 実行している OS の規則に従うので、Windows 以外では走らせない（POSIX 版は末尾にある）。
+ */
+const WIN = process.platform === 'win32';
 const SSH = 'C:\\Windows\\System32\\OpenSSH\\ssh.exe';
 const SSH_Q = "'C:/Windows/System32/OpenSSH/ssh.exe'";
 
-describe('GIT_SSH_COMMAND の組み立て', () => {
+describe.runIf(WIN)('GIT_SSH_COMMAND の組み立て', () => {
   it('ssh か鍵のどちらかが無ければ null（何も注入しない＝OS の機構に委譲する）', () => {
     expect(buildSshCommand(SSH, null)).toBeNull();
     expect(buildSshCommand(SSH, '')).toBeNull();
@@ -57,7 +62,7 @@ describe('GIT_SSH_COMMAND の組み立て', () => {
   });
 });
 
-describe('リポジトリごとの鍵', () => {
+describe.runIf(WIN)('リポジトリごとの鍵', () => {
   const settings = {
     ...DEFAULT_SETTINGS,
     sshKeyPaths: {
@@ -84,5 +89,48 @@ describe('リポジトリごとの鍵', () => {
     expect(gitSshEnv(SSH, sshKeyFor(settings, 'D:\\work\\alpha'))).toEqual({
       GIT_SSH_COMMAND: SSH_Q + " -i 'C:/keys/alpha_ed25519' -o IdentitiesOnly=yes",
     });
+  });
+});
+
+describe.runIf(!WIN)('GIT_SSH_COMMAND の組み立て（POSIX のパス）', () => {
+  const POSIX_SSH = '/usr/bin/ssh';
+
+  it('ssh も鍵も絶対パスで引用する', () => {
+    expect(buildSshCommand(POSIX_SSH, '/Users/me/.ssh/id_ed25519')).toBe(
+      "'/usr/bin/ssh' -i '/Users/me/.ssh/id_ed25519' -o IdentitiesOnly=yes",
+    );
+  });
+
+  it('ssh か鍵のどちらかが無ければ null', () => {
+    expect(buildSshCommand(POSIX_SSH, null)).toBeNull();
+    expect(buildSshCommand(POSIX_SSH, '')).toBeNull();
+    expect(buildSshCommand(null, '/Users/me/.ssh/id_ed25519')).toBeNull();
+  });
+
+  it('空白を含むパスはシングルクォートで囲む', () => {
+    expect(buildSshCommand(POSIX_SSH, '/Users/me/my keys/id_ed25519')).toContain(
+      "-i '/Users/me/my keys/id_ed25519'",
+    );
+  });
+
+  it('値の中のシングルクォートを閉じ直す', () => {
+    expect(buildSshCommand(POSIX_SSH, "/Users/it's/id_ed25519")).toContain(
+      "-i '/Users/it'\\''s/id_ed25519'",
+    );
+  });
+
+  it('相対パス・bare 名・制御文字は null（注入しない）', () => {
+    expect(buildSshCommand(POSIX_SSH, 'id_ed25519')).toBeNull();
+    expect(buildSshCommand(POSIX_SSH, '.ssh/id_ed25519')).toBeNull();
+    expect(buildSshCommand(POSIX_SSH, '/Users/a\nb')).toBeNull();
+    expect(buildSshCommand('ssh', '/Users/me/.ssh/id')).toBeNull();
+  });
+
+  it('gitSshEnv は鍵があれば GIT_SSH_COMMAND だけを返し、無ければ空を返す', () => {
+    const settings = { ...DEFAULT_SETTINGS, sshKeyPaths: { '/work/alpha': '/keys/alpha_ed25519' } };
+    expect(gitSshEnv(POSIX_SSH, sshKeyFor(settings, '/work/alpha'))).toEqual({
+      GIT_SSH_COMMAND: "'/usr/bin/ssh' -i '/keys/alpha_ed25519' -o IdentitiesOnly=yes",
+    });
+    expect(gitSshEnv(POSIX_SSH, sshKeyFor(settings, '/work/gamma'))).toEqual({});
   });
 });

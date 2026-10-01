@@ -8,7 +8,9 @@ import { locateTerminal } from '../src/index.js';
  * 実在するファイルを見に行かせないよう exists を注入するので、
  * この検証は開発機に何が入っているかに左右されない。
  */
-describe('locateTerminal (決定 26)', () => {
+// Windows のターミナル選び。PATH の区切り（;）と絶対パスの判定が実行している OS の規則に
+// 従うので、Windows 以外では走らせない。
+describe.runIf(process.platform === 'win32')('locateTerminal (決定 26)', () => {
   const CWD = 'D:/repo';
   const GIT = 'C:/Program Files/Git/cmd/git.exe';
 
@@ -135,5 +137,45 @@ describe('locateTerminal (決定 26)', () => {
     });
 
     expect(launch?.args).toEqual([]);
+  });
+});
+
+describe('locateTerminal（macOS）', () => {
+  const CWD = '/Users/me/repo';
+
+  it('Terminal.app を open -a でリポジトリ直下に開く。起動先は絶対パス', async () => {
+    const launch = await locateTerminal({
+      env: {},
+      cwd: CWD,
+      gitPath: '/usr/bin/git',
+      platform: 'darwin',
+      exists: (path) => Promise.resolve(path === '/usr/bin/open'),
+    });
+
+    expect(launch).toEqual({ exe: '/usr/bin/open', args: ['-a', 'Terminal', CWD] });
+  });
+
+  it('PATH に git が無くても開ける（Terminal のログインシェルが利用者の PATH を持つ）', async () => {
+    const launch = await locateTerminal({
+      env: { PATH: '/nowhere' },
+      cwd: CWD,
+      gitPath: null,
+      platform: 'darwin',
+      exists: (path) => Promise.resolve(path === '/usr/bin/open'),
+    });
+
+    expect(launch?.exe).toBe('/usr/bin/open');
+  });
+
+  it('open が無ければ null（呼び出し側がエラーを出す）', async () => {
+    const launch = await locateTerminal({
+      env: {},
+      cwd: CWD,
+      gitPath: '/usr/bin/git',
+      platform: 'darwin',
+      exists: () => Promise.resolve(false),
+    });
+
+    expect(launch).toBeNull();
   });
 });

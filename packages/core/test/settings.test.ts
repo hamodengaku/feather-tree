@@ -22,6 +22,13 @@ afterEach(async () => {
   }
 });
 
+/*
+ * 絶対パスかどうかの判定は実行している OS の規則に従うので、素材のパスは OS に合わせる
+ * （Windows 以外で `D:\...` を使うと相対パス扱いになり、全件が捨てられてしまう）。
+ */
+const REPO = process.platform === 'win32' ? 'D:\\work\\' : '/work/';
+const KEY = process.platform === 'win32' ? 'C:\\keys\\' : '/keys/';
+
 describe('SSH 鍵（決定 13 の追記。リポジトリごと）', () => {
   const keys = (raw: unknown): Record<string, string> => normalizeSettings({ sshKeyPaths: raw }).sshKeyPaths;
 
@@ -33,42 +40,42 @@ describe('SSH 鍵（決定 13 の追記。リポジトリごと）', () => {
   it('リポジトリごとに独立して保つ', () => {
     expect(
       keys({
-        'D:\\work\\alpha': 'C:\\keys\\alpha',
-        'D:\\work\\beta': 'C:\\keys\\beta',
+        [REPO + 'alpha']: KEY + 'alpha',
+        [REPO + 'beta']: KEY + 'beta',
       }),
     ).toEqual({
-      'D:\\work\\alpha': 'C:\\keys\\alpha',
-      'D:\\work\\beta': 'C:\\keys\\beta',
+      [REPO + 'alpha']: KEY + 'alpha',
+      [REPO + 'beta']: KEY + 'beta',
     });
   });
 
   it('値が相対パス・bare 名の項目は捨てる（spawn / ssh の引数になるため）', () => {
-    expect(keys({ 'D:\\work\\a': 'id_ed25519' })).toEqual({});
-    expect(keys({ 'D:\\work\\a': '.ssh/id_ed25519' })).toEqual({});
+    expect(keys({ [REPO + 'a']: 'id_ed25519' })).toEqual({});
+    expect(keys({ [REPO + 'a']: '.ssh/id_ed25519' })).toEqual({});
   });
 
   it('キー（リポジトリ）が絶対パスでない項目も捨てる', () => {
-    expect(keys({ relative: 'C:\\keys\\a' })).toEqual({});
+    expect(keys({ relative: KEY + 'a' })).toEqual({});
   });
 
   it('制御文字・空文字・文字列以外の項目は捨てる。**他の項目は残す**', () => {
     expect(
       keys({
-        'D:\\work\\bad': 'C:\\a\nb',
-        'D:\\work\\empty': '',
-        'D:\\work\\num': 42,
-        'D:\\work\\ok': 'C:\\keys\\ok',
+        [REPO + 'bad']: KEY + 'a\nb',
+        [REPO + 'empty']: '',
+        [REPO + 'num']: 42,
+        [REPO + 'ok']: KEY + 'ok',
       }),
-    ).toEqual({ 'D:\\work\\ok': 'C:\\keys\\ok' });
+    ).toEqual({ [REPO + 'ok']: KEY + 'ok' });
   });
 
   it('長すぎるパスの項目は捨てる', () => {
-    expect(keys({ 'D:\\work\\a': 'C:\\' + 'a'.repeat(5000) })).toEqual({});
+    expect(keys({ [REPO + 'a']: KEY + 'a'.repeat(5000) })).toEqual({});
   });
 
   it('件数の上限で打ち切る（際限なく育たない）', () => {
     const many: Record<string, string> = {};
-    for (let i = 0; i < 150; i += 1) many['D:\\work\\r' + String(i)] = 'C:\\keys\\k' + String(i);
+    for (let i = 0; i < 150; i += 1) many[REPO + 'r' + String(i)] = KEY + 'k' + String(i);
     expect(Object.keys(keys(many))).toHaveLength(100);
   });
 

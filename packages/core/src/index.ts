@@ -9,6 +9,7 @@ export { buildSshCommand, gitSshEnv, sshKeyFor } from './env/sshCommand.js';
 export { locateSsh } from './env/sshLocator.js';
 export type { SshLocatorDeps } from './env/sshLocator.js';
 export { findOnPath } from './env/pathSearch.js';
+export { augmentPathForMac } from './env/macPath.js';
 export {
   checkGitVersion,
   supportsStagedStash,

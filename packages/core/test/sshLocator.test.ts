@@ -9,6 +9,14 @@ import { findOnPath, locateSsh } from '../src/index.js';
  */
 const SEP = process.platform === 'win32' ? ';' : ':';
 const SSH = process.platform === 'win32' ? 'ssh.exe' : 'ssh';
+const WIN = process.platform === 'win32';
+
+/**
+ * 実行している OS の絶対パスを組み立てる（Windows は `C:\a\b`、それ以外は `/a/b`）。
+ * 絶対パスかどうかの判定が OS の規則に従うので、素材も OS に合わせる。
+ */
+const abs = (...parts: readonly string[]): string =>
+  WIN ? 'C:\\' + parts.join('\\') : '/' + parts.join('/');
 
 /** 指定したパスだけが存在することにする。 */
 const only = (...paths: readonly string[]) => (p: string) => Promise.resolve(paths.includes(p));
@@ -16,11 +24,11 @@ const only = (...paths: readonly string[]) => (p: string) => Promise.resolve(pat
 describe('ssh の解決', () => {
   it('PATH にあればその絶対パスを返す（今までシェルが選んでいたものと同じ）', async () => {
     const found = await locateSsh({
-      env: { PATH: ['C:\\tools', 'C:\\other'].join(SEP) },
+      env: { PATH: [abs('tools'), abs('other')].join(SEP) },
       gitPath: null,
-      exists: only('C:\\tools\\' + SSH),
+      exists: only(abs('tools', SSH)),
     });
-    expect(found).toBe('C:\\tools\\' + SSH);
+    expect(found).toBe(abs('tools', SSH));
   });
 
   it('PATH の相対パス要素は候補にしない（cwd の同名ファイルを拾わせない。1-A）', async () => {
@@ -45,7 +53,8 @@ describe('ssh の解決', () => {
     expect(found).toBe('C:\\Windows\\System32\\OpenSSH\\ssh.exe');
   });
 
-  it('最後の手段として Git 同梱の ssh を git.exe のパスから導く', async () => {
+  // Git for Windows の配置（<install>/usr/bin/ssh.exe）の話なので Windows だけで走らせる
+  it.runIf(WIN)('最後の手段として Git 同梱の ssh を git.exe のパスから導く', async () => {
     const bundled = 'C:\\Program Files\\Git\\usr\\bin\\ssh.exe';
     const found = await locateSsh({
       env: { PATH: 'C:\\tools', SystemRoot: 'C:\\Windows' },
@@ -74,15 +83,15 @@ describe('PATH 探索の共通規則', () => {
   it('絶対パス要素だけを見て、絶対パスを返す', async () => {
     const found = await findOnPath(
       ['x.exe'],
-      { PATH: ['.', 'rel', 'C:\\abs'].join(SEP) },
-      only('.\\x.exe', 'rel\\x.exe', 'C:\\abs\\x.exe'),
+      { PATH: ['.', 'rel', abs('abs')].join(SEP) },
+      only('.\\x.exe', 'rel\\x.exe', './x.exe', 'rel/x.exe', abs('abs', 'x.exe')),
     );
-    expect(found).toBe('C:\\abs\\x.exe');
+    expect(found).toBe(abs('abs', 'x.exe'));
   });
 
   it('引用符で囲まれた PATH 要素を剥がす', async () => {
-    const found = await findOnPath(['x.exe'], { PATH: '"C:\\abs"' }, only('C:\\abs\\x.exe'));
-    expect(found).toBe('C:\\abs\\x.exe');
+    const found = await findOnPath(['x.exe'], { PATH: '"' + abs('abs') + '"' }, only(abs('abs', 'x.exe')));
+    expect(found).toBe(abs('abs', 'x.exe'));
   });
 
   it('PATH が無ければ null', async () => {

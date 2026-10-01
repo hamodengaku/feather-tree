@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isInstalledBuild } from '../src/index.js';
+import { isInstalledBuild, usesDefaultUserData } from '../src/index.js';
 
 const EXE_DIR = 'C:/Program Files/MyApp';
 
@@ -31,5 +31,21 @@ describe('isInstalledBuild（インストール版 / zip 展開版の判定）',
   it('exists を注入しない場合は実ファイルシステムを見る（既定値が existsSync であることの確認）', () => {
     // 存在し得ないパスなので false になるはず
     expect(isInstalledBuild('D:/does/not/exist', 'Uninstall Nothing.exe')).toBe(false);
+  });
+});
+
+describe('usesDefaultUserData（Electron 既定の userData を使うかどうか）', () => {
+  const MAC_EXE_DIR = '/Applications/MyApp.app/Contents/MacOS';
+
+  it('macOS ではアンインストーラが無くても常に既定を使う（.app バンドルの中へ書かない）', () => {
+    const exists = (): boolean => false;
+    expect(usesDefaultUserData('darwin', MAC_EXE_DIR, 'Uninstall MyApp.exe', exists)).toBe(true);
+  });
+
+  it('Windows ではインストール版のときだけ既定を使う', () => {
+    const uninstaller = join(EXE_DIR, 'Uninstall MyApp.exe');
+    const installed = (path: string): boolean => path === uninstaller;
+    expect(usesDefaultUserData('win32', EXE_DIR, 'Uninstall MyApp.exe', installed)).toBe(true);
+    expect(usesDefaultUserData('win32', EXE_DIR, 'Uninstall MyApp.exe', () => false)).toBe(false);
   });
 });

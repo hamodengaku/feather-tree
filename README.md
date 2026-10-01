@@ -50,6 +50,21 @@ Windows の「設定 → アプリ → インストールされているアプ�
 インストーラーを使用しない場合は、  
 Releases の `FeatherTree-x.y.z-win-x64.zip` を展開して `FeatherTree.exe` を起動してください。
 
+### macOS 版
+
+- Apple Silicon / Intel のどちらでも動きます（universal）
+- **git が必要です**（Xcode Command Line Tools 付属のもの、または Homebrew 版。バージョン要件は Windows と同じ）
+
+1. [Releases](https://github.com/hamodengaku/feather-tree/releases) から `FeatherTree-x.y.z-mac-universal.dmg` をダウンロード
+2. 開いて `FeatherTree.app` を「アプリケーション」フォルダへドラッグ
+
+※同人頒布のため、未署名です。  
+**初回起動時に「開発元を確認できないため開けません」等の警告が出た場合**は、  
+「システム設定 → プライバシーとセキュリティ」を開き、下の方に出る「このまま開く」を押してください。
+
+設定データは `~/Library/Application Support/feather-tree` に保存されます。  
+アンインストールは `FeatherTree.app` をゴミ箱へ入れてください（設定データは残ります）。
+
 ---------------------
 
 ## 開発体制（AI活用）について
@@ -74,7 +89,7 @@ Releases の `FeatherTree-x.y.z-win-x64.zip` を展開して `FeatherTree.exe` �
 npm install          # 依存の取得（キャッシュはリポジトリ内に閉じる）
 npm run dev          # 開発起動（HMR あり）
 npm run verify       # 依存方向検査 + 型検査 + テスト
-npm run dist         # 配布物のビルド（release/ に出力。Setup.exe + zip）
+npm run dist         # 配布物のビルド（release/ に出力。Windows 上では Setup.exe + zip、macOS 上では dmg + zip）
 npm run measure      # 配布 exe のサイズ・起動時間・メモリを実測
 ```
 

@@ -5,12 +5,13 @@ node_modules/
 # electron-vite の出力
 out/
 dist/
-# electron-builder の出力（portable exe / zip / win-unpacked）
+# electron-builder の出力（Setup.exe / zip / win-unpacked、dmg / zip / mac-universal）
 release/
 # TypeScript のインクリメンタルビルド情報
 *.tsbuildinfo
 # scripts/make-icon.mjs が build/icon/*.png から組み立てる（素材の方を版管理する）
 build/icon.ico
+build/icon.icns
 
 # ---------------------------------------------------------------- ローカル専用
 # npm / Electron / electron-builder のキャッシュ、開発時の userData

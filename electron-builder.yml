@@ -5,19 +5,10 @@ copyright: FeatherTree
 directories:
   output: release
 
-# zip の artifactName（決定 5・2026-09-13 改定）。
-# NSIS は自分専用の artifactName（nsis: セクション）を持つので、ここは実質 zip にしか効かない
-# （zip はターゲット固有のオプションを持たないため、この win 直下の値まで降りてくる）。
-artifactName: FeatherTree-${version}-win-x64.${ext}
-
 # out/ は electron-vite がバンドル済み。実行時 npm 依存はゼロなので node_modules は含めない。
 files:
   - out/**/*
   - package.json
-
-extraFiles:
-  - from: LICENSE
-    to: LICENSE.txt
 
 # Electron 本体 zip の取得先。既定は %LOCALAPPDATA%electronCache だが、
 # CLAUDE.md 規約 2（リポジトリ外に書かない）によりリポジトリ内へ向ける。
@@ -84,7 +75,17 @@ win:
   # 全サイズを作ってしまい、16px / 20px が潰れるため（build/icon/README.md）。
   # この .ico は scripts/make-icon.mjs が build/icon/*.png を詰めて作る（縮小はしない）。
   # 生成物なので版管理していない。`npm run icon` で作り直す（dist が前段で自動実行する）。
+  # 同じスクリプトが mac 用の build/icon.icns も作る（mac: セクション）。
   icon: build/icon.ico
+  # zip の artifactName（決定 5・2026-09-13 改定）。
+  # NSIS は自分専用の artifactName（nsis: セクション）を持つので、ここは実質 zip にしか効かない
+  # （zip はターゲット固有のオプションを持たないため、この win 直下の値まで降りてくる）。
+  # トップレベルに置くと mac の成果物まで win-x64 という名前になるので、win の下に置く。
+  artifactName: FeatherTree-${version}-win-x64.${ext}
+  # exe の隣に LICENSE.txt を置く。
+  extraFiles:
+    - from: LICENSE
+      to: LICENSE.txt
   target:
     - target: nsis
       arch:
@@ -92,6 +93,33 @@ win:
     - target: zip
       arch:
         - x64
+
+# macOS 版。universal（arm64 + x64 を 1 つの .app に）で dmg と zip を出す。
+mac:
+  # アイコンは .icns を直接渡す。理由は win.icon と同じで、サイズごとに描いた素材を
+  # 機械的な縮小で潰さないため。scripts/make-icon.mjs が .ico と一緒に作る生成物
+  # （版管理しない）。dmg のボリュームアイコンも、指定が無ければこれが使われる。
+  icon: build/icon.icns
+  category: public.app-category.developer-tools
+  artifactName: FeatherTree-${version}-mac-universal.${ext}
+  # 未署名配布（Windows 版と同じ方針）。ただし arm64 は署名が全く無いバイナリを起動できないため、
+  # 証明書の要らない ad-hoc 署名（"-"）だけは掛ける。Gatekeeper の警告は出る（README に対処を記載）。
+  identity: '-'
+  # hardened runtime は公証のための仕組みで、公証しない ad-hoc 署名では得が無い。
+  # 有効にすると Team ID の無い署名同士でライブラリ検証に落ちることがあるので切る。
+  hardenedRuntime: false
+  # LICENSE は Contents/Resources に置く。extraFiles だと Contents 直下に入り、
+  # 署名対象外のファイルが混ざったとして codesign が失敗する（2026-09-30 実測）。
+  extraResources:
+    - from: LICENSE
+      to: LICENSE.txt
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
 
 # ワンクリック・インストーラ（主。決定 5・2026-09-13 改定。旧 portable ターゲットは廃止）。
 # ユーザー単位（perMachine: false）で管理者権限不要。userData の置き場は

@@ -9,7 +9,7 @@
 //   Electron 本体 zip の取得先は ELECTRON_CACHE でも変わらないため、
 //   --config.electronDownload.cache で明示的に上書きする必要がある。
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
@@ -23,19 +23,42 @@ const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
 const binRel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin['electron-builder'];
 const cli = resolve(root, 'node_modules/electron-builder', binRel);
 
-// 追加引数はそのまま electron-builder へ渡す（--dir で win-unpacked のみ作る等）
+// 追加引数はそのまま electron-builder へ渡す（--dir で win-unpacked / mac-universal のみ作る等）
 const extra = process.argv.slice(2);
 // --publish never を固定する（決定 22）。electron-builder.yml の publish: null と二重の保険。
 // 開発機の環境に GH_TOKEN が残っていても、それだけで Releases へ誤アップロードしないようにする
 // （公開はソースのみで、成果物は人間が手動で Releases に上げる方針のため）。
+/*
+ * ビルド対象はホスト OS で決める（mac 上では mac 版、それ以外は従来どおり Windows 版）。
+ *
+ *   flags … electron-builder へ渡す対象の指定。
+ *           mac は universal を明示する。electron-builder.yml のターゲットにも書いてあるが、
+ *           --dir はターゲットごと置き換えるので、引数で渡さないとホストのアーキテクチャだけになる。
+ *   icon  … その OS の配布アイコン（electron-builder.yml の win.icon / mac.icon と同じもの）。
+ *           scripts/make-icon.mjs の生成物で版管理していないため、無ければここで止める。
+ */
+const TARGETS = {
+  win: { label: 'Windows', flags: ['--win'], icon: 'build/icon.ico' },
+  mac: { label: 'macOS', flags: ['--mac', '--universal'], icon: 'build/icon.icns' },
+};
+const target = process.platform === 'darwin' ? TARGETS.mac : TARGETS.win;
+
+// アイコンが無いと、Windows はビルドが途中で止まり、mac は黙って Electron の既定アイコンになる。
+// どちらも分かりにくいので、electron-builder を起動する前に確かめる。
+if (!existsSync(resolve(root, target.icon))) {
+  console.error(`[dist] ${target.icon} がありません。先に \`npm run icon\` を実行してください。`);
+  process.exit(1);
+}
+
 const args = [
-  '--win',
+  ...target.flags,
   ...extra,
   `--config.electronDownload.cache=${electronCache}`,
   '--publish',
   'never',
 ];
 
+console.log(`[dist] target -> ${target.label}（${target.flags.join(' ')}） / icon -> ${target.icon}`);
 console.log(`[dist] electron-builder cache -> ${builderCache}`);
 console.log(`[dist] electron download cache -> ${electronCache}`);
 
