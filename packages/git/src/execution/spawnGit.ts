@@ -137,6 +137,10 @@ async function run(cmd: GitCommand, signal: AbortSignal | undefined, hooks: RunH
     cwd: cmd.cwd,
     shell: false,
     windowsHide: true,
+    // Windows 以外では git をプロセスグループのリーダーにする。killTree がグループごと
+    // 落とせるようにするため（Windows は taskkill /T がツリーを辿るので不要。
+    // Windows で detached にすると別コンソールが割り当たるので付けない）。
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
     env: buildGitEnv(process.env, cmd.env),
   });

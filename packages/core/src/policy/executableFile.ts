@@ -55,6 +55,24 @@ const EXECUTABLE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.mshxml',
   '.msh1xml',
   '.msh2xml',
+  // macOS で「開く」がそのまま実行・インストール・別の場所への誘導になるもの。
+  // クローンで得たファイルには quarantine 属性が付かず Gatekeeper が確認を出さないので、
+  // ここでの確認が唯一の歯止めになる。
+  '.app',
+  '.command',
+  '.tool',
+  '.terminal',
+  '.pkg',
+  '.mpkg',
+  '.dmg',
+  '.scpt',
+  '.scptd',
+  '.applescript',
+  '.workflow',
+  '.action',
+  '.webloc',
+  '.inetloc',
+  '.fileloc',
 ]);
 
 /**

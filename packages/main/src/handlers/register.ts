@@ -62,11 +62,18 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
       const window = getWindow();
       const options =
         kind === 'git-executable'
-          ? {
-              title: 'git.exe を選択',
-              properties: ['openFile' as const],
-              filters: [{ name: 'git', extensions: ['exe'] }],
-            }
+          ? process.platform === 'win32'
+            ? {
+                title: 'git.exe を選択',
+                properties: ['openFile' as const],
+                filters: [{ name: 'git', extensions: ['exe'] }],
+              }
+            : {
+                // Windows 以外の git は拡張子を持たないのでフィルタを掛けない。
+                // /usr や /opt は隠しフォルダ扱いなので、見せないと辿れない。
+                title: 'git を選択',
+                properties: ['openFile' as const, 'showHiddenFiles' as const],
+              }
           : {
               title: 'SSH 秘密鍵を選択',
               defaultPath: join(app.getPath('home'), '.ssh'),

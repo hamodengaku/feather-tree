@@ -7,7 +7,12 @@ import {
   type FocusRefreshPromptEvent,
   type SessionChangedEvent,
 } from '@feathertree/ipc';
-import { killAllGitProcesses, runningGitCount, type CommandLogEntry } from '@feathertree/core';
+import {
+  augmentPathForMac,
+  killAllGitProcesses,
+  runningGitCount,
+  type CommandLogEntry,
+} from '@feathertree/core';
 import { AppContext } from './appContext.js';
 import { toCommandLogEntryDto } from './handlers/commandLogDto.js';
 import { registerHandlers } from './handlers/register.js';
@@ -27,6 +32,11 @@ import {
 
 const processStart = Date.now();
 
+// macOS を Finder / Dock から起動すると PATH に Homebrew 等が入らない。git の探索
+// （AppContext.initialize）と git の子プロセスの両方に効かせるため、最初に 1 回だけ補う。
+const augmentedPath = augmentPathForMac(process.env['PATH']);
+if (augmentedPath !== undefined) process.env['PATH'] = augmentedPath;
+
 // app.whenReady() より前に呼ぶ必要がある（Chromium のキャッシュ位置もこれに従う）。
 // 既定の %APPDATA% は使わない（docs/01-architecture.md 10 章）。
 const context = new AppContext();
@@ -35,7 +45,7 @@ app.setPath('userData', context.userDataDir);
 /**
  * 開発モードのウィンドウアイコン。
  *
- * パッケージ済みの exe にはアイコンが埋め込まれているので指定不要。
+ * パッケージ済みの exe / .app にはアイコンが埋め込まれているので指定不要。
  * 開発時は指定しないと Electron の既定アイコンが出るので、build/ から読む
  * （build/ は files に含めていないため、パッケージ後は存在しない）。
  *
@@ -300,9 +310,21 @@ app.on('window-all-closed', () => {
 
 void app.whenReady().then(async () => {
   appReadyMs = Date.now() - processStart;
+  // macOS はウィンドウにアイコンを持たない（BrowserWindow の icon は無視される）。
+  // 開発時に Dock が Electron の既定アイコンになるので、同じ素材を Dock へ直接渡す。
+  const devIcon = resolveWindowIcon();
+  if (devIcon !== undefined) app.dock?.setIcon(devIcon);
   // Electron 既定のメニュー（File / Edit / View / Window）は git クライアントには不要。
   // 縦の表示領域を無駄にするので出さない。
-  Menu.setApplicationMenu(null);
+  //
+  // macOS だけは最小のメニューを置く。メニューバーはウィンドウの外なので領域を食わず、
+  // 逆に Edit メニューの role が無いと入力欄で Cmd+C / V / X / A / Z が効かなくなる
+  // （macOS ではこれらのショートカットをメニュー項目が受け持つ）。Cmd+Q も同じ。
+  Menu.setApplicationMenu(
+    process.platform === 'darwin'
+      ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }])
+      : null,
+  );
 
   /*
    * スプラッシュ（決定 28）を最優先で出す。

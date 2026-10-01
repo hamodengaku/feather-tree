@@ -32,6 +32,14 @@ const TEST_ROOT = resolve(import.meta.dirname, '../../../.tmp/main-service-tests
 const GIT_PATH = process.env['FT_TEST_GIT'] ?? 'git';
 /** ssh の解決結果（実在しなくてよい。設定の読み書きしか見ないため）。 */
 const SSH_PATH = 'C:' + String.fromCharCode(92) + 'ssh.exe';
+/*
+ * 絶対パスかどうかの判定は実行している OS の規則に従うので、素材のパスは OS に合わせる
+ * （Windows 以外でドライブレター付きのパスを使うと、リポジトリ配下の相対パス扱いになる）。
+ */
+const WIN = process.platform === 'win32';
+const OUTSIDE_ABSOLUTE = WIN ? 'C:/Windows/system32/cmd.exe' : '/etc/passwd';
+const KEYS = WIN ? 'C:\\keys\\' : '/keys/';
+const OTHER_REPO = WIN ? 'D:\\other' : '/other';
 
 function git(cwd: string, args: readonly string[]): Promise<void> {
   return new Promise((res, rej) => {
@@ -675,7 +683,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     await expect(service.shellOpenPath(id, '../outside.txt')).rejects.toMatchObject({
       name: 'PathOutsideRootError',
     });
-    await expect(service.shellShowInFolder(id, 'C:/Windows/system32/cmd.exe')).rejects.toThrow();
+    await expect(service.shellShowInFolder(id, OUTSIDE_ABSOLUTE)).rejects.toThrow();
     expect(opened).toEqual([]);
   });
 
@@ -741,7 +749,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
   it('リポジトリ外のパスを拒否する', async () => {
     const id = await openDemo();
     await expect(service.stage(id, { kind: 'paths', paths: ['../outside.txt'] })).rejects.toThrow();
-    await expect(service.diffGet(id, 'C:/Windows/system32/cmd.exe', false)).rejects.toThrow();
+    await expect(service.diffGet(id, OUTSIDE_ABSOLUTE, false)).rejects.toThrow();
   });
 
   it('存在しないタブを拒否する', async () => {
@@ -836,10 +844,10 @@ describe('Service (UI が通る経路の統合テスト)', () => {
 
     it('SSH 鍵の辞書は、キーも値も絶対パスでなければ拒否する', async () => {
       await expect(
-        service.settingsUpdate({ sshKeyPaths: { 'D:\\repo': '.ssh/id_ed25519' } }),
+        service.settingsUpdate({ sshKeyPaths: { [OTHER_REPO]: '.ssh/id_ed25519' } }),
       ).rejects.toThrow();
       await expect(
-        service.settingsUpdate({ sshKeyPaths: { relative: 'C:\\keys\\id_ed25519' } }),
+        service.settingsUpdate({ sshKeyPaths: { relative: KEYS + 'id_ed25519' } }),
       ).rejects.toThrow();
     });
   });
@@ -853,8 +861,8 @@ describe('Service (UI が通る経路の統合テスト)', () => {
       const id = await openDemo();
       const root = service.sessionList().sessions.find((s) => s.id === id)?.root ?? '';
 
-      const saved = await service.sshSetKey(id, 'C:\\keys\\id_ed25519');
-      expect(saved.sshKeyPaths[root]).toBe('C:\\keys\\id_ed25519');
+      const saved = await service.sshSetKey(id, KEYS + 'id_ed25519');
+      expect(saved.sshKeyPaths[root]).toBe(KEYS + 'id_ed25519');
 
       const cleared = await service.sshSetKey(id, null);
       expect(cleared.sshKeyPaths[root]).toBeUndefined();
@@ -863,19 +871,19 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     it('他のリポジトリの登録は触らない', async () => {
       const id = await openDemo();
       // 別のリポジトリの登録が先にあるところへ、このリポジトリの鍵を足す
-      await service.settingsUpdate({ sshKeyPaths: { 'D:\\other': 'C:\\keys\\other' } });
+      await service.settingsUpdate({ sshKeyPaths: { [OTHER_REPO]: KEYS + 'other' } });
 
-      const saved = await service.sshSetKey(id, 'C:\\keys\\mine');
-      expect(saved.sshKeyPaths['D:\\other']).toBe('C:\\keys\\other');
+      const saved = await service.sshSetKey(id, KEYS + 'mine');
+      expect(saved.sshKeyPaths[OTHER_REPO]).toBe(KEYS + 'other');
 
       const cleared = await service.sshSetKey(id, null);
-      expect(cleared.sshKeyPaths['D:\\other']).toBe('C:\\keys\\other');
+      expect(cleared.sshKeyPaths[OTHER_REPO]).toBe(KEYS + 'other');
     });
 
     it('絶対パスでない鍵は拒否し、タブが無ければ no-session', async () => {
       const id = await openDemo();
       await expect(service.sshSetKey(id, 'id_ed25519')).rejects.toThrow();
-      await expect(service.sshSetKey('no-such-id', 'C:\\keys\\a')).rejects.toThrow();
+      await expect(service.sshSetKey('no-such-id', KEYS + 'a')).rejects.toThrow();
     });
 
     it('ファイル選択は用途をそのまま deps へ渡す', async () => {
@@ -1062,7 +1070,7 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     await expect(service.commitGetDiff(id, oid, '../外.txt')).rejects.toMatchObject({
       name: 'PathOutsideRootError',
     });
-    await expect(service.commitGetDiff(id, oid, 'C:/Windows/system32/cmd.exe')).rejects.toThrow();
+    await expect(service.commitGetDiff(id, oid, OUTSIDE_ABSOLUTE)).rejects.toThrow();
   });
 
   it('コミットの変更ファイルと、その diff を取得できる（対応表 #21 / #36）', async () => {

@@ -1,10 +1,12 @@
 # アプリアイコンの素材 — 要件
 
-**ここに置いた PNG が、そのままの画素で `build/icon.ico` に入ります。**
+**ここに置いた PNG が、そのままの画素で `build/icon.ico`（Windows）と `build/icon.icns`（macOS）に入ります。**
 
 ---
 
-## 1. ファイル構成（すべて必須）
+## 1. ファイル構成
+
+### 必須（9 枚）
 
 | ファイル | 主な出番 |
 |---------|---------|
@@ -21,7 +23,39 @@
 **9 枚すべてが必須です。** 1 枚でも欠けるとビルドが止まり、どれが足りないかが表示されます。
 
 サイズを増減したいときは `scripts/make-icon.mjs` の `SIZES` とこの表の両方を直してください。
-なお **1 辺 256px が上限**です（ICO 形式がサイズを 1 バイトで持つため。512 は格納できません）。
+なお `.ico` は **1 辺 256px が上限**です（ICO 形式がサイズを 1 バイトで持つため。512 は格納できません）。
+
+### 任意（macOS 用の高解像度）
+
+| ファイル | 主な出番 |
+|---------|---------|
+| `512.png` | Finder の大きなアイコン表示、クイックルック |
+| `1024.png` | 上の Retina 版 |
+
+**無くてもビルドは通ります。** 無い場合、その大きさで表示される場面だけ 256px からの拡大になります
+（Dock は Retina でも最大 256px なので影響しません）。置けば次の `npm run icon` から `.icns` に入ります。
+置いた場合は必須の 9 枚と同じ検査（下の R1〜R3）が掛かります。`.ico` には入りません。
+
+### macOS の `.icns` に入るもの
+
+macOS は「表示サイズ（pt）× 倍率」で枠を持つため、同じ素材が 2 つの枠に入ることがあります。
+`20` / `24` / `40` / `48` の枠は `.icns` に無いので、これらは Windows 専用です。
+
+| 素材 | 入る枠 |
+|------|-------|
+| `16.png` | 16pt |
+| `32.png` | 16pt の 2x、32pt |
+| `64.png` | 32pt の 2x |
+| `128.png` | 128pt |
+| `256.png` | 128pt の 2x、256pt |
+| `512.png`（任意） | 256pt の 2x、512pt |
+| `1024.png`（任意） | 512pt の 2x |
+
+枠を増減したいときは `scripts/make-icon.mjs` の `ICNS_ENTRIES` とこの表の両方を直してください。
+
+macOS のアイコンは角丸の四角い台座に余白を取る形が慣例です。Windows 向けの絵をそのまま使うと
+Dock で他のアプリと大きさや形が揃わないことがあります。mac 用に描き分けたい場合は、
+素材の置き場を OS ごとに分ける改修が必要です（現状は同じ素材を両方に使います）。
 
 ---
 
@@ -91,13 +125,15 @@
   「前回からの急な減り方」を見る）
 - `npm run dist:dir` のあと、エクスプローラで `release/win-unpacked/FeatherTree.exe` の
   アイコンが「特大アイコン」表示と「詳細」表示の両方で出ているか確認する
+- macOS では `release/mac-universal/FeatherTree.app` のアイコンを Finder のアイコン表示と
+  リスト表示、起動後の Dock で確認する
 
 ---
 
 ## 5. 差し替え手順
 
 1. このフォルダの PNG を置き換える（1 枚ずつでもよい）
-2. `npm run icon` で `build/icon.ico` を作り直す
+2. `npm run icon` で `build/icon.ico` と `build/icon.icns` を作り直す（どちらの OS で実行しても両方できる）
    - 素材の検査だけなら `npm run icon -- --check`
 3. 上の「4. 検査で防げないこと」の目視確認を行う
 4. `npm run dist` で配布物を作る
@@ -112,7 +148,8 @@
 
 | 制限 | 出どころ | 変えられるか |
 |------|---------|------------|
-| 1 辺 256px が上限 | ICO 形式（サイズを 1 バイトで持つ） | 不可 |
+| `.ico` は 1 辺 256px が上限 | ICO 形式（サイズを 1 バイトで持つ） | 不可 |
+| `.icns` に 20 / 24 / 40 / 48 が入らない | ICNS 形式（その大きさの枠が無い） | 不可 |
 | 正方形 | ICO / Windows シェル | 実質不可 |
 | PNG 圧縮での格納 | Windows Vista 以降が対応 | 対象は Win10/11（決定 8）なので問題なし |
 | PNG のみ（BMP 格納は非対応） | `scripts/make-icon.mjs` の実装方針 | 実装を足せば可能 |
@@ -124,8 +161,9 @@
 
 ## 8. 関連するファイル
 
-- `scripts/make-icon.mjs` — ここの PNG を `build/icon.ico` に詰める（画像は作らない）
-- `electron-builder.yml` — `win.icon: build/icon.ico` を指す
-- `build/icon.ico` — 生成物。版管理しない（`.gitignore` 済み）
+- `scripts/make-icon.mjs` — ここの PNG を `build/icon.ico` と `build/icon.icns` に詰める（画像は作らない）
+- `electron-builder.yml` — `win.icon: build/icon.ico` と `mac.icon: build/icon.icns` を指す
+- `scripts/dist.mjs` — ビルド前に、その OS 用のアイコンがあるかを確かめる
+- `build/icon.ico` / `build/icon.icns` — 生成物。版管理しない（`.gitignore` 済み）
 - `build/icon-app.png` — 元絵のマスター。配布には使われない。
-  開発時のウィンドウアイコンは `build/icon/256.png` を読む（`packages/main/src/index.ts`）
+  開発時のウィンドウアイコン（macOS では Dock アイコン）は `build/icon/256.png` を読む（`packages/main/src/index.ts`）

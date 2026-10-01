@@ -6,6 +6,7 @@ import { PathOutsideRootError, assertInsideRoot, assertRealPathInsideRoot } from
 
 const ROOT = 'D:/work/root';
 const BS = String.fromCharCode(92);
+const WIN = process.platform === 'win32';
 
 describe('パス・トラバーサルの防止（土台）', () => {
   it('リポジトリ配下の相対パスは通る', () => {
@@ -21,7 +22,9 @@ describe('パス・トラバーサルの防止（土台）', () => {
   });
 
   it('絶対パスを拒否する', () => {
-    for (const p of ['C:/Windows/system32/cmd.exe', `C:${BS}Windows`, '/etc/passwd']) {
+    // ドライブレター付きのパスが絶対パスなのは Windows だけ（他の OS ではルート配下の相対パス）
+    const windowsOnly = WIN ? ['C:/Windows/system32/cmd.exe', `C:${BS}Windows`] : [];
+    for (const p of [...windowsOnly, '/etc/passwd']) {
       expect(() => assertInsideRoot(ROOT, p)).toThrow(PathOutsideRootError);
     }
   });
@@ -30,7 +33,8 @@ describe('パス・トラバーサルの防止（土台）', () => {
     expect(() => assertInsideRoot(ROOT, '')).toThrow(PathOutsideRootError);
   });
 
-  it('バックスラッシュ区切りの脱出も拒否する', () => {
+  // バックスラッシュが区切りなのは Windows だけ（他の OS ではファイル名の 1 文字で、脱出にならない）
+  it.runIf(WIN)('バックスラッシュ区切りの脱出も拒否する', () => {
     expect(() => assertInsideRoot(ROOT, `..${BS}outside.txt`)).toThrow(PathOutsideRootError);
     expect(() => assertInsideRoot(ROOT, `src${BS}..${BS}..${BS}outside.txt`)).toThrow(
       PathOutsideRootError,

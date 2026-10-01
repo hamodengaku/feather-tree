@@ -508,8 +508,14 @@
     display: flex;
     align-items: flex-end;
     height: var(--app-metric-tabbar-height);
+    /*
+     * macOS は逆で、左上に信号機ボタンが出る。env(titlebar-area-x) がその幅になるので左を空け、
+     * 右は「全幅 − 左の空き − 使える幅」にする。Windows では x が 0 なので従来と同じ値になる。
+     */
+    padding-left: env(titlebar-area-x, 0px);
     padding-right: calc(
-      100vw - env(titlebar-area-width, calc(100vw - var(--app-metric-caption-reserve)))
+      100vw - env(titlebar-area-x, 0px) -
+        env(titlebar-area-width, calc(100vw - var(--app-metric-caption-reserve)))
     );
     background: var(--app-bg-raised);
     -webkit-app-region: drag;

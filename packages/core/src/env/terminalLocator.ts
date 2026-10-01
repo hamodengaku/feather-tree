@@ -30,7 +30,12 @@ export interface TerminalLocatorDeps {
   readonly gitPath: string | null;
   /** テストから差し替えられるようにしておく。 */
   readonly exists?: (path: string) => Promise<boolean>;
+  /** 既定は process.platform。テストから差し替えられるようにしておく。 */
+  readonly platform?: NodeJS.Platform;
 }
+
+/** macOS でアプリを開くコマンド。OS の一部なので場所は固定。 */
+const MAC_OPEN = '/usr/bin/open';
 
 /**
  * 開くべきターミナルを決める。git を実行できる見込みが無ければ null。
@@ -41,9 +46,18 @@ export interface TerminalLocatorDeps {
  *
  * ① を locateGit で判定しないのは、あれが PATH に無いときレジストリ照会（reg の起動）へ進むため。
  * ここが欲しいのは「PATH に居るか」の一点だけなので、PATH を見るだけで済ませる。
+ *
+ * macOS は上の分岐を通らず、標準の Terminal.app を `open -a` で開く。Terminal はログイン
+ * シェルを起動するので、利用者が普段使っている PATH（＝ git が通る環境）になる。
+ * ディレクトリを引数に渡すと、その場所で新しいウィンドウが開く。
  */
 export async function locateTerminal(deps: TerminalLocatorDeps): Promise<TerminalLaunch | null> {
   const exists = deps.exists ?? defaultExists;
+
+  if ((deps.platform ?? process.platform) === 'darwin') {
+    if (await exists(MAC_OPEN)) return { exe: MAC_OPEN, args: ['-a', 'Terminal', deps.cwd] };
+    return null;
+  }
 
   if ((await findOnPath(['git.exe'], deps.env, exists)) !== null) {
     // wt.exe は PATH 上で見つかった絶対パスを使う（bare 名は返さない）。
