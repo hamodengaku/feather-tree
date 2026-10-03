@@ -115,7 +115,7 @@
       <p class="empty error">{ex.error.message}</p>
     {:else}
       <p class="empty">
-        {ex.filesLoaded ? '変更のある Excel ファイルはありません。' : '読み込み中…'}
+        {ex.filesLoaded ? '変更のある Excel / CSV ファイルはありません。' : '読み込み中…'}
       </p>
     {/if}
   {:else if ex.error !== null && view === null}

@@ -58,7 +58,7 @@ export async function getLog(ctx: GitContext, options: LogOptions = {}): Promise
 }
 
 /**
- * 対応表 #49: HEAD のコミットメッセージ全文（件名 + 本文）。amend の初期値に使う。
+ * 対応表 #50: HEAD のコミットメッセージ全文（件名 + 本文）。amend の初期値に使う。
  *
  * コミットが 1 つも無いリポジトリでは null。末尾の改行は落とす。
  */

@@ -20,6 +20,7 @@ import { join } from 'node:path';
  *
  * どれも Unity や IDE の生成物で、**guid の出どころではない**
  * （`Library/` には同じ guid の写しが大量に入っていて、読むだけ無駄になる）。
+ * ただし `Library/PackageCache/` だけは例外として読む（walk の中で個別に扱う）。
  */
 const SKIP_DIRECTORIES: ReadonlySet<string> = new Set([
   'library',
@@ -35,6 +36,12 @@ const SKIP_DIRECTORIES: ReadonlySet<string> = new Set([
   '.git',
   'node_modules',
 ]);
+
+/**
+ * `Library/` の中で唯一読むディレクトリ（パッケージの実体の置き場）。Windows・macOS とも
+ * Unity はこの綴りで作る。readdir が失敗すれば（Unity で開いたことが無い等）黙って飛ばす。
+ */
+const PACKAGE_CACHE_DIRECTORY = 'PackageCache';
 
 /**
  * 索引に載せる拡張子（`.meta` を除いた本体側）。
@@ -88,7 +95,14 @@ export async function buildScriptIndex(root: string, signal?: AbortSignal): Prom
       const full = join(dir, dirent.name);
 
       if (dirent.isDirectory()) {
-        if (SKIP_DIRECTORIES.has(dirent.name.toLowerCase())) continue;
+        const lower = dirent.name.toLowerCase();
+        // Library/ のうち PackageCache/ だけは読む（2026-10-03）。uGUI・TextMeshPro などの
+        // パッケージのスクリプトの .meta はここにしか無い（Library の他の中身は guid の写しなので読まない）
+        if (lower === 'library') {
+          await walk(join(full, PACKAGE_CACHE_DIRECTORY), depth + 1);
+          continue;
+        }
+        if (SKIP_DIRECTORIES.has(lower)) continue;
         await walk(full, depth + 1);
         continue;
       }

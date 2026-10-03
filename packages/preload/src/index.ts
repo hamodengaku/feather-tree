@@ -111,6 +111,8 @@ const bridge: FeatherTreeBridge = {
   branchCreate: (id: string, req: BranchCreateRequest) => ipcRenderer.invoke(CHANNELS.branchCreate, id, req),
   branchMerge: (id: string, branchName: string, confirmed?: boolean) =>
     ipcRenderer.invoke(CHANNELS.branchMerge, id, branchName, confirmed),
+  branchDelete: (id: string, branchName: string, confirmed?: boolean) =>
+    ipcRenderer.invoke(CHANNELS.branchDelete, id, branchName, confirmed),
   stashList: (id: string) => ipcRenderer.invoke(CHANNELS.stashList, id),
   stashSave: (id: string, message: string) => ipcRenderer.invoke(CHANNELS.stashSave, id, message),
   stashApply: (id: string, req: StashApplyRequest) => ipcRenderer.invoke(CHANNELS.stashApply, id, req),

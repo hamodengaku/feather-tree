@@ -140,14 +140,15 @@
   }
 
   /**
-   * ローカルブランチの右クリックメニュー（マージ）。
+   * ローカルブランチの右クリックメニュー（マージ・削除）。
    * リモートは fetch/pull が未実装のため対象にしない。
+   * 削除はローカルだけ（リモートのブランチには触れない。対応表 #16）。
    */
   let contextMenu = $state<{ x: number; y: number; branch: BranchDto } | null>(null);
 
   function handleContextMenu(branch: BranchDto, event: MouseEvent): void {
     event.preventDefault();
-    // 現在のブランチ自身は取り込めないのでメニューを出さない
+    // 現在のブランチ自身は取り込めず、削除もできない（git も断る）のでメニューを出さない
     if (isCurrent(branch)) return;
     contextMenu = { x: event.clientX, y: event.clientY, branch };
   }
@@ -188,7 +189,7 @@
   {:else if scope === 'local'}
     <li
       class:current={isCurrent(row.branch)}
-      title="ダブルクリックでこのブランチに切り替え／右クリックでマージ"
+      title="ダブルクリックでこのブランチに切り替え／右クリックでマージ・削除"
       style:padding-left={indent(row.depth)}
       ondblclick={() => void handleSwitch(row.branch)}
       oncontextmenu={(event) => handleContextMenu(row.branch, event)}
@@ -263,6 +264,11 @@
       {
         label: menu.branch.shortName + " をマージ",
         onclick: () => void app.mergeBranch(menu.branch.shortName),
+      },
+      {
+        label: 'このブランチを削除',
+        danger: true,
+        onclick: () => void app.deleteBranch(menu.branch.shortName),
       },
     ]}
   />

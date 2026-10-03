@@ -327,15 +327,41 @@ describe('stripped（継承した代理）の配置', () => {
     expect(tree.nodes.get('903')?.parent).toBe('900');
   });
 
-  it('m_Script が解決できない MonoBehaviour は unresolvedScript が立ち、解決すれば下りる', () => {
-    expect(tree.nodes.get('903')).toMatchObject({ name: 'MonoBehaviour (dddddddd)', unresolvedScript: true });
+  it('m_Script を持つ MonoBehaviour は解決の有無によらず検索できる。純粋な MonoBehaviour（継承）はできない', () => {
+    expect(tree.nodes.get('903')).toMatchObject({ name: 'MonoBehaviour (dddddddd)', scriptSearchable: true });
     // stripped は m_Script を持たないので「検索」しても変わらない。ボタンも出さない
-    expect(tree.nodes.get('902')?.unresolvedScript).toBe(false);
+    expect(tree.nodes.get('902')?.scriptSearchable).toBe(false);
 
     const resolved = buildSideTree(parseUnityFile(VARIANT), (guid) =>
       guid === 'ddddddddeeeeeeee' ? 'EnemyAI' : null,
     );
-    expect(resolved.nodes.get('903')).toMatchObject({ name: 'EnemyAI', unresolvedScript: false });
+    // 名前が付いても、ボタンは残す（リネームの取り直し用。2026-10-03 利用者の指示）
+    expect(resolved.nodes.get('903')).toMatchObject({ name: 'EnemyAI', scriptSearchable: true });
+  });
+
+  it('uGUI・TextMeshPro は既知表で検索せずに名前が付き、走査の結果があればそちらを優先する', () => {
+    const withText = (guid: string): string =>
+      text(
+        ...HEADER,
+        '--- !u!1 &10',
+        'GameObject:',
+        '  m_Component:',
+        '  - component: {fileID: 11}',
+        '  m_Name: Label',
+        '--- !u!114 &11',
+        'MonoBehaviour:',
+        '  m_GameObject: {fileID: 10}',
+        '  m_Script: {fileID: 11500000, guid: ' + guid + ', type: 3}',
+        '',
+      );
+    expect(treeOf(withText('f4688fdb7df04437aeb418b961361dc5')).nodes.get('11')).toMatchObject({
+      name: 'TextMeshProUGUI',
+      scriptSearchable: true,
+    });
+    expect(treeOf(withText('5f7201a12d95ffc409449d95f23cf332')).nodes.get('11')?.name).toBe('Text');
+    // PackageCache を走査して得た名前が既知表に勝つ
+    const scanned = treeOf(withText('5f7201a12d95ffc409449d95f23cf332'), () => 'LegacyText');
+    expect(scanned.nodes.get('11')?.name).toBe('LegacyText');
   });
 
   it('名前の上書きが無い stripped GameObject は GameObject と出す', () => {

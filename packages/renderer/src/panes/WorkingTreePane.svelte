@@ -192,13 +192,19 @@
           直前のコミットをやり直す
         </label>
         <div class="commit-buttons">
-          <button disabled={!app.canCommit} onclick={() => void app.commit()}>コミット</button>
-          <button
-            disabled={!app.canCommitAndPush}
-            title={app.amend ? 'やり直し（amend）とは組み合わせられません' : 'コミットしてから上流へプッシュします'}
-            onclick={() => void app.requestCommitAndPush()}
+          <!-- 保存しない（起動し直すとオフ）。理由は appState.pushWithCommit -->
+          <label
+            title={app.amend
+              ? 'やり直し（amend）とは組み合わせられません'
+              : app.canPushWithCommit
+                ? 'コミットの後、続けて上流へプッシュします'
+                : 'ブランチ上にいて、リモートがあるときだけ選べます'}
           >
-            コミット&プッシュ
+            <input type="checkbox" bind:checked={app.pushWithCommit} disabled={!app.canPushWithCommit} />
+            同時にプッシュ
+          </label>
+          <button disabled={!app.canCommit} onclick={() => void app.submitCommit()}>
+            {app.commitPushes ? 'コミット&プッシュ' : 'コミット'}
           </button>
         </div>
       </div>
@@ -364,6 +370,14 @@
 
   .commit-buttons {
     display: flex;
+    align-items: center;
     gap: var(--app-metric-gap);
+  }
+
+  .commit-buttons label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--app-text-secondary);
   }
 </style>

@@ -231,6 +231,9 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.branchMerge, (id: string, branchName: string, confirmed?: boolean) =>
     service.branchMerge(id, branchName, confirmed),
   );
+  bind(CHANNELS.branchDelete, (id: string, branchName: string, confirmed?: boolean) =>
+    service.branchDelete(id, branchName, confirmed),
+  );
   bind(CHANNELS.stashList, (id: string) => service.stashList(id));
   bind(CHANNELS.stashSave, (id: string, message: string) => service.stashSave(id, message));
   bind(CHANNELS.stashApply, (id: string, req: Parameters<Service['stashApply']>[1]) =>

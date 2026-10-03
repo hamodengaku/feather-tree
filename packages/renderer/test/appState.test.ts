@@ -507,7 +507,7 @@ describe('ステージングとコミット', () => {
     expect(bridge.countOf('branchList')).toBe(before + 1);
   });
 
-  it('amend のチェックを入れると、空の欄に HEAD のメッセージを流し込む（#49）', async () => {
+  it('amend のチェックを入れると、空の欄に HEAD のメッセージを流し込む（#50）', async () => {
     const { app, bridge } = await boot();
 
     await app.setAmend(true);
@@ -549,8 +549,10 @@ describe('ステージングとコミット', () => {
       b.branches = [branch('main', { upstream: 'origin/main' })];
     });
     app.commitMessage = 'まとめて';
+    app.pushWithCommit = true;
+    expect(app.commitPushes).toBe(true);
 
-    await app.requestCommitAndPush();
+    await app.submitCommit();
     expect(app.commitPushConfirmOpen).toBe(true);
     expect(bridge.countOf('commit')).toBe(0);
 
@@ -562,6 +564,36 @@ describe('ステージングとコミット', () => {
       { remote: 'origin', branch: 'main', setUpstream: false },
     ]);
     expect(app.settings?.confirmCommitAndPush).toBe(true);
+  });
+
+  it('「同時にプッシュ」が外れていればコミットボタンはコミットだけ（既定はオフ）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+    expect(app.pushWithCommit).toBe(false);
+    app.commitMessage = 'コミットだけ';
+
+    await app.submitCommit();
+
+    expect(bridge.countOf('commit')).toBe(1);
+    expect(bridge.countOf('remotePush')).toBe(0);
+    expect(app.commitPushConfirmOpen).toBe(false);
+  });
+
+  it('「同時にプッシュ」は amend 中は効かない（チェックが残っていてもコミットだけ）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.staged = [entry('a.txt', { staged: 'M' })];
+    });
+    app.commitMessage = 'やり直し';
+    app.pushWithCommit = true;
+    app.amend = true;
+
+    expect(app.canPushWithCommit).toBe(false);
+    expect(app.commitPushes).toBe(false);
+    await app.submitCommit();
+    await app.acceptConfirmation();
+
+    expect(bridge.countOf('remotePush')).toBe(0);
   });
 
   it('コミット&プッシュ: 「再表示しない」で設定を切り、以後は確認なしで実行する', async () => {

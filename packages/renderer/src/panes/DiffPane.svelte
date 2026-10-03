@@ -13,6 +13,7 @@
     DiffHunkDto,
     DiffLineDto,
   } from '@feathertree/ipc';
+  import { untrack } from 'svelte';
   import { app } from '../lib/appState.svelte.js';
   import { hunkAllowsLines, singleLineSelection, wholeHunkSelection } from '../lib/diffSelection.js';
   import { isOpenableExcelPath } from '../lib/excelPath.js';
@@ -123,8 +124,23 @@
    * 中身は diff / conflict / Excel の行比較のどれか 1 つ（appState で排他）。
    */
   const scrollReady = $derived(
-    !app.diffLoading && (diff !== null || conflict !== null || excelRows !== null),
+    !app.diffLoading && app.diffIsCurrent && (diff !== null || conflict !== null || excelRows !== null),
   );
+
+  /**
+   * 差分ペインが見えた瞬間・選択が変わった瞬間に、出ている中身が選択と食い違っていれば取りに行く
+   * （2026-10-02。Unity などで別のファイルを選んでから戻ると、前のファイルの diff が残っている）。
+   * 同じファイルなら git は 0 回。他のモードでいる間は 1 度も取らない。
+   */
+  $effect(() => {
+    void app.activeId;
+    void app.selected?.path;
+    void app.selected?.staged;
+    untrack(() => void app.ensureDiff());
+  });
+
+  /** 出ている中身が選択中のファイルのものでなければ、中身は出さずに読み込み中として扱う。 */
+  const showLoading = $derived(app.diffLoading || (app.selected !== null && !app.diffIsCurrent));
 
   /**
    * 実際に行モードが効いている hunk。
@@ -178,7 +194,9 @@
 <div class="pane">
   <header>
     <h2>{app.selected?.path ?? '差分'}</h2>
-    {#if unmerged}
+    {#if showLoading}
+      <!-- 本文と同じく、別のファイルの行数などを見出しに出さない -->
+    {:else if unmerged}
       <span class="meta conflict">
         コンフリクト{#if conflictCount > 0}・{conflictCount} 件{/if}
       </span>
@@ -204,7 +222,7 @@
         <span>旧版と新版を Excel の見た目で左右に並べて見られます。</span>
       </div>
     {/if}
-    {#if app.diffLoading}
+    {#if showLoading}
       <p class="empty">読み込み中…</p>
     {:else if app.selected === null}
       <p class="empty">ファイルを選択すると差分を表示します。</p>

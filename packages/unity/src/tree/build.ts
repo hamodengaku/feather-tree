@@ -29,6 +29,7 @@
 import type { UnityDocument, UnityFile, UnityValue } from '../model/types.js';
 import { scanDocumentKey } from '../parse/document.js';
 import { fileIdOf, guidOf, readScalar } from '../parse/read.js';
+import { KNOWN_SCRIPT_NAMES } from './knownScripts.js';
 
 /** GameObject。 */
 const CLASS_GAME_OBJECT = 1;
@@ -50,7 +51,7 @@ interface MutableNode {
   readonly typeName: string;
   readonly name: string;
   readonly inherited: boolean;
-  readonly unresolvedScript: boolean;
+  readonly scriptSearchable: boolean;
   parent: string;
   readonly doc: UnityDocument;
   readonly children: string[];
@@ -66,8 +67,12 @@ export interface SideNode {
   readonly name: string;
   /** stripped（元 Prefab から継承した代理）か。 */
   readonly inherited: boolean;
-  /** MonoBehaviour で、`m_Script` の guid がまだスクリプト名に解決できていないか。 */
-  readonly unresolvedScript: boolean;
+  /**
+   * 「スクリプト名を検索」を出すか（2026-10-03）。`m_Script` の guid を持つ MonoBehaviour なら、
+   * 解決済み・既知表・DLL を問わず真。偽になるのは「純粋な MonoBehaviour」——継承（stripped）で
+   * `m_Script` を持たないもの、スクリプトの参照が欠けているもの——だけ。
+   */
+  readonly scriptSearchable: boolean;
   /** 親ノードの id。ルートは空文字。 */
   readonly parent: string;
   readonly doc: UnityDocument;
@@ -122,7 +127,7 @@ export function buildSideTree(file: UnityFile, resolveGuid?: GuidResolver): Side
       typeName: doc.typeName,
       name: label.name,
       inherited: doc.stripped,
-      unresolvedScript: label.unresolvedScript,
+      scriptSearchable: label.scriptSearchable,
       parent: '',
       doc,
       children: [],
@@ -297,7 +302,7 @@ function collectOverriddenNames(file: UnityFile): ReadonlyMap<string, ReadonlyMa
 
 interface NodeLabel {
   readonly name: string;
-  readonly unresolvedScript: boolean;
+  readonly scriptSearchable: boolean;
 }
 
 /**
@@ -319,7 +324,7 @@ function displayName(
   resolveGuid: GuidResolver | undefined,
   overriddenNames: ReadonlyMap<string, ReadonlyMap<string, string>>,
 ): NodeLabel {
-  const plain = (name: string): NodeLabel => ({ name, unresolvedScript: false });
+  const plain = (name: string): NodeLabel => ({ name, scriptSearchable: false });
 
   if (kind === 'gameObject') {
     const name = scanDocumentKey(file, doc, 'm_Name');
@@ -345,11 +350,12 @@ function displayName(
 
   if (doc.classId === CLASS_MONO_BEHAVIOUR) {
     const guid = guidOf(file, scanDocumentKey(file, doc, 'm_Script'));
-    const resolved = guid === '' ? null : (resolveGuid?.(guid) ?? null);
-    if (resolved !== null) return plain(resolved);
     const base = doc.typeName === '' ? 'MonoBehaviour' : doc.typeName;
+    // 純粋な MonoBehaviour（継承で m_Script を持たない・参照が欠けている）。検索しても何も分からない
     if (guid === '') return plain(base);
-    return { name: base + ' (' + guid.slice(0, 8) + ')', unresolvedScript: true };
+    // 走査で見つけた名前（自作・PackageCache）→ 既知表（uGUI・TextMeshPro 等）→ guid の先頭 8 桁
+    const name = resolveGuid?.(guid) ?? KNOWN_SCRIPT_NAMES.get(guid) ?? base + ' (' + guid.slice(0, 8) + ')';
+    return { name, scriptSearchable: true };
   }
 
   return plain(doc.typeName === '' ? 'Object ' + String(doc.classId) : doc.typeName);

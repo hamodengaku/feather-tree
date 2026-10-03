@@ -1,4 +1,5 @@
 import {
+  BranchNotMergedError,
   OPEN_EXECUTABLE_CONFIRMATION,
   SessionOperations,
   canBuildPatch,
@@ -38,6 +39,7 @@ import type {
   CloneProgressEvent,
   CloneRequest,
   BranchCreateRequest,
+  BranchDeleteResultDto,
   BranchMergeResultDto,
   HunkStageRequest,
   BranchCreateResultDto,
@@ -240,6 +242,7 @@ export interface Service {
   branchSwitch(id: string, branchName: string): Promise<BranchSwitchResultDto>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<BranchCreateResultDto>;
   branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<BranchMergeResultDto>;
+  branchDelete(id: string, branchName: string, confirmed?: boolean): Promise<BranchDeleteResultDto>;
   stashList(id: string): Promise<readonly StashEntryDto[]>;
   stashSave(id: string, message: string): Promise<StashResultDto>;
   stashApply(id: string, req: StashApplyRequest): Promise<StashResultDto>;
@@ -1289,6 +1292,29 @@ export function createService(deps: ServiceDeps): Service {
       const ops = opsFor(id);
       requireConfirmed(SessionOperations.confirmationFor('merge'), confirmed);
       return ops.mergeBranch(known);
+    },
+
+    branchDelete: async (id, branchName, confirmed) => {
+      const name = branchName.trim();
+      if (name.length === 0) {
+        throw new HandlerError({ kind: 'internal', message: '削除するブランチを指定してください。' });
+      }
+      // ローカルだけが対象。一覧照合でリモート追跡ブランチの名前も弾く（3-B と同じ趣旨）
+      const known = knownLocalBranch(id, name);
+      if (requireSession(id).snapshot?.head.branch === known) {
+        throw new HandlerError({ kind: 'internal', message: '現在のブランチは削除できません。先に別のブランチへ切り替えてください。' });
+      }
+      const ops = opsFor(id);
+      // 確認を経ていれば -D。経ていなければ -d で打ち、未マージで断られたら確認に回す
+      if (confirmed === true) return withSignal(id, (signal) => ops.deleteBranch(known, true, signal));
+      try {
+        return await withSignal(id, (signal) => ops.deleteBranch(known, false, signal));
+      } catch (err) {
+        if (err instanceof BranchNotMergedError) {
+          requireConfirmed(SessionOperations.confirmationFor('deleteBranch'), false);
+        }
+        throw err;
+      }
     },
 
     /*

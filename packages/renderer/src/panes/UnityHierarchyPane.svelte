@@ -15,7 +15,8 @@
   import type { UnityNodeDto } from '@feathertree/ipc';
 
   const nodes = $derived(app.unityView?.nodes ?? []);
-  const rows = $derived(visibleUnityRows(nodes, app.unityExpanded));
+  // コンポーネントは名前をクリックするまで畳む（2026-10-02、利用者の指示）。インデントは従来どおり
+  const rows = $derived(visibleUnityRows(nodes, app.unityExpanded, app.unityComponentsShown));
 
   /** 印の記号。色だけに頼らない（色覚に依存しない読み方を残す）。 */
   function markSymbol(mark: UnityNodeDto['mark']): string {
@@ -100,11 +101,11 @@
         aria-selected={row.node.id === app.unitySelectedNode}
         aria-expanded={row.hasChildren ? row.expanded : undefined}
         tabindex="-1"
-        onclick={() => void app.selectUnityNode(row.node.id)}
+        onclick={() => void app.clickUnityNode(row.node.id, row.node.kind)}
         onkeydown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
-            void app.selectUnityNode(row.node.id);
+            void app.clickUnityNode(row.node.id, row.node.kind);
           }
         }}
       >
@@ -151,9 +152,33 @@
               stroke-linejoin="round"
             />
           </svg>
+          <!--
+            コンポーネントの折り畳み（2026-10-03、利用者の指示）。立方体の右に置き、
+            左の twisty（子の GameObject）と同じ形にする。名前のクリックでも開閉できる。
+            GameObject は必ず Transform を持つので、実際にはどの行にも出る。
+          -->
+          {#if row.hasComponents}
+            {@const open = app.unityComponentsShown.has(row.node.id)}
+            <button
+              class="twisty"
+              type="button"
+              title={open ? 'コンポーネントを畳む' : 'コンポーネントを表示'}
+              aria-label={open ? 'コンポーネントを畳む' : 'コンポーネントを表示'}
+              aria-expanded={open}
+              onclick={(event) => {
+                event.stopPropagation();
+                app.toggleUnityComponents(row.node.id);
+              }}>{open ? '▾' : '▸'}</button
+            >
+          {:else}
+            <span class="twisty spacer"></span>
+          {/if}
         {/if}
 
-        <span class="name" title="{kindLabel(row.node.kind)}: {row.node.name}">{row.node.name}</span>
+        <span
+          class="name"
+          title="{kindLabel(row.node.kind)}: {row.node.name}">{row.node.name}</span
+        >
 
         {#if row.node.inherited}
           <!--
@@ -171,15 +196,17 @@
           スクリプト名の解決（要件 11）。**押したときだけ走る。**
           リポジトリ内の *.meta を数千件読むので、ファイルを選ぶたびに自動で
           走らせてよい処理ではない（CLAUDE.md「ファイル I/O が非常に遅い」）。
-          1 回走れば全行がまとめて解決する。索引を作っても名前が付かなかった行
-          （パッケージや DLL のスクリプト）には、もう押しても変わらないので出さない。
+          1 回走れば全行がまとめて解決する。**何度でも押せる**（2026-10-02、利用者の指示）——
+          後からスクリプトを足した・.meta を付け替えたときに、押し直せば走査し直す。
+          出すのは m_Script を持つ MonoBehaviour すべて（名前の解決の有無・既知表・DLL を問わない。
+          2026-10-03、利用者の指示）。継承（stripped）・参照の欠けた「純粋な MonoBehaviour」には出さない。
         -->
-        {#if row.node.unresolvedScript && app.unityScriptsResolved === null}
+        {#if row.node.scriptSearchable}
           <button
             class="resolve"
             type="button"
             disabled={app.unityScriptsIndexing}
-            title="リポジトリ内の .meta を読んで、MonoBehaviour のスクリプト名と PrefabInstance の元 Prefab 名を表示します（git は動きません。ファイル数によっては数秒かかります）"
+            title="リポジトリ内と Library/PackageCache の .meta を読んで、MonoBehaviour のスクリプト名と PrefabInstance の元 Prefab 名を表示します（git は動きません。ファイル数によっては数秒〜数十秒かかります）"
             onclick={(event) => {
               event.stopPropagation();
               void app.indexUnityScripts();
@@ -191,8 +218,8 @@
           <span class="mark" title={markLabel(row.node.mark)} aria-label={markLabel(row.node.mark)}
             >{markSymbol(row.node.mark)}</span
           >
-        {:else if row.node.hasChangedDescendant && !row.expanded}
-          <!-- 畳まれた下に変更がある。開かずとも気づけるようにする（要件 7） -->
+        {:else if (row.node.hasChangedDescendant && !row.expanded) || row.hiddenComponentChange}
+          <!-- 畳まれた下（子・コンポーネント）に変更がある。開かずとも気づけるようにする（要件 7） -->
           <span class="mark faint" title="この下に変更があります" aria-label="この下に変更があります"
             >·</span
           >

@@ -4,6 +4,7 @@ import {
   canBuildPatch,
   commit as gitCommit,
   createBranch as gitCreateBranch,
+  deleteBranch as gitDeleteBranch,
   discardWorktree,
   dropStash as gitDropStash,
   fetchRemote,
@@ -461,6 +462,26 @@ export class SessionOperations {
   }
 
   /**
+   * 対応表 #16。ローカルブランチだけを消す（リモートには触れない）。
+   *
+   * `force` が偽なら `-d`。未マージで断られたら git の `BranchNotMergedError` をそのまま投げ、
+   * main が確認（delete-unmerged-branch）に読み替える。確認を経たら `force` で `-D`。
+   * 作業ツリーも HEAD も動かないので **status は取り直さない**。一覧からは 1 本消えるので #3 は取り直す
+   * （対応表の例外「ブランチ削除後の反映: #16 → #3」）。
+   */
+  async deleteBranch(
+    branchName: string,
+    force: boolean,
+    signal?: AbortSignal,
+  ): Promise<{ readonly statusSeq: number }> {
+    await this.#session.track(['branch', force ? '-D' : '-d'], () =>
+      gitDeleteBranch(this.#session.context(signal), branchName, force),
+    );
+    await this.#session.refreshBranches(signal);
+    return { statusSeq: this.#session.statusSeq };
+  }
+
+  /**
    * 失敗の後始末としての status 再取得。
    *
    * ここで投げると**本来のエラー（競合）が握りつぶされる**ので、取り直しに失敗しても
@@ -696,6 +717,7 @@ export class SessionOperations {
       | 'deleteUntracked'
       | 'commit'
       | 'merge'
+      | 'deleteBranch'
       | 'stashSave'
       | 'stashApply'
       | 'stashDrop',
@@ -710,6 +732,9 @@ export class SessionOperations {
         return context.amend === true ? 'amend-pushed-commit' : null;
       case 'merge':
         return 'merge-branch';
+      // 呼ぶのは `-d` が未マージで断ったときだけ（マージ済みの削除は確認しない。対応表 #16）
+      case 'deleteBranch':
+        return 'delete-unmerged-branch';
       /*
        * stash（決定 31）。確認が要るのは破棄だけ。
        * 保存は内容が stash に残り、展開は作業ツリーへ足すだけなので、どちらも不可逆ではない

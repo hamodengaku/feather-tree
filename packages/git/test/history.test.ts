@@ -76,7 +76,7 @@ describe('履歴 (対応表 #20 / #21 / #36)', () => {
     expect(await getLog(fx.ctx, { scope: 'head' })).toEqual([]);
   });
 
-  it('HEAD のメッセージ全文を取得する（#49）', async () => {
+  it('HEAD のメッセージ全文を取得する（#50）', async () => {
     expect(await getHeadMessage(fx.ctx)).toBeNull();
     await fx.write('a.txt', 'x');
     await fx.run('add', '-A');

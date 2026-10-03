@@ -51,7 +51,9 @@ export { getGitVersion, listRemotes, resolveRepository } from './commands/reposi
 export { getStatus } from './commands/status.js';
 export type { StatusOptions } from './commands/status.js';
 export {
+  BranchNotMergedError,
   createBranch,
+  deleteBranch,
   listBranches,
   mergeBranch,
   switchBranch,

@@ -119,6 +119,21 @@ describe('Excel の比較（決定 33）', () => {
     expect(rowDiffOf(view, 3).sheets[0]?.hunks).toHaveLength(1);
   });
 
+  it('CSV も同じ経路で比べる（HEAD を #49 で 1 回・作業ツリーは直接。git は増えない）', async () => {
+    await write('data/items.csv', 'id,name\r\n1,apple\r\n2,banana\r\n');
+    await commit();
+    await write('data/items.csv', 'id,name\r\n1,apple\r\n2,BANANA\r\n');
+    const session = await open();
+
+    const { value: view, args } = await logged(() => session.getExcelComparison('data/items.csv'));
+    expect(args).toEqual(['cat-file', 'read-worktree']);
+    expect(view.old.state).toBe('ok');
+    expect(view.new.state).toBe('ok');
+    const sheet = view.comparison.sheets[0];
+    expect(sheet?.mark).toBe('changed');
+    expect(sheet?.changedCells).toBe(1);
+  });
+
   it('同じ status の世代ならキャッシュを返し、世代が進めば読み直す', async () => {
     await write('a.xlsx', xlsx(table(1)));
     await commit();
@@ -270,10 +285,12 @@ describe('Excel の比較（決定 33）', () => {
     await write('legacy.xls', 'y');
     await write('~$a.xlsx', 'lock');
     await write('notes.txt', 'n');
+    await write('data/items.csv', 'a,b');
     const session = await open();
     const list = session.listExcelFiles();
     expect(list.entries.map((e) => [e.entry.path, e.openable])).toEqual([
       ['a.xlsx', true],
+      ['data/items.csv', true],
       ['legacy.xls', false],
     ]);
     expect(list.truncated).toBe(false);

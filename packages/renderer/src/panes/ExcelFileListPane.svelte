@@ -37,12 +37,12 @@
   {#if !ex.filesLoaded}
     <p class="empty">読み込み中…</p>
   {:else if files.length === 0}
-    <p class="empty">変更のある Excel ファイルはありません。</p>
+    <p class="empty">変更のある Excel / CSV ファイルはありません。</p>
   {:else}
     <div
       class="viewport"
       role="listbox"
-      aria-label="変更のある Excel ファイル"
+      aria-label="変更のある Excel / CSV ファイル"
       bind:clientHeight={viewportHeight}
       onscroll={(e) => (scrollTop = (e.currentTarget as HTMLElement).scrollTop)}
     >

@@ -26,8 +26,8 @@ export interface MergedNode {
   readonly name: string;
   /** stripped（ネスト Prefab / Variant の元から継承した代理）か。 */
   readonly inherited: boolean;
-  /** MonoBehaviour の `m_Script` がまだスクリプト名に解決できていないか。 */
-  readonly unresolvedScript: boolean;
+  /** 「スクリプト名を検索」を出すか（m_Script の guid を持つ MonoBehaviour）。 */
+  readonly scriptSearchable: boolean;
   readonly mark: NodeMark;
   /**
    * 子孫のどこかに `same` 以外が居るか。
@@ -47,8 +47,8 @@ interface MutableNode {
   readonly name: string;
   /** stripped（ネスト Prefab / Variant の元から継承した代理）か。 */
   readonly inherited: boolean;
-  /** MonoBehaviour の `m_Script` がまだスクリプト名に解決できていないか。 */
-  readonly unresolvedScript: boolean;
+  /** 「スクリプト名を検索」を出すか（m_Script の guid を持つ MonoBehaviour）。 */
+  readonly scriptSearchable: boolean;
   readonly mark: NodeMark;
   hasChangedDescendant: boolean;
 }
@@ -143,7 +143,7 @@ function makeNode(
     classId: shown?.classId ?? 0,
     name: shown?.name ?? id,
     inherited: shown?.inherited ?? false,
-    unresolvedScript: shown?.unresolvedScript ?? false,
+    scriptSearchable: shown?.scriptSearchable ?? false,
     mark,
     hasChangedDescendant: false,
   };

@@ -279,14 +279,14 @@ describe('Unity モードの IPC ハンドラ', () => {
     expect(after.nodes.map((n) => n.name)).toContain('WeaponController');
   });
 
-  it('索引は 1 度だけ作り、2 度目は走査しない', async () => {
+  it('押すたびに走査し直す（後から足したスクリプトを拾えるように）', async () => {
     const id = await openWithEdit();
     await service.unityIndexScripts(id);
     const first = service.commandLogRecent(50).filter((e) => e.args[0] === 'scan-meta').length;
     await service.unityIndexScripts(id);
     const second = service.commandLogRecent(50).filter((e) => e.args[0] === 'scan-meta').length;
     expect(first).toBe(1);
-    expect(second).toBe(1);
+    expect(second).toBe(2);
   });
 
   it('リポジトリ外のパスは拒否する', async () => {

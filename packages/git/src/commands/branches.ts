@@ -113,3 +113,32 @@ export async function mergeBranch(ctx: GitContext, branchName: string): Promise<
   // 競合の説明は stdout に出る（stderr は空）。分類できるよう両方を渡す
   if (exit.code !== 0) throw new GitCommandError(['merge'], exit.code, exit.stderr, stdout);
 }
+
+/** `branch -d` が「未マージ」を理由に断った（`-D` なら消せる）。 */
+export class BranchNotMergedError extends Error {
+  readonly branchName: string;
+
+  constructor(branchName: string) {
+    super(`ブランチ「${branchName}」はマージされていません。`);
+    this.name = 'BranchNotMergedError';
+    this.branchName = branchName;
+  }
+}
+
+/**
+ * 対応表 #16: ローカルブランチの削除。**リモートには触れない**（`push --delete` は打たない）。
+ *
+ * まず `-d`（マージ済みのときだけ消える）で打ち、未マージで断られたら
+ * `BranchNotMergedError` を投げる。`force` は確認を経た後の `-D`。
+ * `branchName` の直前に `--` を置く（名前渡しの規則。merge / switch と同じ理由）。
+ */
+export async function deleteBranch(ctx: GitContext, branchName: string, force: boolean): Promise<void> {
+  const flag = force ? '-D' : '-d';
+  const { exit } = await runGitText(
+    commandFor(ctx, [...WRITE_PREFIX, 'branch', flag, '--', branchName]),
+    ctx.signal,
+  );
+  if (exit.code === 0) return;
+  if (!force && exit.stderr.includes('not fully merged')) throw new BranchNotMergedError(branchName);
+  throw new GitCommandError(['branch', flag], exit.code, exit.stderr);
+}

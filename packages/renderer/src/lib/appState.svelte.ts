@@ -29,6 +29,7 @@ import type {
   StatusGroupDto,
   StatusSummaryDto,
   UnityNodeDetailDto,
+  UnityNodeDto,
   UnityViewDto,
   UpdateStateDto,
 } from '@feathertree/ipc';
@@ -42,7 +43,7 @@ import { copyText } from './clipboard.js';
 import { fileNameOf, fullPathOf } from './pathText.js';
 import { initialUnityExpansion } from './unityTree.js';
 import { ExcelState } from './excelState.svelte.js';
-import { isOpenableExcelPath } from './excelPath.js';
+import { isOpenableExcelPath, isRowDiffPath } from './excelPath.js';
 import { TabActivity } from './tabActivity.js';
 
 /** ブランチペインの展開状態が無いときに返す共通の空配列（毎回作り直さない）。 */
@@ -241,7 +242,9 @@ export class AppState {
    * いま差分ペインに出している（最後に応答を受け取った）ファイル。diffKeyOf の値。
    * 同じファイルの読み直しかどうかを見分け、読み込み表示への差し替えを省くのに使う。
    */
-  #diffShownKey: string | null = null;
+  #diffShownKey = $state<string | null>(null);
+  /** 最後に取りに行ったファイル（diffKeyOf）。読み込み中の要求がどのファイルのものかを見分ける。 */
+  #diffRequestedKey: string | null = null;
   /**
    * diff の取得に失敗したときの理由。成功なら null。
    *
@@ -333,12 +336,18 @@ export class AppState {
   commitMessage = $state('');
   amend = $state(false);
   /**
-   * amend のチェックで流し込んだ HEAD のメッセージ（#49）。
+   * amend のチェックで流し込んだ HEAD のメッセージ（#50）。
    * チェックを外したとき、流し込んだまま手を付けていなければ欄を空に戻すための控え。
    */
   #amendPrefill: string | null = null;
   /** 「コミット&プッシュ」の確認ダイアログを出しているか。 */
   commitPushConfirmOpen = $state(false);
+  /**
+   * コミット欄の「同時にプッシュ」（2026-10-02、利用者の指示でボタンからチェックボックスへ）。
+   * **保存しない**（起動し直すとオフ）。取り消しの難しい操作を、前回の状態のまま
+   * 気づかずに実行させないため。アプリを閉じるまではタブを跨いでも保つ。
+   */
+  pushWithCommit = $state(false);
 
   /**
    * 実行中の `#run` の本数。
@@ -510,7 +519,23 @@ export class AppState {
    * ここではブランチ上にいてリモートがあることだけを見る。
    */
   get canCommitAndPush(): boolean {
-    return this.canCommit && !this.amend && this.currentBranch !== null && this.remotes.length > 0;
+    return this.canCommit && this.canPushWithCommit;
+  }
+
+  /** 「同時にプッシュ」を選べるか（amend 中・detached・リモート無しでは選べない）。 */
+  get canPushWithCommit(): boolean {
+    return !this.amend && this.currentBranch !== null && this.remotes.length > 0;
+  }
+
+  /** コミットボタンがプッシュまで行うか。チェックが入っていても選べない状況なら行わない。 */
+  get commitPushes(): boolean {
+    return this.pushWithCommit && this.canPushWithCommit;
+  }
+
+  /** コミットボタン。「同時にプッシュ」が効いていればコミット&プッシュ（確認つき）。 */
+  async submitCommit(): Promise<void> {
+    if (this.commitPushes) await this.requestCommitAndPush();
+    else await this.commit();
   }
 
   /**
@@ -1087,6 +1112,34 @@ export class AppState {
   }
 
   /**
+   * 差分ペインに出ている中身が、選択中のファイル（とステージ側）のものか。
+   *
+   * 偽のとき差分ペインは中身を出さずに「読み込み中…」にする。他のモード（Unity など）で
+   * 別のファイルを選んでから戻ると、`diff` には前のファイルの中身が残っている。それを
+   * 1 フレームでも見せると、見出し（選択中のパス）と本文が食い違う。
+   */
+  get diffIsCurrent(): boolean {
+    const file = this.selected;
+    return file !== null && this.#diffShownKey === diffKeyOf(file);
+  }
+
+  /**
+   * 差分ペインから呼ぶ。選択中のファイルの差分がまだ出ていなければ取りに行く（2026-10-02）。
+   *
+   * 他のモードでファイルを選んでも diff は取らない（見えていないもののために git を起動しない）。
+   * そのぶん、差分ペインに戻った瞬間に**食い違っているときだけ** 1 回取る。同じファイルなら 0 回。
+   * Unity の `ensureUnity` と対の作り。
+   */
+  async ensureDiff(): Promise<void> {
+    const file = this.selected;
+    if (file === null || this.activeId === null) return;
+    const key = diffKeyOf(file);
+    if (this.#diffShownKey === key) return;
+    if (this.diffLoading && this.#diffRequestedKey === key) return;
+    await this.loadDiff(file);
+  }
+
+  /**
    * 選択中のファイルの中身を取りに行く。
    *
    * **未マージのファイルだけは行き先が違う**（`diff:get` ではなく `conflict:get`）。
@@ -1107,6 +1160,7 @@ export class AppState {
      * 見ていた位置を失わないよう、古い中身を出したまま裏で取り直す。
      * 先頭へ戻すのは別のファイルを表示したときだけ（lib/scrollMemory.ts）。
      */
+    this.#diffRequestedKey = key;
     if (this.#diffShownKey !== key) this.diffLoading = true;
     try {
       if (unmerged) {
@@ -1129,11 +1183,12 @@ export class AppState {
        * Excel ファイル（決定 33）。`diff:get` は打たず、行単位の比較を取る
        * （HEAD ↔ 作業ツリー。ステージ済みの行を選んでも同じものを出す）。
        */
-      if (isOpenableExcelPath(file.path)) {
+      if (isRowDiffPath(file.path)) {
         const rows = await this.#ft.excelGetRowDiff(id, file.path);
         if (seq !== this.#diffSeq) return;
         // 「Excel モードで開く」で止められた要求（main は最新の要求だけを生かす）は失敗ではない
         if (!rows.ok && rows.error.kind === 'cancelled') return;
+        this.#diffShownKey = key;
         if (rows.ok) {
           this.diff = null;
           this.conflict = null;
@@ -1193,6 +1248,7 @@ export class AppState {
   #invalidateDiff(): void {
     this.#diffSeq += 1;
     this.#diffShownKey = null;
+    this.#diffRequestedKey = null;
     this.diff = null;
     this.conflict = null;
     this.excelRowDiff = null;
@@ -1308,6 +1364,12 @@ export class AppState {
    * SvelteSet なので中身を書き換えるだけで画面が追従する（作り直さない）。
    */
   readonly unityExpanded = new SvelteSet<string>();
+  /**
+   * コンポーネントを見せている GameObject / PrefabInstance（id の集合。2026-10-02、利用者の指示）。
+   * **初期は空＝コンポーネントはすべて畳む。** 名前をクリックしたものだけ開く。
+   * 子の GameObject の開閉（unityExpanded）とは別に持つ。
+   */
+  readonly unityComponentsShown = new SvelteSet<string>();
   unityLoading = $state(false);
   unityNodeLoading = $state(false);
   unityError = $state<FtErrorDto | null>(null);
@@ -1393,6 +1455,12 @@ export class AppState {
       // 最初に目がいくノード（最初の変更）を選んでおく。何も変わっていなければ先頭
       const first =
         result.value.nodes.find((n) => n.mark !== 'same') ?? result.value.nodes[0] ?? null;
+      // 選んだのがコンポーネントなら、その持ち主のコンポーネントだけは開いておく
+      // （表に出ている行がヒエラルキーのどこにも見えない、を避ける。他は畳んだまま）
+      if (first !== null && first.kind === 'component' && first.parent >= 0) {
+        const owner = result.value.nodes[first.parent];
+        if (owner !== undefined) this.unityComponentsShown.add(owner.id);
+      }
       if (first !== null) await this.selectUnityNode(first.id);
     } finally {
       if (seq === this.#unitySeq) this.unityLoading = false;
@@ -1418,6 +1486,26 @@ export class AppState {
     }
   }
 
+  /**
+   * ヒエラルキーの行をクリックしたとき。
+   *
+   * GameObject / PrefabInstance なら**コンポーネントを開く**。既に選んでいる行をもう一度押したら
+   * 畳む（開きっぱなしで縦に伸び続けないように）。コンポーネントの行は選ぶだけ。
+   */
+  async clickUnityNode(nodeId: string, kind: UnityNodeDto['kind']): Promise<void> {
+    if (kind !== 'component') {
+      if (!this.unityComponentsShown.has(nodeId)) this.unityComponentsShown.add(nodeId);
+      else if (this.unitySelectedNode === nodeId) this.unityComponentsShown.delete(nodeId);
+    }
+    await this.selectUnityNode(nodeId);
+  }
+
+  /** コンポーネントの折り畳み（立方体の右の twisty）を切り替える。選択は動かさない。 */
+  toggleUnityComponents(nodeId: string): void {
+    if (this.unityComponentsShown.has(nodeId)) this.unityComponentsShown.delete(nodeId);
+    else this.unityComponentsShown.add(nodeId);
+  }
+
   /** GameObject の折り畳みを切り替える。 */
   toggleUnityNode(nodeId: string): void {
     if (this.unityExpanded.has(nodeId)) this.unityExpanded.delete(nodeId);
@@ -1425,6 +1513,7 @@ export class AppState {
   }
 
   #replaceUnityExpansion(next: ReadonlySet<string>): void {
+    this.unityComponentsShown.clear();
     this.unityExpanded.clear();
     for (const id of next) this.unityExpanded.add(id);
   }
@@ -1489,6 +1578,7 @@ export class AppState {
     this.unityLoading = false;
     this.unityNodeLoading = false;
     this.unityExpanded.clear();
+    this.unityComponentsShown.clear();
   }
 
   /**
@@ -2318,6 +2408,23 @@ export class AppState {
    * 失敗する」ので、読み直さないと競合ファイルがどこにも出ない。ただし枝の先端は動いて
    * いないので、失敗時に読むのは status と差分だけ（main も #3 を打っていない）。
    */
+  /**
+   * 対応表 #16: ローカルブランチを削除する（リモートには触れない）。
+   *
+   * マージ済みなら確認なしで消える。未マージなら main が確認（delete-unmerged-branch）を返すので、
+   * 承認したら `-D` で呼び直す。HEAD も作業ツリーも動かないが、一覧と履歴（ref が 1 本減る）は読み直す。
+   */
+  deleteBranch(branchName: string): Promise<void> {
+    const options = { branches: true, log: true } as const;
+    return this.#operate(
+      (confirmed) => this.#ft.branchDelete(this.#id(), branchName, confirmed),
+      () =>
+        this.#operate(() => this.#ft.branchDelete(this.#id(), branchName, true), undefined, undefined, options),
+      undefined,
+      options,
+    );
+  }
+
   mergeBranch(branchName: string): Promise<void> {
     const options = { branches: true, log: true, reloadOnFailure: 'active' } as const;
     return this.#operate(
@@ -2406,7 +2513,7 @@ export class AppState {
   /**
    * amend のチェックの切り替え。
    *
-   * 入れたとき欄が空なら HEAD のメッセージ全文（#49）を流し込む。既に何か書いてあれば
+   * 入れたとき欄が空なら HEAD のメッセージ全文（#50）を流し込む。既に何か書いてあれば
    * 上書きしない（書きかけを消さない）。外したとき、流し込んだまま手を付けていなければ空に戻す。
    */
   async setAmend(on: boolean): Promise<void> {

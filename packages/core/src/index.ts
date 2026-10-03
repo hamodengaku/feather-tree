@@ -143,6 +143,8 @@ export type { OperationOutcome, StashOutcome } from './session/operations.js';
 // hunk / 行単位の可否判定（対応表 #33 / #34）。
 // main はボタンの出し分けのためにこれを DTO へ写す。git 層の関数をそのまま通す。
 export { canBuildPatch } from '@feathertree/git';
+// ブランチ削除（#16）の「未マージなので -d が断った」。main が確認（delete-unmerged-branch）に読み替える
+export { BranchNotMergedError } from '@feathertree/git';
 export type { PatchRefusal } from '@feathertree/git';
 
 // コンフリクトの表示と採用。main は git 層に依存しないので、core が素通しする。

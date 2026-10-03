@@ -28,7 +28,7 @@ function node(
     classId: 1,
     name: id,
     inherited: false,
-    unresolvedScript: false,
+    scriptSearchable: false,
     mark: 'same',
     hasChangedDescendant: false,
     ...over,
@@ -127,5 +127,55 @@ describe('端の入力', () => {
   it('親の添字が壊れていても落ちない', () => {
     const broken = [node('X', 99, 0)];
     expect(() => visibleUnityRows(broken, new Set())).not.toThrow();
+  });
+});
+
+/*
+ * コンポーネントの別畳み（2026-10-02）。
+ *
+ * Player
+ *   ├ Transform     （コンポーネント）
+ *   ├ Mover         （コンポーネント・変更）
+ *   └ Weapon        （子の GameObject）
+ *       └ Renderer  （コンポーネント）
+ */
+describe('コンポーネントは名前をクリックするまで畳む', () => {
+  const TREE: readonly UnityNodeDto[] = [
+    node('Player', -1, 0, { hasChangedDescendant: true }),
+    node('Transform', 0, 1, { kind: 'component' }),
+    node('Mover', 0, 1, { kind: 'component', mark: 'changed' }),
+    node('Weapon', 0, 1),
+    node('Renderer', 3, 2, { kind: 'component' }),
+  ];
+  const shownNames = (expanded: ReadonlySet<string>, components: ReadonlySet<string>): readonly string[] =>
+    visibleUnityRows(TREE, expanded, components).map((r) => r.node.name);
+
+  it('開いていても、コンポーネントは出さず子の GameObject だけを出す', () => {
+    expect(shownNames(new Set(['Player']), new Set())).toEqual(['Player', 'Weapon']);
+  });
+
+  it('名前をクリックした GameObject のコンポーネントだけが出る（並びは従来どおりコンポーネントが先）', () => {
+    expect(shownNames(new Set(['Player']), new Set(['Player']))).toEqual([
+      'Player',
+      'Transform',
+      'Mover',
+      'Weapon',
+    ]);
+  });
+
+  it('子を畳んでいてもコンポーネントは出せる（子の開閉と独立）', () => {
+    expect(shownNames(new Set(), new Set(['Player']))).toEqual(['Player', 'Transform', 'Mover']);
+  });
+
+  it('twisty は子の GameObject がある行だけ。畳んだコンポーネントの変更は印で知らせる', () => {
+    const rows = visibleUnityRows(TREE, new Set(['Player', 'Weapon']), new Set());
+    const player = rows.find((r) => r.node.name === 'Player');
+    const weapon = rows.find((r) => r.node.name === 'Weapon');
+    expect(player).toMatchObject({ hasChildren: true, hasComponents: true, hiddenComponentChange: true });
+    // Weapon の子はコンポーネントだけなので twisty は出さない
+    expect(weapon).toMatchObject({ hasChildren: false, hasComponents: true, hiddenComponentChange: false });
+
+    const opened = visibleUnityRows(TREE, new Set(['Player']), new Set(['Player']));
+    expect(opened.find((r) => r.node.name === 'Player')?.hiddenComponentChange).toBe(false);
   });
 });

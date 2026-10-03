@@ -15,7 +15,12 @@ import {
   rowHeaderWidth,
   visibleMerges,
 } from '../src/lib/excelGrid.js';
-import { EXCEL_OPENABLE_EXTENSIONS, isOpenableExcelPath } from '../src/lib/excelPath.js';
+import {
+  EXCEL_OPENABLE_EXTENSIONS,
+  EXCEL_WORKBOOK_EXTENSIONS,
+  isOpenableExcelPath,
+  isRowDiffPath,
+} from '../src/lib/excelPath.js';
 import { sheetLabel, sheetNotice, sideNotice, workbookSummary } from '../src/lib/excelText.js';
 import { FakeBridge, entry, installDocumentStub } from './fakeBridge.js';
 
@@ -335,11 +340,18 @@ describe('グリッドの純関数', () => {
 });
 
 describe('対象ファイルと案内の文言', () => {
-  it('拡張子の一覧は core と同じ（.xlsx / .xlsm / .xltx / .xltm）。ロックファイルは除く', () => {
-    expect([...EXCEL_OPENABLE_EXTENSIONS]).toEqual(['.xlsx', '.xlsm', '.xltx', '.xltm']);
+  it('拡張子の一覧は core と同じ（.xlsx / .xlsm / .xltx / .xltm / .csv）。ロックファイルは除く', () => {
+    expect([...EXCEL_OPENABLE_EXTENSIONS]).toEqual(['.xlsx', '.xlsm', '.xltx', '.xltm', '.csv']);
+    expect([...EXCEL_WORKBOOK_EXTENSIONS]).toEqual(['.xlsx', '.xlsm', '.xltx', '.xltm']);
     expect(isOpenableExcelPath('data/Book.XLSX')).toBe(true);
     expect(isOpenableExcelPath('data/~$Book.xlsx')).toBe(false);
     expect(isOpenableExcelPath('data/old.xls')).toBe(false);
+  });
+
+  it('CSV は Excel モードで開けるが、差分モードでは通常の diff のまま（行単位の比較に置き換えない）', () => {
+    expect(isOpenableExcelPath('data/items.CSV')).toBe(true);
+    expect(isRowDiffPath('data/items.csv')).toBe(false);
+    expect(isRowDiffPath('Book.xlsx')).toBe(true);
   });
 
   const summary = (over: Partial<ExcelSheetSummaryDto> = {}): ExcelSheetSummaryDto => ({

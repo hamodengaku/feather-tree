@@ -94,6 +94,17 @@ describe('リポジトリの走査', () => {
     expect(index.scanned).toBe(0);
   });
 
+  it('Library の中でも PackageCache だけは読む（uGUI・TextMeshPro などパッケージのスクリプト）', async () => {
+    await write(
+      'UnityProject/Library/PackageCache/com.unity.ugui@2.0.0/Runtime/TMP/TextMeshProUGUI.cs.meta',
+      meta('f4688fdb7df04437aeb418b961361dc5'),
+    );
+    await write('UnityProject/Library/ScriptAssemblies/Copy.cs.meta', meta('44444444444444444444444444444444'));
+    const index = await buildScriptIndex(dir);
+    expect(index.names.get('f4688fdb7df04437aeb418b961361dc5')).toBe('TextMeshProUGUI');
+    expect(index.names.has('44444444444444444444444444444444')).toBe(false);
+  });
+
   it('対象外の .meta は読まない（.png.meta など）', async () => {
     await write('Assets/Art/icon.png.meta', meta('88888888888888888888888888888888'));
     await write('Assets/Scripts/Keep.cs.meta', meta('99999999999999999999999999999999'));

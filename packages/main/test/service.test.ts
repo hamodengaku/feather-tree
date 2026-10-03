@@ -587,6 +587,52 @@ describe('Service (UI が通る経路の統合テスト)', () => {
     );
   });
 
+  it('ブランチ削除: マージ済みは確認なしで消え、一覧も取り直す（対応表 #16 → #3）', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+    await service.branchCreate(id, { name: 'done', startPoint: 'main' });
+    await service.branchSwitch(id, 'main');
+    const before = service.commandLogRecent(500).length;
+
+    await service.branchDelete(id, 'done');
+
+    expect(service.branchList(id).some((b) => b.shortName === 'done')).toBe(false);
+    // 作業ツリーは動かないので status は打たない
+    const added = service.commandLogRecent(500).slice(0, service.commandLogRecent(500).length - before);
+    expect(added.map((e) => e.args[0]).sort()).toEqual(['branch', 'for-each-ref']);
+  });
+
+  it('ブランチ削除: 未マージは確認を求め、確認後に -D で消える', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+    await service.branchCreate(id, { name: 'wip', startPoint: 'main' });
+    await write('wip.txt', 'work');
+    await service.sessionRefresh(id, 'status');
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'wip', amend: false });
+    await service.branchSwitch(id, 'main');
+
+    await expect(service.branchDelete(id, 'wip')).rejects.toMatchObject({
+      dto: { kind: 'needs-confirmation', confirmation: { action: 'delete-unmerged-branch' } },
+    });
+    expect(service.branchList(id).some((b) => b.shortName === 'wip')).toBe(true);
+
+    await service.branchDelete(id, 'wip', true);
+    expect(service.branchList(id).some((b) => b.shortName === 'wip')).toBe(false);
+  });
+
+  it('ブランチ削除: 現在のブランチ・一覧に無い名前は git を打たずに断る', async () => {
+    const id = await openDemo();
+    await service.stage(id, { kind: 'all' });
+    await service.commit(id, { message: 'init', amend: false });
+
+    await expect(service.branchDelete(id, 'main', true)).rejects.toMatchObject({ dto: { kind: 'internal' } });
+    await expect(service.branchDelete(id, 'origin/main', true)).rejects.toMatchObject({ dto: { kind: 'internal' } });
+    expect(service.commandLogRecent(500).some((e) => e.args[0] === 'branch')).toBe(false);
+  });
+
   it('マージが競合したら、競合ファイルを一覧に載せたうえで失敗を返す（対応表 #35 → #2）', async () => {
     const id = await openDemo();
     await service.stage(id, { kind: 'all' });

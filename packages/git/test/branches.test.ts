@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  BranchNotMergedError,
   createBranch,
+  deleteBranch,
   GitCommandError,
   listBranches,
   listRemotes,
@@ -259,5 +261,60 @@ describe('マージ (対応表 #35)', () => {
 
   it('存在しないブランチのマージは失敗する', async () => {
     await expect(mergeBranch(fx.ctx, 'nope')).rejects.toBeInstanceOf(GitCommandError);
+  });
+});
+
+describe('ブランチ削除 (対応表 #16)', () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await createFixture();
+    await fx.write('a.txt', 'x');
+    await commitAll(fx, 'init');
+  });
+
+  afterEach(async () => {
+    await fx.cleanup();
+  });
+
+  const localNames = async (): Promise<string[]> =>
+    (await listBranches(fx.ctx)).filter((b) => !b.isRemote).map((b) => b.shortName);
+
+  it('マージ済みのブランチは -d で消える（-- を挟んでも通る）', async () => {
+    await fx.run('branch', 'done');
+    await deleteBranch(fx.ctx, 'done', false);
+    expect(await localNames()).toEqual(['main']);
+  });
+
+  it('未マージは -d が断り BranchNotMergedError、force（-D）なら消える', async () => {
+    await fx.run('switch', '-c', 'wip');
+    await fx.write('b.txt', 'y');
+    await commitAll(fx, 'wip');
+    await fx.run('switch', 'main');
+
+    await expect(deleteBranch(fx.ctx, 'wip', false)).rejects.toBeInstanceOf(BranchNotMergedError);
+    expect(await localNames()).toContain('wip');
+
+    await deleteBranch(fx.ctx, 'wip', true);
+    expect(await localNames()).toEqual(['main']);
+  });
+
+  it('上流があってもリモート追跡ブランチには触れない', async () => {
+    const remote = await createFixture();
+    try {
+      await remote.write('r.txt', 'r');
+      await commitAll(remote, 'remote init');
+      await fx.run('remote', 'add', 'origin', remote.dir);
+      await fx.run('fetch', 'origin');
+      await fx.run('branch', '--track', 'tracked', 'origin/main');
+
+      await deleteBranch(fx.ctx, 'tracked', true);
+
+      const all = await listBranches(fx.ctx);
+      expect(all.some((b) => !b.isRemote && b.shortName === 'tracked')).toBe(false);
+      expect(all.some((b) => b.isRemote && b.shortName === 'origin/main')).toBe(true);
+    } finally {
+      await remote.cleanup();
+    }
   });
 });

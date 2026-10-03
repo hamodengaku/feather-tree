@@ -27,7 +27,7 @@ export function sideNotice(side: ExcelSideName, state: ExcelSideStateDto): strin
     case 'encrypted-or-legacy':
       return 'パスワード付き、または旧形式（.xls）のため表示できません。';
     case 'not-spreadsheet':
-      return 'Excel のブックとして読めません（.xlsb は対象外です）。';
+      return 'Excel のブック・CSV として読めません（.xlsb とバイナリのファイルは対象外です）。';
     case 'too-large':
       return '大きすぎるため表示できません（上限 100MB）。';
     case 'locked':

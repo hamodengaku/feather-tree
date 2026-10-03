@@ -371,7 +371,7 @@ export class FakeBridge {
       classId: 1,
       name: 'Player',
       inherited: false,
-      unresolvedScript: false,
+      scriptSearchable: false,
       mark: 'changed',
       hasChangedDescendant: true,
     },
@@ -383,7 +383,7 @@ export class FakeBridge {
       classId: 4,
       name: 'Transform',
       inherited: false,
-      unresolvedScript: false,
+      scriptSearchable: false,
       mark: 'changed',
       hasChangedDescendant: false,
     },
@@ -1004,6 +1004,12 @@ export class FakeBridge {
         this.record('branchCreate', id, req);
         this.seq += 1;
         return Promise.resolve(ok({ statusSeq: this.seq }));
+      },
+      branchDelete: (id: string, branchName: string, confirmed?: boolean) => {
+        this.record('branchDelete', id, branchName, confirmed);
+        const result = this.guard('branchDelete', 'delete-unmerged-branch', confirmed, { statusSeq: this.seq });
+        if (result.ok) this.branches = this.branches.filter((b) => b.isRemote || b.shortName !== branchName);
+        return Promise.resolve(result);
       },
       branchMerge: (id: string, branchName: string, confirmed?: boolean) => {
         this.record('branchMerge', id, branchName, confirmed);

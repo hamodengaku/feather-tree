@@ -61,6 +61,7 @@ export const CHANNELS = {
   branchSwitch: 'branch:switch',
   branchCreate: 'branch:create',
   branchMerge: 'branch:merge',
+  branchDelete: 'branch:delete',
 
   stashList: 'stash:list',
   stashSave: 'stash:save',
@@ -517,8 +518,11 @@ export interface UnityNodeDto {
    * ヒエラルキーでは持ち込んだ PrefabInstance の下に並び、画面では「継承」の印を付ける。
    */
   readonly inherited: boolean;
-  /** MonoBehaviour の `m_Script` がまだスクリプト名に解決できていないか（行内の「スクリプト名を検索」の出し分け）。 */
-  readonly unresolvedScript: boolean;
+  /**
+   * 行内に「スクリプト名を検索」を出すか（2026-10-03）。`m_Script` の guid を持つ MonoBehaviour なら
+   * 名前の解決の有無によらず真。継承（stripped）・スクリプトの参照が欠けたものだけ偽。
+   */
+  readonly scriptSearchable: boolean;
   readonly mark: UnityNodeMarkDto;
   /**
    * 子孫のどこかに `same` 以外が居るか。
@@ -941,6 +945,10 @@ export interface BranchMergeResultDto {
   readonly statusSeq: number;
 }
 
+export interface BranchDeleteResultDto {
+  readonly statusSeq: number;
+}
+
 /** リモート操作（対応表 #22〜#25）の結果。マージと同じく世代番号だけを返す。 */
 export interface RemoteResultDto {
   readonly statusSeq: number;
@@ -1273,7 +1281,7 @@ export interface FeatherTreeBridge {
   /** 差分モードの行単位比較（C 案）。excelGetView とキャッシュを共有する。 */
   excelGetRowDiff(id: string, path: string): Promise<Result<ExcelRowDiffDto>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
-  /** 対応表 #49: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
+  /** 対応表 #50: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
   logHeadMessage(id: string): Promise<Result<string | null>>;
   /** 対応表 #21。マージコミットでは空配列（`git show` の既定）。 */
   commitGetFiles(id: string, oid: string): Promise<Result<readonly CommitFileChangeDto[]>>;
@@ -1317,6 +1325,12 @@ export interface FeatherTreeBridge {
   branchSwitch(id: string, branchName: string): Promise<Result<BranchSwitchResultDto>>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<Result<BranchCreateResultDto>>;
   branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<Result<BranchMergeResultDto>>;
+  /**
+   * 対応表 #16: ローカルブランチの削除（リモートには触れない）。
+   * マージ済みなら確認なしで `-d`。未マージなら 'needs-confirmation'（delete-unmerged-branch）で断り、
+   * confirmed で呼び直すと `-D`。現在のブランチは消せない。
+   */
+  branchDelete(id: string, branchName: string, confirmed?: boolean): Promise<Result<BranchDeleteResultDto>>;
   /** リモート名の一覧（対応表 #4 の結果のキャッシュ。git は走らない）。 */
   remoteList(id: string): Promise<Result<readonly string[]>>;
   remoteFetch(id: string, remote: string): Promise<Result<RemoteResultDto>>;

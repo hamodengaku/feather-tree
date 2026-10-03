@@ -74,6 +74,47 @@ describe('モードに入るまで git を動かさない', () => {
     expect(bridge.calls.some((c) => c.name === 'diffGet')).toBe(false);
   });
 
+  /*
+   * 2026-10-02 利用者報告: Unity で別のファイルを選んでから差分モードに戻ると、
+   * 見出し（選択）と diff（前のファイル）が食い違っていた。
+   */
+  it('Unity で別のファイルを選んで差分モードに戻ると、食い違いを検出して 1 回だけ取り直す', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.unityNodeDetails.set('101', detail());
+    });
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+    await app.enterUnityMode();
+    await app.select({ path: 'Assets/Other.prefab', staged: false });
+
+    await app.setViewMode('diff');
+    // 差分ペインが見えた瞬間の判定: 出ている diff は Player のもの＝選択と食い違っている
+    expect(app.diffIsCurrent).toBe(false);
+    bridge.calls.length = 0;
+
+    await app.ensureDiff();
+    expect(bridge.calls.filter((c) => c.name === 'diffGet')).toHaveLength(1);
+    expect(app.diffIsCurrent).toBe(true);
+    expect(app.diff?.path).toBe('Assets/Other.prefab');
+
+    // 2 度目は何もしない（同じファイルなら git 0 回）
+    await app.ensureDiff();
+    expect(bridge.calls.filter((c) => c.name === 'diffGet')).toHaveLength(1);
+  });
+
+  it('Unity で同じファイルのまま差分モードに戻っても diff は取り直さない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.unityNodeDetails.set('101', detail());
+    });
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+    await app.enterUnityMode();
+    await app.setViewMode('diff');
+    bridge.calls.length = 0;
+
+    await app.ensureDiff();
+    expect(app.diffIsCurrent).toBe(true);
+    expect(bridge.calls.some((c) => c.name === 'diffGet')).toBe(false);
+  });
+
   it('モードに入るとブランチペインが畳まれる（設定の書き込みは 1 回）', async () => {
     const { app, bridge } = await boot();
     bridge.calls.length = 0;
@@ -104,6 +145,49 @@ describe('ビューと表の取得', () => {
     expect(app.unitySelectedNode).toBe('100');
     expect(app.unityNode?.nodeId).toBe('100');
     expect(bridge.calls.filter((c) => c.name === 'unityGetNode')).toHaveLength(1);
+  });
+
+  it('コンポーネントは畳んで始まり、GameObject の名前のクリックで開き、選択中の再クリックで畳む', async () => {
+    const { app } = await boot((b) => {
+      b.unityNodeDetails.set('100', detail({ nodeId: '100' }));
+    });
+    await app.enterUnityMode();
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+    // 自動で選ばれたのは GameObject（Player）なので、何も開かない
+    expect(app.unityComponentsShown.size).toBe(0);
+
+    await app.clickUnityNode('100', 'gameObject');
+    expect(app.unityComponentsShown.has('100')).toBe(true);
+
+    await app.clickUnityNode('100', 'gameObject');
+    expect(app.unityComponentsShown.has('100')).toBe(false);
+    expect(app.unitySelectedNode).toBe('100');
+  });
+
+  it('立方体の右の △ はコンポーネントだけを開閉し、選択は動かさない', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.unityNodeDetails.set('100', detail({ nodeId: '100' }));
+    });
+    await app.enterUnityMode();
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+    const before = bridge.calls.filter((c) => c.name === 'unityGetNode').length;
+
+    app.toggleUnityComponents('100');
+    expect(app.unityComponentsShown.has('100')).toBe(true);
+    app.toggleUnityComponents('100');
+    expect(app.unityComponentsShown.has('100')).toBe(false);
+    expect(bridge.calls.filter((c) => c.name === 'unityGetNode')).toHaveLength(before);
+  });
+
+  it('自動で選ばれたのがコンポーネントなら、その持ち主のコンポーネントだけ開いておく', async () => {
+    const { app } = await boot((b) => {
+      b.unityHierarchy = b.unityHierarchy.map((n) => (n.id === '100' ? { ...n, mark: 'same' as const } : n));
+    });
+    await app.enterUnityMode();
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+
+    expect(app.unitySelectedNode).toBe('101');
+    expect([...app.unityComponentsShown]).toEqual(['100']);
   });
 
   it('変更のある節までの経路が開いた状態で始まる（要件 7）', async () => {

@@ -360,16 +360,12 @@ export class RepositorySession {
    *
    * **利用者が明示的にボタンを押したときだけ呼ぶ。** 巨大プロジェクトでは数千の
    * `.meta` を読むことになり、この環境はファイル I/O が極端に遅い（CLAUDE.md）。
-   * 1 度作ったらセッションの間は使い回す。
+   *
+   * **押すたびに走査し直す**（2026-10-02、利用者の指示）。以前は 1 度作ったら使い回していたが、
+   * 後から足したスクリプトや付け替えた .meta が拾えず、ボタンも消えて打つ手が無かった。
+   * 自動では走らない（押したときだけ）ので、読み直しの重さは利用者が選んだ分だけに収まる。
    */
   async indexUnityScripts(signal?: AbortSignal): Promise<ScriptIndex> {
-    /*
-     * **件数ではなく「走査したか」で見る。** 対象の .meta が 1 つも無い
-     * リポジトリ（スクリプトの無い Prefab だけの構成など）でも、
-     * ボタンを押すたびに数千ファイルを読み直さないため。
-     */
-    const cached = this.#scriptIndex;
-    if (cached !== null) return cached;
     this.#scriptIndex = await this.track(['scan-meta'], () =>
       buildScriptIndex(this.#root, signal),
     );
@@ -447,7 +443,7 @@ export class RepositorySession {
     );
   }
 
-  /** 対応表 #49: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
+  /** 対応表 #50: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
   async getHeadMessage(signal?: AbortSignal): Promise<string | null> {
     return this.track(['log', '-1'], () => getHeadMessage(this.context(signal)));
   }

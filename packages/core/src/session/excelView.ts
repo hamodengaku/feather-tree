@@ -18,7 +18,7 @@ import {
   buildGeometry,
   buildRowDiff,
   compareWorkbooksSteps,
-  openWorkbookSteps,
+  openSpreadsheetSteps,
   type ExcelLimits,
   type RowDiff,
   type SheetGeometry,
@@ -118,6 +118,7 @@ async function drive<T>(steps: Generator<void, T>, signal: AbortSignal | undefin
 }
 
 async function openSide(
+  path: string,
   read: BlobBytes | null,
   limits: ExcelLimits,
   signal: AbortSignal | undefined,
@@ -125,7 +126,8 @@ async function openSide(
   if (read === null) return { state: 'absent', workbook: null, bytes: 0, detail: null };
   if (read.kind === 'too-large') return { state: 'too-large', workbook: null, bytes: read.bytes, detail: null };
   const bytes = new Uint8Array(read.bytes.buffer, read.bytes.byteOffset, read.bytes.byteLength);
-  const opened = await drive(openWorkbookSteps(bytes, zlibInflater, limits), signal);
+  // ブックは ZIP として、CSV はテキストとして開く（どちらも同じモデルに載る）
+  const opened = await drive(openSpreadsheetSteps(path, bytes, zlibInflater, limits), signal);
   if (!opened.ok) return { state: opened.reason, workbook: null, bytes: bytes.length, detail: null };
   return { state: 'ok', workbook: opened.workbook, bytes: bytes.length, detail: null };
 }
@@ -170,7 +172,7 @@ export async function buildExcelComparison(
   } else {
     try {
       const read = await source.track(['cat-file', headPath], () => readHeadBlobFiltered(ctx, headPath, { maxBytes }));
-      oldSide = await openSide(read, limits, signal);
+      oldSide = await openSide(headPath, read, limits, signal);
     } catch (err) {
       // 中止と「git が無い」だけは全体の失敗にする。それ以外（LFS の失敗・タイムアウト）は旧側の案内にして、
       // 新側は見せる（要件 E7「片側が駄目でも、もう片側は見せる」）
@@ -188,7 +190,7 @@ export async function buildExcelComparison(
   let newSide: ExcelSide;
   try {
     const read = await source.track(['read-worktree', path], () => readWorktreeBytes(ctx, path, { maxBytes }));
-    newSide = await openSide(read, limits, signal);
+    newSide = await openSide(path, read, limits, signal);
   } catch (err) {
     if (err instanceof WorktreeFileLockedError) {
       newSide = { state: 'locked', workbook: null, bytes: 0, detail: err.message };

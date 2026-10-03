@@ -49,6 +49,8 @@ export {
 } from './model/types.js';
 
 export { openWorkbook, openWorkbookSteps } from './workbook/workbook.js';
+export { CSV_SHEET_NAME, csvRecords, decodeCsv, openCsv, openCsvSteps, type CsvEncoding } from './csv/csv.js';
+export { isCsvPath, openSpreadsheetSteps } from './open.js';
 export { cellAddress, columnName, parseCellRef, parseRange, MAX_COLS, MAX_ROWS, type CellRange, type CellRef } from './sheet/ref.js';
 export { columnWidthPx, rowHeightPx, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PT } from './sheet/worksheet.js';
 export { shiftFormula } from './formula/shared.js';
@@ -106,6 +108,13 @@ export {
 } from './compare/hunks.js';
 
 /** Excel 差分モードが解釈できる拡張子（小文字）。1 か所で決める。 */
-export const EXCEL_OPENABLE_EXTENSIONS = ['.xlsx', '.xlsm', '.xltx', '.xltm'] as const;
+export const EXCEL_OPENABLE_EXTENSIONS = ['.xlsx', '.xlsm', '.xltx', '.xltm', '.csv'] as const;
+/**
+ * そのうちブック（ZIP）の拡張子。差分モードで行単位の比較に置き換えるのはこちらだけ。
+ * CSV はテキストなので、差分モードでは通常の diff（hunk / 行のステージ込み）のまま出す。
+ */
+export const EXCEL_WORKBOOK_EXTENSIONS = ['.xlsx', '.xlsm', '.xltx', '.xltm'] as const;
+/** CSV の拡張子（2026-10-02 追加）。 */
+export const EXCEL_CSV_EXTENSIONS = ['.csv'] as const;
 /** 一覧には出すが「表示できません」の案内だけを出す拡張子。 */
 export const EXCEL_LISTED_ONLY_EXTENSIONS = ['.xls', '.xlsb'] as const;
