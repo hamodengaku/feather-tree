@@ -28,9 +28,12 @@ import {
   rowsFor,
   selectionForNode,
   EXCEL_LIMITS,
+  conflictCellsOf,
   geometryOf,
   rowDiffOf,
+  type ExcelCellChoices,
   type ExcelComparison,
+  type ExcelResolveRequest,
   type SheetComparison,
 } from '@feathertree/core';
 import type {
@@ -83,6 +86,10 @@ import type {
   ExcelRowPageDto,
   ExcelSheetLayoutDto,
   ExcelViewDto,
+  ExcelCellChoicesDto,
+  ExcelConflictSideDto,
+  ExcelResolveRequestDto,
+  ExcelResolveResultDto,
 } from '@feathertree/ipc';
 import { stat } from 'node:fs/promises';
 import { basename, isAbsolute, join } from 'node:path';
@@ -234,6 +241,7 @@ export interface Service {
   excelGetRows(id: string, token: string, sheet: number, start: number, count: number): Promise<ExcelRowPageDto>;
   excelGetCell(id: string, token: string, sheet: number, row: number, col: number): Promise<ExcelCellDetailDto>;
   excelGetRowDiff(id: string, path: string): Promise<ExcelRowDiffDto>;
+  excelResolveConflict(id: string, req: ExcelResolveRequestDto, confirmed?: boolean): Promise<ExcelResolveResultDto>;
   logGetPage(id: string, skip: number): Promise<readonly CommitSummaryDto[]>;
   logHeadMessage(id: string): Promise<string | null>;
   commitGetFiles(id: string, oid: string): Promise<readonly CommitFileChangeDto[]>;
@@ -695,6 +703,65 @@ export function createService(deps: ServiceDeps): Service {
     const found = Number.isInteger(sheet) ? view.comparison.sheets[sheet] : undefined;
     if (found === undefined) throw new HandlerError({ kind: 'internal', message: 'シートの指定が不正です。' });
     return found;
+  };
+
+  /**
+   * Excel のコンフリクトの採用（excelResolveConflict）の入力検証（決定 34）。
+   *
+   * 決定 30 の採用と同じく**作業ツリーのファイルを直接書く**ので、パス（文字列と実体）・未マージであること・
+   * 表示中の比較（トークン）を確かめ、座標は整数で範囲内、側は 2 種のどちらかだけを通す。
+   * 渡すのは座標と側だけで、本文は core が読み直したものから作る。
+   */
+  const guardExcelResolve = async (
+    id: string,
+    req: ExcelResolveRequestDto,
+  ): Promise<[ExcelComparison, ExcelResolveRequest]> => {
+    const session = requireSession(id);
+    if (typeof req?.path !== 'string' || typeof req.token !== 'string') {
+      throw new HandlerError({ kind: 'internal', message: '採用の指定が不正です。' });
+    }
+    assertInsideRoot(session.root, req.path);
+    await assertRealPathInsideRoot(session.root, join(session.root, req.path));
+    requireUnmerged(id, req.path);
+    const view = requireExcel(id, req.token);
+    if (view.path !== req.path || view.conflict === null) {
+      throw new HandlerError({
+        kind: 'diff-stale',
+        message: '表示中の Excel の比較が古くなっています。取り直してください。',
+      });
+    }
+
+    const resolution = req.resolution;
+    if (resolution?.kind === 'file') return [view, { kind: 'file', side: validSide(resolution.side) }];
+    if (resolution?.kind !== 'cells') throw new HandlerError({ kind: 'internal', message: '採用の指定が不正です。' });
+
+    const sheet = view.comparison.sheets[0];
+    const rowCount = sheet?.oldRow.length ?? 0;
+    const colCount = sheet?.colCount ?? 0;
+    return [view, { kind: 'cells', choices: validChoices(resolution.choices, rowCount, colCount) }];
+  };
+
+  const validSide = (side: unknown): ExcelConflictSideDto => {
+    if (side === 'ours' || side === 'theirs') return side;
+    throw new HandlerError({ kind: 'internal', message: '採用する側の指定が不正です。' });
+  };
+
+  /** 揃えた座標の検証。数は「シートのセル数」を上限にする（巨大な配列で main を止めさせない）。 */
+  const validChoices = (choices: ExcelCellChoicesDto, rowCount: number, colCount: number): ExcelCellChoices => {
+    const bad = (): never => {
+      throw new HandlerError({ kind: 'internal', message: '採用するセルの指定が不正です。' });
+    };
+    const inRange = (n: unknown, max: number): n is number => Number.isInteger(n) && (n as number) >= 0 && (n as number) < max;
+    if (choices === null || typeof choices !== 'object') return bad();
+    const { cells, rows, cols, rest } = choices;
+    if (!Array.isArray(cells) || !Array.isArray(rows) || !Array.isArray(cols)) return bad();
+    if (cells.length > EXCEL_LIMITS.maxCellsPerSheet || rows.length > rowCount || cols.length > colCount) return bad();
+    return {
+      cells: cells.map((c) => (inRange(c?.row, rowCount) && inRange(c.col, colCount) ? { row: c.row, col: c.col, side: validSide(c.side) } : bad())),
+      rows: rows.map((r) => (inRange(r?.row, rowCount) ? { row: r.row, side: validSide(r.side) } : bad())),
+      cols: cols.map((c) => (inRange(c?.col, colCount) ? { col: c.col, side: validSide(c.side) } : bad())),
+      rest: rest === null ? null : validSide(rest),
+    };
   };
 
   /** 整数に丸めて範囲に収める。数値でなければ min。 */
@@ -1202,13 +1269,15 @@ export function createService(deps: ServiceDeps): Service {
       const target = requireSheet(view, sheet);
       const geometry = geometryOf(view, target.index);
       if (geometry === null) throw new HandlerError({ kind: 'internal', message: 'シートの指定が不正です。' });
-      return toSheetLayoutDto(
+      const layout = toSheetLayoutDto(
         token,
         target.index,
         geometry,
         view.old.workbook?.styles ?? null,
         view.new.workbook?.styles ?? null,
       );
+      // 未マージでセル単位に採れるときだけ、衝突セルの一覧を添える（決定 34）
+      return view.conflict === null ? layout : { ...layout, conflictCells: conflictCellsOf(view, target) };
     },
 
     excelGetRows: async (id, token, sheet, start, count) => {
@@ -1233,6 +1302,27 @@ export function createService(deps: ServiceDeps): Service {
       assertInsideRoot(session.root, path);
       const view = await latestExcel(id, (signal) => session.getExcelComparison(path, signal));
       return toRowDiffDto(view, rowDiffOf(view, deps.settings().diffContextLines));
+    },
+
+    /*
+     * Excel のコンフリクトの採用（決定 34）。作業ツリーへ書き戻すだけで index には触れないので、
+     * status は取り直さない（決定 30 と同じ）。
+     *
+     * 確認は**段の方式のファイル単位で、作業ツリーがどちらの側とも違うとき**だけ。どちらかと同じなら
+     * 同じものが index の段に残っていて取り戻せる。比較を作ってから作業ツリーが変わっていれば、
+     * core が書く直前の照合で diff-stale にする（ここで見た worktree が古いまま上書きすることは無い）。
+     */
+    excelResolveConflict: async (id, req, confirmed) => {
+      const session = requireSession(id);
+      const [view, request] = await guardExcelResolve(id, req);
+      const conflict = view.conflict;
+      // 確かめられなかった（大きすぎる・読めない）ときも、手で編集したものを黙って消さないよう確認に倒す
+      const unsure = conflict?.worktree === 'neither' || conflict?.worktree === 'unknown';
+      if (request.kind === 'file' && conflict?.source === 'stages' && unsure) {
+        requireConfirmed('overwrite-conflict-worktree', confirmed);
+      }
+      await withSignal(id, (signal) => session.resolveExcelConflict(view, request, signal));
+      return { statusSeq: session.statusSeq };
     },
 
     logGetPage: async (id, skip) => requireSession(id).getLogPage(Math.max(0, skip)),

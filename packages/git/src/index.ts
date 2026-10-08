@@ -69,8 +69,15 @@ export { readUserIdentity, setLocalUserIdentity } from './commands/config.js';
 export type { IdentityField, IdentityKey, IdentityScope, UserIdentity } from './commands/config.js';
 export { getCommitFileDiff, getCommitFiles, getHeadMessage, getLog } from './commands/history.js';
 export type { LogOptions } from './commands/history.js';
-export { readBlobText, readHeadBlobFiltered, readWorktreeBytes, readWorktreeText } from './commands/blob.js';
-export type { BlobBytes, BlobBytesOptions, BlobRevision, BlobText } from './commands/blob.js';
+export {
+  readBlobFiltered,
+  readBlobText,
+  readHeadBlobFiltered,
+  readWorktreeBytes,
+  readWorktreeText,
+  writeWorktreeBytes,
+} from './commands/blob.js';
+export type { BlobBytes, BlobBytesOptions, BlobRevision, BlobText, FilteredRevision } from './commands/blob.js';
 export { getFileDiff, getUntrackedFileDiff } from './commands/diff.js';
 export type { DiffOptions } from './commands/diff.js';
 export {

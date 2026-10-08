@@ -5,10 +5,12 @@
  */
 
 import {
+  baseCellOf,
   buildRowPage,
   cellDetail,
   excelToken,
   type ExcelComparison,
+  type ExcelConflict,
   type ExcelFileList,
   type ExcelSide,
 } from '@feathertree/core';
@@ -16,6 +18,7 @@ import type { CellStyle, RowDiff, SheetComparison, SheetGeometry, SheetInfo, Sty
 import type {
   ExcelCellDetailDto,
   ExcelCellStyleDto,
+  ExcelConflictDto,
   ExcelFileListDto,
   ExcelRowDiffDto,
   ExcelRowPageDto,
@@ -69,6 +72,19 @@ function toSheetSummary(sheet: SheetComparison): ExcelSheetSummaryDto {
   };
 }
 
+function toConflictDto(conflict: ExcelConflict | null): ExcelConflictDto | null {
+  if (conflict === null) return null;
+  return {
+    source: conflict.source,
+    markers: conflict.markers,
+    blocks: conflict.blocks,
+    worktree: conflict.worktree,
+    hasBase: conflict.base?.state === 'ok',
+    cellResolvable: conflict.cellResolvable,
+    fingerprint: conflict.fingerprint,
+  };
+}
+
 export function toExcelViewDto(view: ExcelComparison): ExcelViewDto {
   return {
     token: excelToken(view),
@@ -78,6 +94,7 @@ export function toExcelViewDto(view: ExcelComparison): ExcelViewDto {
     new: toSideDto(view.new),
     sheets: view.comparison.sheets.map(toSheetSummary),
     vbaChanged: view.comparison.vbaChanged,
+    conflict: toConflictDto(view.conflict),
   };
 }
 
@@ -168,7 +185,8 @@ export function toRowPageDto(
 
 export function toCellDetailDto(view: ExcelComparison, sheet: SheetComparison, row: number, col: number): ExcelCellDetailDto {
   const d = cellDetail(view.comparison, sheet, row, col);
-  return { row, col, old: d.old, new: d.new, changed: d.changed };
+  if (view.conflict?.base?.state !== 'ok') return { row, col, old: d.old, new: d.new, changed: d.changed };
+  return { row, col, old: d.old, new: d.new, changed: d.changed, base: baseCellOf(view, sheet, row, col) };
 }
 
 export function toRowDiffDto(view: ExcelComparison, diff: RowDiff): ExcelRowDiffDto {

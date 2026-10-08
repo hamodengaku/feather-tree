@@ -72,12 +72,25 @@ export type { CloneOutcome, CloneTarget, SessionInfo } from './session/sessionMa
 
 // Excel 差分（決定 33）
 export {
+  baseCellOf,
   buildExcelComparison,
   excelToken,
   geometryOf,
   rowDiffOf,
 } from './session/excelView.js';
-export type { ExcelComparison, ExcelSide, ExcelSideState, ExcelViewSource } from './session/excelView.js';
+export type {
+  ExcelComparison,
+  ExcelConflict,
+  ExcelConflictSource,
+  ExcelMarkerState,
+  ExcelSide,
+  ExcelSideState,
+  ExcelViewSource,
+  ExcelWorktreeMatch,
+} from './session/excelView.js';
+// Excel のコンフリクトの採用（決定 34）
+export { conflictCellsOf, planCsvResolution, resolveExcelConflict } from './session/excelConflict.js';
+export type { ExcelCellChoices, ExcelConflictSide, ExcelResolveRequest } from './session/excelConflict.js';
 export { isExcelPath, isOpenableExcelPath, listExcelFiles, MAX_EXCEL_FILES } from './session/excelFiles.js';
 export type { ExcelFileEntry, ExcelFileList } from './session/excelFiles.js';
 export { zlibInflater } from './session/zlibInflater.js';

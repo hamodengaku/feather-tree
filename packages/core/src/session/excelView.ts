@@ -13,14 +13,20 @@
  * 持たせ、画面はそれを案内に写す（要件 E7）。
  */
 
+import { createHash } from 'node:crypto';
 import {
   DEFAULT_LIMITS,
   buildGeometry,
   buildRowDiff,
+  cellSideIn,
   compareWorkbooksSteps,
+  isCsvPath,
   openSpreadsheetSteps,
+  splitCsvConflict,
+  type CellSide,
   type ExcelLimits,
   type RowDiff,
+  type SheetComparison,
   type SheetGeometry,
   type Workbook,
   type WorkbookComparison,
@@ -30,9 +36,10 @@ import {
   GitCommandError,
   GitNotFoundError,
   WorktreeFileLockedError,
-  readHeadBlobFiltered,
+  readBlobFiltered,
   readWorktreeBytes,
   type BlobBytes,
+  type FilteredRevision,
   type GitContext,
   type StatusSnapshot,
 } from '@feathertree/git';
@@ -70,6 +77,36 @@ export interface ExcelSide {
   readonly detail: string | null;
 }
 
+/**
+ * 未マージのときの両側の出どころ（決定 34）。
+ *  - `markers` … CSV の作業ツリーのマーカーを解いた（git は 0。セル・行・列単位で採れる）
+ *  - `stages`  … index の段（`:2:` / `:3:`）を #49 で読んだ（ファイル単位でだけ採れる）
+ */
+export type ExcelConflictSource = 'markers' | 'stages';
+
+/** 作業ツリーが今どの側と同じか（`stages` のとき）。`markers` では常に `neither`（マーカー入り）。 */
+export type ExcelWorktreeMatch = 'ours' | 'theirs' | 'neither' | 'absent' | 'unknown';
+
+/** CSV のマーカーの読め方。`markers` に入れなかった理由の案内に使う。ブックは `not-csv`。 */
+export type ExcelMarkerState = 'split' | 'none' | 'malformed' | 'unsupported' | 'not-csv';
+
+export interface ExcelConflict {
+  readonly source: ExcelConflictSource;
+  readonly markers: ExcelMarkerState;
+  /** `markers` のときの衝突ブロックの数。 */
+  readonly blocks: number;
+  readonly worktree: ExcelWorktreeMatch;
+  /** 共通祖先（ブックの `stages` のときだけ読む。値バー用）。 */
+  readonly base: ExcelSide | null;
+  /** セル・行・列単位で採れるか（`markers` で、両側とも上限内で読めたとき）。 */
+  readonly cellResolvable: boolean;
+  /**
+   * 作業ツリーのバイト列の指紋（無ければ 'absent'、読めなければ 'unknown'）。
+   * 採用の直前に読み直したものと照合する（違えば diff-stale）。renderer はこれが同じ間だけ選択を持ち越す。
+   */
+  readonly fingerprint: string;
+}
+
 export interface ExcelComparison {
   readonly path: string;
   /** HEAD 側を読んだパス（リネームなら元のパス）。 */
@@ -77,6 +114,7 @@ export interface ExcelComparison {
   readonly statusSeq: number;
   /** キャッシュの世代。トークンに使う。 */
   readonly gen: number;
+  /** 未マージのときは old = 自分側、new = 相手側（決定 34）。 */
   readonly old: ExcelSide;
   readonly new: ExcelSide;
   readonly comparison: WorkbookComparison;
@@ -84,6 +122,8 @@ export interface ExcelComparison {
   readonly geometry: Map<number, SheetGeometry>;
   /** 行単位の比較（文脈行数ごと）。 */
   readonly rowDiff: Map<number, RowDiff>;
+  /** 未マージでなければ null。 */
+  readonly conflict: ExcelConflict | null;
 }
 
 /** 組み立てに要るものだけ。`RepositorySession` がこれを満たす。 */
@@ -158,46 +198,22 @@ export async function buildExcelComparison(
       comparison: await drive(compareWorkbooksSteps(null, null, limits), signal),
       geometry: new Map(),
       rowDiff: new Map(),
+      conflict: null,
     };
   }
+  if (entry?.kind === 'unmerged') return buildConflictComparison(source, path, gen, signal, limits);
+
   const headPath = entry?.kind === 'renamed' && entry.origPath !== undefined ? entry.origPath : path;
   // HEAD に無いと分かっている（未追跡・index で新規）なら #49 を打たない
   const headKnownAbsent = entry?.kind === 'untracked' || entry?.staged === 'A';
   const ctx = source.context(signal);
-  const maxBytes = limits.maxFileBytes;
 
-  let oldSide: ExcelSide;
-  if (headKnownAbsent) {
-    oldSide = { state: 'absent', workbook: null, bytes: 0, detail: null };
-  } else {
-    try {
-      const read = await source.track(['cat-file', headPath], () => readHeadBlobFiltered(ctx, headPath, { maxBytes }));
-      oldSide = await openSide(headPath, read, limits, signal);
-    } catch (err) {
-      // 中止と「git が無い」だけは全体の失敗にする。それ以外（LFS の失敗・タイムアウト）は旧側の案内にして、
-      // 新側は見せる（要件 E7「片側が駄目でも、もう片側は見せる」）
-      if (err instanceof GitCancelledError || err instanceof GitNotFoundError) throw err;
-      if (err instanceof GitCommandError && LFS_FAILURE.test(err.stderr)) {
-        oldSide = { state: 'lfs-failed', workbook: null, bytes: 0, detail: err.stderr.trim() };
-      } else {
-        const detail = err instanceof GitCommandError ? err.stderr.trim() : err instanceof Error ? err.message : String(err);
-        oldSide = { state: 'unavailable', workbook: null, bytes: 0, detail };
-      }
-    }
-  }
+  const oldSide = headKnownAbsent
+    ? ABSENT
+    : (await readGitSide(source, ctx, 'HEAD', headPath, limits, signal)).side;
   throwIfAborted(signal);
 
-  let newSide: ExcelSide;
-  try {
-    const read = await source.track(['read-worktree', path], () => readWorktreeBytes(ctx, path, { maxBytes }));
-    newSide = await openSide(path, read, limits, signal);
-  } catch (err) {
-    if (err instanceof WorktreeFileLockedError) {
-      newSide = { state: 'locked', workbook: null, bytes: 0, detail: err.message };
-    } else {
-      throw err;
-    }
-  }
+  const newSide = (await readWorktreeSide(source, ctx, path, limits, signal)).side;
   throwIfAborted(signal);
 
   const comparison = await drive(compareWorkbooksSteps(oldSide.workbook, newSide.workbook, limits), signal);
@@ -211,7 +227,174 @@ export async function buildExcelComparison(
     comparison,
     geometry: new Map(),
     rowDiff: new Map(),
+    conflict: null,
   };
+}
+
+const ABSENT: ExcelSide = { state: 'absent', workbook: null, bytes: 0, detail: null };
+
+/** 読んだ側と、照合に使う元のバイト列（上限超過・無い・読めないなら null）。 */
+interface ReadSide {
+  readonly side: ExcelSide;
+  readonly raw: Uint8Array | null;
+}
+
+/**
+ * #49 で 1 つの版（HEAD か index の段）を読んで開く。
+ *
+ * 中止と「git が無い」だけは全体の失敗にする。それ以外（LFS の失敗・タイムアウト）はその側の案内にして、
+ * もう片側は見せる（要件 E7「片側が駄目でも、もう片側は見せる」）。
+ */
+async function readGitSide(
+  source: ExcelViewSource,
+  ctx: GitContext,
+  revision: FilteredRevision,
+  path: string,
+  limits: ExcelLimits,
+  signal: AbortSignal | undefined,
+): Promise<ReadSide> {
+  try {
+    const read = await source.track(['cat-file', SPEC_LABEL[revision] + path], () =>
+      readBlobFiltered(ctx, revision, path, { maxBytes: limits.maxFileBytes }),
+    );
+    return { side: await openSide(path, read, limits, signal), raw: read?.kind === 'ok' ? read.bytes : null };
+  } catch (err) {
+    if (err instanceof GitCancelledError || err instanceof GitNotFoundError) throw err;
+    if (err instanceof GitCommandError && LFS_FAILURE.test(err.stderr)) {
+      return { side: { state: 'lfs-failed', workbook: null, bytes: 0, detail: err.stderr.trim() }, raw: null };
+    }
+    const detail = err instanceof GitCommandError ? err.stderr.trim() : err instanceof Error ? err.message : String(err);
+    return { side: { state: 'unavailable', workbook: null, bytes: 0, detail }, raw: null };
+  }
+}
+
+/** 実行ログに出すトークンの頭（#49 の引数と同じ形）。 */
+const SPEC_LABEL: Record<FilteredRevision, string> = { HEAD: 'HEAD:', base: ':1:', ours: ':2:', theirs: ':3:' };
+
+/** 作業ツリーを読んで開く（git は 0）。他のアプリが掴んでいれば locked。 */
+async function readWorktreeSide(
+  source: ExcelViewSource,
+  ctx: GitContext,
+  path: string,
+  limits: ExcelLimits,
+  signal: AbortSignal | undefined,
+): Promise<ReadSide & { readonly read: BlobBytes | null | 'locked' }> {
+  try {
+    const read = await source.track(['read-worktree', path], () =>
+      readWorktreeBytes(ctx, path, { maxBytes: limits.maxFileBytes }),
+    );
+    return { side: await openSide(path, read, limits, signal), raw: read?.kind === 'ok' ? read.bytes : null, read };
+  } catch (err) {
+    if (err instanceof WorktreeFileLockedError) {
+      return { side: { state: 'locked', workbook: null, bytes: 0, detail: err.message }, raw: null, read: 'locked' };
+    }
+    throw err;
+  }
+}
+
+/** 作業ツリーの指紋。無ければ 'absent'、大きすぎる・読めなければ 'unknown'。 */
+export function worktreeFingerprint(read: BlobBytes | null | 'locked'): string {
+  if (read === null) return 'absent';
+  if (read === 'locked' || read.kind !== 'ok') return 'unknown';
+  return createHash('sha1').update(read.bytes).digest('hex');
+}
+
+function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
+  return a !== null && b !== null && Buffer.compare(a, b) === 0;
+}
+
+/**
+ * 未マージのファイルの比較（決定 34）。old = 自分側、new = 相手側。
+ *
+ * CSV で作業ツリーのマーカーが読めれば、それを解いて両側を作る（git は 0）。マーカーの外は git の 3-way
+ * マージの結果なので、違いとして出るのは本当に衝突した所だけになる。それ以外（ブック・マーカーが無い／壊れた
+ * CSV）は index の段を #49 で読み、ブックなら共通祖先（`:1:`）も値バー用に読む。
+ */
+async function buildConflictComparison(
+  source: ExcelViewSource,
+  path: string,
+  gen: number,
+  signal: AbortSignal | undefined,
+  limits: ExcelLimits,
+): Promise<ExcelComparison> {
+  const statusSeq = source.statusSeq;
+  const ctx = source.context(signal);
+  const csv = isCsvPath(path);
+
+  const worktree = await readWorktreeSide(source, ctx, path, limits, signal);
+  throwIfAborted(signal);
+  const fingerprint = worktreeFingerprint(worktree.read);
+
+  let markers: ExcelMarkerState = csv ? 'none' : 'not-csv';
+  if (csv && worktree.raw !== null) {
+    const split = splitCsvConflict(worktree.raw);
+    markers = split.kind;
+    if (split.kind === 'split') {
+      const oldSide = await openSide(path, { kind: 'ok', bytes: Buffer.from(split.ours) }, limits, signal);
+      const newSide = await openSide(path, { kind: 'ok', bytes: Buffer.from(split.theirs) }, limits, signal);
+      const comparison = await drive(compareWorkbooksSteps(oldSide.workbook, newSide.workbook, limits), signal);
+      return {
+        path,
+        headPath: path,
+        statusSeq,
+        gen,
+        old: oldSide,
+        new: newSide,
+        comparison,
+        geometry: new Map(),
+        rowDiff: new Map(),
+        conflict: {
+          source: 'markers',
+          markers,
+          blocks: split.blocks,
+          worktree: 'neither',
+          base: null,
+          cellResolvable: oldSide.state === 'ok' && newSide.state === 'ok' && sheetsComplete(comparison),
+          fingerprint,
+        },
+      };
+    }
+  }
+
+  const ours = await readGitSide(source, ctx, 'ours', path, limits, signal);
+  throwIfAborted(signal);
+  const theirs = await readGitSide(source, ctx, 'theirs', path, limits, signal);
+  throwIfAborted(signal);
+  // 共通祖先は値バーにだけ出す。CSV は行の対応がずれやすく、同じ番地の値が手掛かりにならないので読まない
+  const base = csv ? null : (await readGitSide(source, ctx, 'base', path, limits, signal)).side;
+  throwIfAborted(signal);
+
+  let match: ExcelWorktreeMatch;
+  if (worktree.read === null) match = 'absent';
+  else if (worktree.raw === null) match = 'unknown';
+  else if (sameBytes(worktree.raw, ours.raw)) match = 'ours';
+  else if (sameBytes(worktree.raw, theirs.raw)) match = 'theirs';
+  else match = 'neither';
+
+  const comparison = await drive(compareWorkbooksSteps(ours.side.workbook, theirs.side.workbook, limits), signal);
+  return {
+    path,
+    headPath: path,
+    statusSeq,
+    gen,
+    old: ours.side,
+    new: theirs.side,
+    comparison,
+    geometry: new Map(),
+    rowDiff: new Map(),
+    conflict: { source: 'stages', markers, blocks: 0, worktree: match, base, cellResolvable: false, fingerprint },
+  };
+}
+
+/** どのシートも上限で途中までになっていない（セル単位で書き戻すと、読まなかった所が消えるため）。 */
+function sheetsComplete(comparison: WorkbookComparison): boolean {
+  return comparison.sheets.every(
+    (s) =>
+      s.old?.problem == null &&
+      s.new?.problem == null &&
+      s.old?.data?.columnsTruncated !== true &&
+      s.new?.data?.columnsTruncated !== true,
+  );
 }
 
 /** トークン（古いキャッシュを検出するための鍵）。 */
@@ -228,6 +411,23 @@ export function geometryOf(view: ExcelComparison, sheetIndex: number): SheetGeom
   const geometry = buildGeometry(sheet);
   view.geometry.set(sheetIndex, geometry);
   return geometry;
+}
+
+/**
+ * 共通祖先の同じ番地のセル（決定 34。値バー用）。共通祖先を読んでいなければ null。
+ *
+ * **行の対応付けはしない。** 自分側（無ければ相手側）の行番号・同じ名前のシートのセルを引くだけなので、
+ * 行の挿入があると別の行を指しうる（画面にもそう出す）。
+ */
+export function baseCellOf(view: ExcelComparison, sheet: SheetComparison, alignedRow: number, col: number): CellSide | null {
+  const base = view.conflict?.base?.workbook ?? null;
+  if (base === null) return null;
+  const name = sheet.old?.name ?? sheet.new?.name ?? null;
+  const baseSheet = base.sheets.find((s) => s.name === name) ?? null;
+  const o = sheet.oldRow[alignedRow] ?? -1;
+  const row = o >= 0 ? o : (sheet.newRow[alignedRow] ?? -1);
+  if (baseSheet === null || row < 0) return null;
+  return cellSideIn(base, baseSheet.data, row, col);
 }
 
 /** 行単位の比較（差分モードの C 案）。文脈行数ごとに 1 回だけ作る。 */

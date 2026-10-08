@@ -1,6 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { GitCancelledError, GitCommandError, readBlobText, readHeadBlobFiltered, readWorktreeBytes } from '../src/index.js';
+import {
+  GitCancelledError,
+  GitCommandError,
+  readBlobFiltered,
+  readBlobText,
+  readHeadBlobFiltered,
+  readWorktreeBytes,
+  writeWorktreeBytes,
+} from '../src/index.js';
 import { GIT_PATH, createFixture, type Fixture } from './fixture.js';
 
 /*
@@ -90,6 +98,88 @@ describe('HEAD 版の実体取得（対応表 #49）', () => {
     await expect(
       readHeadBlobFiltered({ ...fx.ctx, signal: controller.signal }, 'a.xlsx', { maxBytes: MAX }),
     ).rejects.toBeInstanceOf(GitCancelledError);
+  });
+});
+
+describe('index の段の実体取得（対応表 #49 の :<n>:、決定 34）', () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await createFixture();
+  });
+
+  afterEach(async () => {
+    await fx.cleanup();
+  });
+
+  /** base → topic と main で別々に書き換えて、マージで衝突させる。 */
+  async function conflict(file: string, base: string, theirs: string | null, ours: string | null): Promise<void> {
+    await fx.write(file, base);
+    await fx.run('add', '-A');
+    await fx.run('commit', '-m', 'base');
+    await fx.run('switch', '-c', 'topic');
+    if (theirs === null) await fx.run('rm', '-q', file);
+    else await fx.write(file, theirs);
+    await fx.run('commit', '-am', 'topic');
+    await fx.run('switch', 'main');
+    if (ours === null) await fx.run('rm', '-q', file);
+    else await fx.write(file, ours);
+    await fx.run('commit', '-am', 'main');
+    // 衝突で exit 1 になるのが正しい
+    await fx.run('merge', 'topic').catch(() => undefined);
+  }
+
+  it('共通祖先・自分側・相手側をそれぞれ返す', async () => {
+    await conflict('book.csv', 'a,1\n', 'a,T\n', 'a,M\n');
+    const read = async (rev: 'base' | 'ours' | 'theirs'): Promise<string | null> => {
+      const r = await readBlobFiltered(fx.ctx, rev, 'book.csv', { maxBytes: MAX });
+      return r?.kind === 'ok' ? text(r.bytes) : null;
+    };
+    expect(await read('base')).toBe('a,1\n');
+    expect(await read('ours')).toBe('a,M\n');
+    expect(await read('theirs')).toBe('a,T\n');
+  });
+
+  it('段が無い側（削除との衝突）は null', async () => {
+    await conflict('book.xlsx', 'v1\n', null, 'vM\n');
+    expect(await readBlobFiltered(fx.ctx, 'theirs', 'book.xlsx', { maxBytes: MAX })).toBeNull();
+    const ours = await readBlobFiltered(fx.ctx, 'ours', 'book.xlsx', { maxBytes: MAX });
+    expect(ours?.kind === 'ok' ? text(ours.bytes) : null).toBe('vM\n');
+  });
+
+  it('index に無いパスは null', async () => {
+    await fx.write('a.txt', 'a\n');
+    await fx.run('add', '-A');
+    await fx.run('commit', '-m', 'first');
+    expect(await readBlobFiltered(fx.ctx, 'ours', 'missing.xlsx', { maxBytes: MAX })).toBeNull();
+  });
+
+  it('段でも smudge を通す', async () => {
+    await fx.run('config', 'filter.ftfake.clean', 'sed s/REAL/PTR/');
+    await fx.run('config', 'filter.ftfake.smudge', 'sed s/PTR/REAL/');
+    await fx.write('.gitattributes', '*.xlsx filter=ftfake\n');
+    await conflict('book.xlsx', 'REAL base\n', 'REAL topic\n', 'REAL main\n');
+    const r = await readBlobFiltered(fx.ctx, 'theirs', 'book.xlsx', { maxBytes: MAX });
+    expect(r?.kind === 'ok' ? text(r.bytes) : null).toBe('REAL topic\n');
+  });
+});
+
+describe('作業ツリーへのバイト書き（git は 0 プロセス）', () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await createFixture();
+  });
+
+  afterEach(async () => {
+    await fx.cleanup();
+  });
+
+  it('バイト列をそのまま書く', async () => {
+    const data = Uint8Array.from([0, 1, 2, 0x0d, 0x0a, 255]);
+    await writeWorktreeBytes(fx.ctx, 'a.xlsx', data);
+    const r = await readWorktreeBytes(fx.ctx, 'a.xlsx', { maxBytes: MAX });
+    expect(r?.kind === 'ok' ? Array.from(r.bytes) : null).toEqual(Array.from(data));
   });
 });
 

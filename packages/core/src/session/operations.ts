@@ -24,6 +24,7 @@ import {
   type StashEntry,
 } from '@feathertree/git';
 import type { DestructiveAction } from '../policy/destructiveActions.js';
+import { ConflictUnsupportedError, StaleDiffError } from './sessionErrors.js';
 import type { RepositorySession } from './repositorySession.js';
 import {
   MAX_EXPLICIT_PATHS,
@@ -32,6 +33,9 @@ import {
   resolveTarget,
   type OperationTarget,
 } from './statusView.js';
+
+// 照合のエラーは sessionErrors.ts に置いてある（循環を避けるため）。従来どおりここからも出す
+export { ConflictUnsupportedError, StaleDiffError };
 
 export interface OperationOutcome {
   readonly affected: number;
@@ -70,19 +74,6 @@ export class NoSnapshotError extends Error {
   }
 }
 
-/**
- * View が表示していた diff が、ディスク上の実際の状態と食い違っている。
- *
- * 決定 14 によりファイル監視もポーリングもしないので、表示中の diff は古くなりうる。
- * 古い行番号のまま apply すると、git が文脈を頼りに**別の場所へ**当ててしまうため、
- * 適用の直前に取り直して照合する。
- */
-export class StaleDiffError extends Error {
-  constructor(message = '表示中の差分が古くなっています。一覧を更新してからやり直してください。') {
-    super(message);
-    this.name = 'StaleDiffError';
-  }
-}
 
 /**
  * renderer が指した stash が、いま git が持っているものと食い違っている（決定 31）。
@@ -101,18 +92,6 @@ export class StaleStashError extends Error {
   }
 }
 
-/**
- * マーカーの形が読めないので採用できない（入れ子・閉じていない・バイナリ）。
- *
- * 表示側もこの条件ではボタンを出さないので、ここへ来るのは食い違いが起きたときだけ。
- * 中途半端に書き戻すと本文を壊すため、**何も書かずに断る**。
- */
-export class ConflictUnsupportedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ConflictUnsupportedError';
-  }
-}
 
 /** renderer から届く「どの衝突か」。行番号と各側の行数は、表示していたものと同じかの指紋。 */
 export interface ConflictSelection {

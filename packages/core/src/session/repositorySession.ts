@@ -42,6 +42,8 @@ import { buildScriptIndex, type ScriptIndex } from './scriptIndex.js';
 import { buildUnityView, type UnityView } from './unityView.js';
 import { buildExcelComparison, excelToken, type ExcelComparison } from './excelView.js';
 import { isExcelPath, listExcelFiles, type ExcelFileList } from './excelFiles.js';
+import { resolveExcelConflict, type ExcelResolveRequest } from './excelConflict.js';
+import { DEFAULT_LIMITS as DEFAULT_EXCEL_LIMITS } from '@feathertree/excel';
 
 /** パッチ適用のために diff を取り直すときの行数上限（設定の上限値と同じ）。 */
 const PATCH_MAX_LINES = 200000;
@@ -360,12 +362,16 @@ export class RepositorySession {
    *
    * **利用者が明示的にボタンを押したときだけ呼ぶ。** 巨大プロジェクトでは数千の
    * `.meta` を読むことになり、この環境はファイル I/O が極端に遅い（CLAUDE.md）。
-   *
-   * **押すたびに走査し直す**（2026-10-02、利用者の指示）。以前は 1 度作ったら使い回していたが、
-   * 後から足したスクリプトや付け替えた .meta が拾えず、ボタンも消えて打つ手が無かった。
-   * 自動では走らない（押したときだけ）ので、読み直しの重さは利用者が選んだ分だけに収まる。
+   * 1 度作ったらセッションの間は使い回す。
    */
   async indexUnityScripts(signal?: AbortSignal): Promise<ScriptIndex> {
+    /*
+     * **件数ではなく「走査したか」で見る。** 対象の .meta が 1 つも無い
+     * リポジトリ（スクリプトの無い Prefab だけの構成など）でも、
+     * ボタンを押すたびに数千ファイルを読み直さないため。
+     */
+    const cached = this.#scriptIndex;
+    if (cached !== null) return cached;
     this.#scriptIndex = await this.track(['scan-meta'], () =>
       buildScriptIndex(this.#root, signal),
     );
@@ -415,6 +421,21 @@ export class RepositorySession {
     this.#dropExcel();
   }
 
+  /**
+   * Excel のコンフリクトを採用して作業ツリーへ書き戻す（決定 34）。index には触れない。
+   *
+   * **書いたら比較のキャッシュを捨てる。** index を動かさないので status の世代は進まず、
+   * 世代を鍵にしたキャッシュのままだと、書く前の比較を返し続ける。
+   */
+  async resolveExcelConflict(view: ExcelComparison, request: ExcelResolveRequest, signal?: AbortSignal): Promise<void> {
+    try {
+      await resolveExcelConflict(this, view, request, DEFAULT_EXCEL_LIMITS.maxFileBytes, signal);
+    } finally {
+      // 失敗しても捨てる（書きかけ・照合で食い違った比較を残さない）
+      this.#dropExcel();
+    }
+  }
+
   /** 差分モードで Excel 以外のファイルを見たら、抱えているブックを手放す。 */
   #releaseExcelUnless(path: string): void {
     if (!isExcelPath(path)) this.#dropExcel();
@@ -443,7 +464,7 @@ export class RepositorySession {
     );
   }
 
-  /** 対応表 #50: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
+  /** 対応表 #49: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
   async getHeadMessage(signal?: AbortSignal): Promise<string | null> {
     return this.track(['log', '-1'], () => getHeadMessage(this.context(signal)));
   }

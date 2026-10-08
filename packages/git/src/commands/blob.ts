@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { commandFor } from '../execution/gitCommand.js';
 import { GitCancelledError, GitCommandError, WorktreeFileLockedError } from '../execution/errors.js';
@@ -101,6 +101,24 @@ function isMissingInHead(stderr: string): boolean {
   );
 }
 
+/**
+ * #49 の index の段（`:<n>:<path>`）用の「その段が無い」（決定 34）。
+ *
+ * 削除との衝突・片側だけで追加したファイルでは、未マージでも段が 1 つ欠ける。そのときの文面は
+ * `path '<path>' is in the index, but not at stage <n>`。index にそもそも無ければ
+ * `does not exist (neither on disk nor in the index)` / `exists on disk, but not in the index`。
+ * HEAD 版と同じく、smudge の失敗の定型文は「無い」にしない。
+ */
+function isMissingInStage(stderr: string): boolean {
+  const text = stderr.toLowerCase();
+  if (/smudge filter [^ ]+ failed|clean filter [^ ]+ failed|external filter .* failed/.test(text)) return false;
+  return (
+    text.includes('but not at stage') ||
+    text.includes('neither on disk nor in the index') ||
+    text.includes('exists on disk, but not in the index')
+  );
+}
+
 /** 利用者が中止したか（await を挟むと変わるので、式の型の絞り込みに頼らず毎回読む）。 */
 function userAborted(ctx: GitContext): boolean {
   return ctx.signal?.aborted === true;
@@ -131,8 +149,39 @@ export interface BlobBytesOptions {
  *
  * HEAD にそのパスが無い（新規ファイル・コミットが無いリポジトリ）なら null。
  */
-export async function readHeadBlobFiltered(
+export function readHeadBlobFiltered(
   ctx: GitContext,
+  path: string,
+  options: BlobBytesOptions,
+): Promise<BlobBytes | null> {
+  return readBlobFiltered(ctx, 'HEAD', path, options);
+}
+
+/**
+ * #49 が読む版。`HEAD` か、未マージのときの index の段（決定 34）。
+ *   - `base`   … `:1:` 共通祖先
+ *   - `ours`   … `:2:` 自分側
+ *   - `theirs` … `:3:` 相手側
+ */
+export type FilteredRevision = 'HEAD' | 'base' | 'ours' | 'theirs';
+
+const FILTERED_SPEC: Record<FilteredRevision, string> = {
+  HEAD: 'HEAD:',
+  base: ':1:',
+  ours: ':2:',
+  theirs: ':3:',
+};
+
+/**
+ * 対応表 #49 の本体。版ごとの違いはトークンの頭と「無い」の文面だけ。
+ *
+ * トークンは必ず `HEAD:` か `:<n>:` で始まり、頭は上の固定表から引く（renderer からは渡らない）ので、
+ * 先頭が `-` になる余地が無い（`--` を置けない理由は #48 と同じ）。
+ * その版にそのパスが無ければ null。
+ */
+export async function readBlobFiltered(
+  ctx: GitContext,
+  revision: FilteredRevision,
   path: string,
   options: BlobBytesOptions,
 ): Promise<BlobBytes | null> {
@@ -146,7 +195,9 @@ export async function readHeadBlobFiltered(
   let overflow = false;
   try {
     const { exit } = await runGitStream(
-      commandFor(ctx, [...READ_PREFIX, 'cat-file', '--filters', 'HEAD:' + path], { timeoutMs: DIFF_TIMEOUT_MS }),
+      commandFor(ctx, [...READ_PREFIX, 'cat-file', '--filters', FILTERED_SPEC[revision] + path], {
+        timeoutMs: DIFF_TIMEOUT_MS,
+      }),
       {
         push: (chunk: Buffer) => {
           if (overflow) return;
@@ -165,7 +216,7 @@ export async function readHeadBlobFiltered(
     );
     if (overflow) return { kind: 'too-large', bytes: total };
     if (exit.code !== 0) {
-      if (isMissingInHead(exit.stderr)) return null;
+      if (revision === 'HEAD' ? isMissingInHead(exit.stderr) : isMissingInStage(exit.stderr)) return null;
       throw new GitCommandError(['cat-file', '--filters'], exit.code, exit.stderr);
     }
     return { kind: 'ok', bytes: Buffer.concat(chunks) };
@@ -200,6 +251,23 @@ export async function readWorktreeBytes(
   } catch (err) {
     if (ctx.signal?.aborted === true) throw new GitCancelledError();
     if (isNotFound(err)) return null;
+    const code = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
+    if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') throw new WorktreeFileLockedError(path, err);
+    throw err;
+  }
+}
+
+/**
+ * 作業ツリーのファイルへバイト列をそのまま書く（**git は 0 プロセス**。Excel のコンフリクトの採用。決定 34）。
+ *
+ * インデックスには触れない（`writeConflictText` と同じ。解決済みにするのは利用者のステージ）。
+ * Excel が開いていて書かせてくれない（EBUSY / EPERM）ときは `WorktreeFileLockedError`。
+ */
+export async function writeWorktreeBytes(ctx: GitContext, path: string, bytes: Uint8Array): Promise<void> {
+  try {
+    await writeFile(join(ctx.cwd, path), bytes, ctx.signal === undefined ? {} : { signal: ctx.signal });
+  } catch (err) {
+    if (ctx.signal?.aborted === true) throw new GitCancelledError();
     const code = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
     if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') throw new WorktreeFileLockedError(path, err);
     throw err;

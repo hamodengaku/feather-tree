@@ -6,7 +6,7 @@
  */
 
 import { cellAddress } from '../sheet/ref.js';
-import type { CellData, SheetData } from '../model/types.js';
+import type { CellData, SheetData, Workbook } from '../model/types.js';
 import {
   cellAt,
   cellsEqual,
@@ -110,6 +110,14 @@ export function cellDetail(
   const b = n >= 0 ? cellAt(sheet.new?.data?.rows[n]?.cells, col) : undefined;
   const changed = !cellsEqual(a, comparison.old?.sst ?? [], b, comparison.new?.sst ?? []);
   return { old: oldSide, new: newSide, changed };
+}
+
+/**
+ * 比較に載っていないブックの 1 セル（コンフリクトの共通祖先。決定 34）。
+ * 行はそのシートの行番号そのもの（揃えた行ではない）。
+ */
+export function cellSideIn(book: Workbook | null, data: SheetData | null, row: number, col: number): CellSide | null {
+  return cellSide(data, row, col, formatContextOf(book));
 }
 
 function cellSide(data: SheetData | null, row: number, col: number, ctx: FormatContext): CellSide | null {

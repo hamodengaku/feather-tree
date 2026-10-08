@@ -3,6 +3,7 @@
    * Excel 差分モード（決定 33）の本体。上 = 値バー、中 = 旧版 ｜ 新版のグリッド、下 = シートタブ。
    *
    * **比較は常に HEAD ↔ 作業ツリー**。ステージの口は持たない（読むだけのビューア）。
+   * ただし未マージのファイルは「自分側 ｜ 相手側」を並べ、上の帯から採用を書き戻せる（決定 34）。
    *
    * 新旧の幾何は同一なので、行の高さ・列の幅の累積和はここで 1 回だけ作って両方に渡す。
    * スクロールの同期もここが持つ: 片方がスクロールしたら、相手の値が**違うときだけ**代入する
@@ -12,12 +13,22 @@
    */
   import { untrack } from 'svelte';
   import { buildOffsets } from '@feathertree/base-ui';
+  import ExcelConflictBar from '../components/ExcelConflictBar.svelte';
   import ExcelGrid from '../components/ExcelGrid.svelte';
   import ExcelSheetTabs from '../components/ExcelSheetTabs.svelte';
   import ExcelValueBar from '../components/ExcelValueBar.svelte';
   import { app } from '../lib/appState.svelte.js';
   import { effectiveColWidths, effectiveRowHeights, mirrorScroll, rowHeaderWidth } from '../lib/excelGrid.js';
-  import { sheetNotice, sheetWarnings, sideLabel, sideNotice, workbookSummary } from '../lib/excelText.js';
+  import { choiceAt, type ConflictSide } from '../lib/excelConflict.js';
+  import {
+    conflictSideNotice,
+    conflictWorkbookSummary,
+    sheetNotice,
+    sheetWarnings,
+    sideLabel,
+    sideNotice,
+    workbookSummary,
+  } from '../lib/excelText.js';
 
   const ex = app.excel;
 
@@ -36,6 +47,8 @@
   const view = $derived(ex.view);
   const layout = $derived(ex.layout);
   const sheet = $derived(view?.sheets.find((s) => s.index === ex.sheet) ?? null);
+  /** 未マージなら左 = 自分側、右 = 相手側（決定 34）。 */
+  const conflict = $derived(view?.conflict ?? null);
 
   const rowOffsets = $derived(layout === null ? new Float64Array(1) : buildOffsets(effectiveRowHeights(layout, ex.showHidden)));
   const colOffsets = $derived(layout === null ? new Float64Array(1) : buildOffsets(effectiveColWidths(layout, ex.showHidden)));
@@ -44,6 +57,9 @@
   /** 側ごとの案内。ブックが読めない → シートがその側に無い、の順に見る。 */
   function noticeFor(side: 'old' | 'new'): string | null {
     if (view === null) return null;
+    const state = side === 'old' ? view.old.state : view.new.state;
+    const conflictNotice = conflict === null ? null : conflictSideNotice(side, state);
+    if (conflictNotice !== null) return conflictNotice;
     const bookNotice = sideNotice(side, side === 'old' ? view.old.state : view.new.state);
     if (bookNotice !== null) return bookNotice;
     return sheet === null ? null : sheetNotice(side, sheet);
@@ -105,6 +121,14 @@
   function handleSelect(row: number, col: number): void {
     void ex.selectCell(row, col);
   }
+
+  /** グリッドに出す採り方の印（セル単位で採れるときだけ）。 */
+  const choiceOf = $derived.by(() => {
+    const current = layout;
+    if (conflict?.cellResolvable !== true || current === null) return null;
+    const choices = ex.choices;
+    return (row: number, col: number): ConflictSide | null => choiceAt(current, choices, row, col);
+  });
 </script>
 
 <section class="excel-pane" aria-label="Excel 差分">
@@ -126,7 +150,11 @@
     <header class="head">
       <h2 title={view.path}>{view.path}</h2>
       <span class="meta">
-        HEAD ↔ 作業ツリー・{workbookSummary(view.sheets, view.old, view.new)}
+        {#if conflict !== null}
+          自分側 ↔ 相手側・{conflictWorkbookSummary(view.sheets)}
+        {:else}
+          HEAD ↔ 作業ツリー・{workbookSummary(view.sheets, view.old, view.new)}
+        {/if}
         {#if view.headPath !== view.path}・元の名前 {view.headPath}{/if}
         {#if view.vbaChanged === true}・マクロが変更されています{/if}
       </span>
@@ -135,15 +163,19 @@
       {/if}
     </header>
 
-    <ExcelValueBar cell={ex.cell} />
+    {#if conflict !== null}
+      <ExcelConflictBar {view} {conflict} />
+    {/if}
+
+    <ExcelValueBar cell={ex.cell} conflict={conflict !== null} />
 
     {#each warnings as w (w)}
       <p class="notice">{w}</p>
     {/each}
 
     <div class="sides">
-      <div class="side-label">{sideLabel('old')}</div>
-      <div class="side-label">{sideLabel('new')}</div>
+      <div class="side-label">{sideLabel('old', conflict !== null)}</div>
+      <div class="side-label">{sideLabel('new', conflict !== null)}</div>
     </div>
 
     <div class="grids">
@@ -165,6 +197,7 @@
               rowHeaderWidth={headerWidth}
               rows={ex.rows}
               selection={ex.selection}
+              {choiceOf}
               bind:viewport={oldViewport}
               onscroll={(top, left) => sync('old', top, left)}
               onneed={handleNeed}
@@ -185,6 +218,7 @@
               rowHeaderWidth={headerWidth}
               rows={ex.rows}
               selection={ex.selection}
+              {choiceOf}
               bind:viewport={newViewport}
               onscroll={(top, left) => sync('new', top, left)}
               onneed={handleNeed}

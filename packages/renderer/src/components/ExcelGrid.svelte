@@ -43,6 +43,11 @@
     onscroll: (top: number, left: number) => void;
     onneed: (start: number, end: number) => void;
     onselect: (row: number, col: number) => void;
+    /**
+     * 未マージでセル単位に採れるとき（決定 34）: 揃えた座標の採り方（自分側・相手側・未決定）。
+     * 採った側のセルに印を付け、採らなかった側を薄くする。null なら印を出さない。
+     */
+    choiceOf?: ((row: number, col: number) => 'ours' | 'theirs' | null) | null;
   }
 
   let {
@@ -57,7 +62,19 @@
     onscroll,
     onneed,
     onselect,
+    choiceOf = null,
   }: Props = $props();
+
+  /** このグリッドが表す側（未マージでは old = 自分側、new = 相手側）。 */
+  const mySide = $derived(side === 'old' ? 'ours' : 'theirs');
+
+  /** 採り方の印。picked = この側を採る、rejected = もう一方を採る。違いの無い所には付けない。 */
+  function pickClass(r: number, c: number, changed: boolean): string {
+    if (choiceOf === null || !changed) return '';
+    const pick = choiceOf(r, c);
+    if (pick === null) return 'undecided';
+    return pick === mySide ? 'picked' : 'rejected';
+  }
 
   let scrollTop = $state(0);
   let scrollLeft = $state(0);
@@ -232,7 +249,7 @@
       {#each visibleRows as r (r)}
         {@const tone = rowTone(r)}
         {#if tone !== ''}
-          <div class="row-tone {tone}" style:top={top(r) + 'px'} style:height={height(r) + 'px'}></div>
+          <div class="row-tone {tone} {pickClass(r, 0, true)}" style:top={top(r) + 'px'} style:height={height(r) + 'px'}></div>
         {/if}
         {#if tone !== 'filler'}
           {#each visibleCols as c (c)}
@@ -240,7 +257,7 @@
               {@const cell = cellText(r, c)}
               {@const css = cssFor(r, c, cell)}
               <div
-                class="cell"
+                class="cell {pickClass(r, c, isChanged(r, c))}"
                 class:changed={isChanged(r, c)}
                 class:filled={css.filled}
                 role="gridcell"
@@ -469,6 +486,33 @@
 
   .cell.changed:not(.filled) {
     background: var(--app-excel-changed-bg);
+  }
+
+  /* 採り方の印（決定 34）。採る側は太い枠、採らない側は薄く消し線、未決定は点線の枠 */
+  .cell.picked {
+    box-shadow: inset 0 0 0 3px var(--app-text-added);
+  }
+
+  .cell.rejected {
+    opacity: 0.45;
+    text-decoration: line-through;
+  }
+
+  .cell.undecided {
+    outline: 2px dashed var(--app-text-conflict);
+    outline-offset: -2px;
+  }
+
+  .row-tone.picked {
+    box-shadow: inset 4px 0 0 var(--app-text-added);
+  }
+
+  .row-tone.rejected {
+    opacity: 0.45;
+  }
+
+  .row-tone.undecided {
+    box-shadow: inset 4px 0 0 var(--app-text-conflict);
   }
 
   .selection {

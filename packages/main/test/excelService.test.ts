@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -292,5 +292,88 @@ describe('Excel 差分の IPC ハンドラ', () => {
     // 先の要求は止められたか、止められる前に終わったか（どちらでも最新のキャッシュは b）
     expect(['done', 'GitCancelledError']).toContain(await first);
     await expect(service.excelGetSheet(id, second.token, 0)).resolves.toBeDefined();
+  });
+  /** base → topic（相手側）と main（自分側）で書き換えて、マージで衝突させる。 */
+  async function openWithConflict(rel: string, base: Uint8Array | string, theirs: Uint8Array | string, ours: Uint8Array | string): Promise<string> {
+    await write(rel, base);
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', 'base']);
+    await git(dir, ['switch', '-c', 'topic']);
+    await write(rel, theirs);
+    await git(dir, ['commit', '-am', 'topic']);
+    await git(dir, ['switch', 'main']);
+    await write(rel, ours);
+    await git(dir, ['commit', '-am', 'main']);
+    await git(dir, ['merge', 'topic']).catch(() => undefined);
+    const id = (await service.sessionOpen(dir)).id;
+    await service.sessionLoad(id);
+    return id;
+  }
+
+  describe('コンフリクトの採用（決定 34）', () => {
+    it('未マージのブックは自分側 ｜ 相手側の比較で、共通祖先が値バーに載る', async () => {
+      const id = await openWithConflict('b.xlsx', xlsx(book(1000)), xlsx(book(1200)), xlsx(book(900)));
+      const view = await service.excelGetView(id, 'b.xlsx');
+      expect(view.conflict?.source).toBe('stages');
+      expect(view.conflict?.worktree).toBe('ours');
+      expect(view.conflict?.hasBase).toBe(true);
+      const layout = await service.excelGetSheet(id, view.token, 0);
+      expect(layout.conflictCells).toBeNull();
+      const cell = await service.excelGetCell(id, view.token, 0, 1, 1);
+      expect(cell.old?.raw).toBe('900');
+      expect(cell.new?.raw).toBe('1200');
+      expect(cell.base?.raw).toBe('1000');
+    });
+
+    it('古いトークン・不正な側や座標・リポジトリ外のパスは断る', async () => {
+      const id = await openWithConflict('d.csv', 'a,1\n', 'a,2\n', 'a,3\n');
+      const view = await service.excelGetView(id, 'd.csv');
+      const file = { kind: 'file', side: 'theirs' } as const;
+      await expect(service.excelResolveConflict(id, { path: 'd.csv', token: 'bogus', resolution: file })).rejects.toMatchObject({
+        dto: { kind: 'diff-stale' },
+      });
+      await expect(
+        service.excelResolveConflict(id, { path: 'd.csv', token: view.token, resolution: { kind: 'file', side: 'mine' as never } }),
+      ).rejects.toThrow();
+      const cells = (row: number, col: number) => ({
+        kind: 'cells' as const,
+        choices: { cells: [{ row, col, side: 'ours' as const }], rows: [], cols: [], rest: null },
+      });
+      await expect(service.excelResolveConflict(id, { path: 'd.csv', token: view.token, resolution: cells(99, 0) })).rejects.toThrow();
+      await expect(service.excelResolveConflict(id, { path: 'd.csv', token: view.token, resolution: cells(0, 0.5) })).rejects.toThrow();
+      await expect(
+        service.excelResolveConflict(id, { path: '../x.csv', token: view.token, resolution: file }),
+      ).rejects.toThrow();
+    });
+
+    it('CSV をセル単位で採用すると書き戻し、比較を作り直す（status は未マージのまま）', async () => {
+      const id = await openWithConflict('d.csv', 'h,v\n1,a\n', 'h,v\n1,b\n', 'h,v\n1,c\n');
+      const view = await service.excelGetView(id, 'd.csv');
+      expect(view.conflict?.source).toBe('markers');
+      const layout = await service.excelGetSheet(id, view.token, 0);
+      expect(layout.conflictCells).toEqual([1, 1]);
+      await service.excelResolveConflict(id, {
+        path: 'd.csv',
+        token: view.token,
+        resolution: { kind: 'cells', choices: { cells: [{ row: 1, col: 1, side: 'theirs' }], rows: [], cols: [], rest: null } },
+      });
+      expect(await readFile(join(dir, 'd.csv'), 'utf8')).toBe('h,v\n1,b\n');
+      await expect(service.excelGetSheet(id, view.token, 0)).rejects.toMatchObject({ dto: { kind: 'diff-stale' } });
+      const after = await service.excelGetView(id, 'd.csv');
+      expect(after.conflict?.markers).toBe('none');
+    });
+
+    it('作業ツリーがどちらの側とも違うときのファイル単位の採用は確認を求める', async () => {
+      const id = await openWithConflict('b.xlsx', xlsx(book(1000)), xlsx(book(1200)), xlsx(book(900)));
+      await write('b.xlsx', xlsx(book(5)));
+      const view = await service.excelGetView(id, 'b.xlsx');
+      expect(view.conflict?.worktree).toBe('neither');
+      const req = { path: 'b.xlsx', token: view.token, resolution: { kind: 'file', side: 'theirs' } } as const;
+      await expect(service.excelResolveConflict(id, req)).rejects.toMatchObject({
+        dto: { kind: 'needs-confirmation', confirmation: { action: 'overwrite-conflict-worktree' } },
+      });
+      const { args } = await logged(() => service.excelResolveConflict(id, req, true));
+      expect(args).toEqual(['read-worktree', 'cat-file', 'write-worktree']);
+    });
   });
 });

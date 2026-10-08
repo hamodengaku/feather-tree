@@ -13,6 +13,8 @@ import type {
   ConflictResolveRequest,
   ConflictSectionDto,
   ExcelCellDetailDto,
+  ExcelConflictDto,
+  ExcelResolveRequestDto,
   ExcelFileEntryDto,
   ExcelRowDiffDto,
   ExcelRowPageDto,
@@ -433,6 +435,8 @@ export class FakeBridge {
   excelTokenSeq = 0;
   /** 今のトークン。 */
   excelToken = '';
+  /** 未マージの比較にする（決定 34）。cellResolvable なら売上シートの 1 行目 B・C 列を衝突セルにする。 */
+  excelConflict: ExcelConflictDto | null = null;
 
   excelViewFor(path: string): ExcelViewDto {
     this.excelTokenSeq += 1;
@@ -480,6 +484,7 @@ export class FakeBridge {
         },
       ],
       vbaChanged: null,
+      conflict: this.excelConflict,
     };
   }
 
@@ -509,6 +514,9 @@ export class FakeBridge {
       newRowStyle: [-1, -1, -1, -1, -1],
       oldColStyle: [-1, -1, -1],
       newColStyle: [-1, -1, -1],
+      ...(this.excelConflict === null
+        ? {}
+        : { conflictCells: this.excelConflict.cellResolvable && sheet === 1 ? [1, 1, 1, 2] : null }),
     };
   }
 
@@ -946,6 +954,10 @@ export class FakeBridge {
         if (this.excelViewError !== null) return this.#later<ExcelRowDiffDto>({ ok: false, error: this.excelViewError });
         if (this.excelToken === '') this.excelViewFor(path);
         return this.#later(ok(this.excelRowDiffFor(path)));
+      },
+      excelResolveConflict: (id: string, req: ExcelResolveRequestDto, confirmed?: boolean) => {
+        this.record('excelResolveConflict', id, req, confirmed);
+        return Promise.resolve(this.guard('excelResolveConflict', 'overwrite-conflict-worktree', confirmed, { statusSeq: 1 }));
       },
       unityIndexScripts: (id: string) => {
         this.record('unityIndexScripts', id);

@@ -19,7 +19,14 @@ import type {
   FtErrorDto,
 } from '@feathertree/ipc';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { cellKey, isOneSidedRow, nextUnresolved, type ConflictChoiceState, type ConflictSide } from './excelConflict.js';
 import { nextChangedRow, pagesFor, ROW_PAGE } from './excelGrid.js';
+
+/** 同じ値ならキーを外し、違えば入れる（採り方のボタンの押し直しで外す）。 */
+function toggle<K>(map: SvelteMap<K, ConflictSide>, key: K, side: ConflictSide): void {
+  if (map.get(key) === side) map.delete(key);
+  else map.set(key, side);
+}
 
 export interface ExcelSelection {
   /** 揃えた行の添字。 */
@@ -77,6 +84,17 @@ export class ExcelState {
   /** 非表示の行・列も出すか。 */
   showHidden = $state(false);
   scrollRequest = $state<ExcelScrollRequest | null>(null);
+
+  /*
+   * コンフリクトの採り方（決定 34）。キーは揃えた座標。**比較の出どころ（パスと作業ツリーの指紋）が
+   * 同じ間だけ持ち越す**——更新・ウィンドウ復帰ではトークンが変わるが、作業ツリーが同じなら揃え方も同じなので、
+   * 決めたものを捨てない。書き込んだ（指紋が変わった）ら捨てる。
+   */
+  readonly conflictCells = new SvelteMap<string, ConflictSide>();
+  readonly conflictRows = new SvelteMap<number, ConflictSide>();
+  readonly conflictCols = new SvelteMap<number, ConflictSide>();
+  conflictRest = $state<ConflictSide | null>(null);
+  #choicesKey: string | null = null;
 
   #listSeq = 0;
   #viewSeq = 0;
@@ -159,6 +177,7 @@ export class ExcelState {
       const view = result.value;
       this.view = view;
       this.error = null;
+      this.#syncChoices(view);
 
       let sheet: number | null = null;
       if (options.keepSheet === true && previous !== null && previousSheet !== null) {
@@ -295,6 +314,70 @@ export class ExcelState {
     this.showHidden = !this.showHidden;
   }
 
+  // ---------------------------------------------------------------- コンフリクトの採り方（決定 34）
+
+  /** 今の採り方（純関数 lib/excelConflict.ts に渡す形）。 */
+  get choices(): ConflictChoiceState {
+    return { cells: this.conflictCells, rows: this.conflictRows, cols: this.conflictCols, rest: this.conflictRest };
+  }
+
+  /**
+   * 選んでいるセルの採り方を決める。同じ側をもう一度押すと外す。
+   * 片側にしか無い行ではセルの指定が効かないので、行の指定にする。
+   */
+  chooseCell(side: ConflictSide): void {
+    const sel = this.selection;
+    const layout = this.layout;
+    if (sel === null || layout === null) return;
+    if (isOneSidedRow(layout, sel.row)) {
+      this.chooseRow(side);
+      return;
+    }
+    toggle(this.conflictCells, cellKey(sel.row, sel.col), side);
+  }
+
+  /** 選んでいるセルの行の採り方を決める。同じ側をもう一度押すと外す。 */
+  chooseRow(side: ConflictSide): void {
+    const sel = this.selection;
+    if (sel !== null) toggle(this.conflictRows, sel.row, side);
+  }
+
+  /** 選んでいるセルの列の採り方を決める。同じ側をもう一度押すと外す。 */
+  chooseCol(side: ConflictSide): void {
+    const sel = this.selection;
+    if (sel !== null) toggle(this.conflictCols, sel.col, side);
+  }
+
+  /** 個別に決めていない残りすべて。同じ側をもう一度押すと外す。 */
+  chooseRest(side: ConflictSide): void {
+    this.conflictRest = this.conflictRest === side ? null : side;
+  }
+
+  clearChoices(): void {
+    this.conflictCells.clear();
+    this.conflictRows.clear();
+    this.conflictCols.clear();
+    this.conflictRest = null;
+  }
+
+  /** 次の未決定へ（無ければ何もしない）。 */
+  async moveToUnresolved(): Promise<void> {
+    const layout = this.layout;
+    if (layout === null) return;
+    const target = nextUnresolved(layout, this.choices, this.selection);
+    if (target === null) return;
+    this.#requestScroll(target.row, target.col);
+    await this.selectCell(target.row, target.col);
+  }
+
+  #syncChoices(view: ExcelViewDto): void {
+    const conflict = view.conflict ?? null;
+    const key = conflict !== null && conflict.source === 'markers' ? view.path + '|' + conflict.fingerprint : null;
+    if (key === this.#choicesKey) return;
+    this.#choicesKey = key;
+    this.clearChoices();
+  }
+
   /**
    * 更新・ウィンドウ復帰で status の世代が進んだ。一覧と、選んでいるファイルを取り直す
    * （main は HEAD 側を #49 で読み直す）。シート・選択・スクロールは保つ。
@@ -315,6 +398,8 @@ export class ExcelState {
     this.selectedPath = null;
     this.#clearView();
     this.error = null;
+    this.#choicesKey = null;
+    this.clearChoices();
   }
 
   /** キャッシュから戻ったタブ。選んでいたファイルだけを覚え直し、中身は ensure() が取る。 */

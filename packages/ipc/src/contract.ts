@@ -61,7 +61,6 @@ export const CHANNELS = {
   branchSwitch: 'branch:switch',
   branchCreate: 'branch:create',
   branchMerge: 'branch:merge',
-  branchDelete: 'branch:delete',
 
   stashList: 'stash:list',
   stashSave: 'stash:save',
@@ -82,6 +81,8 @@ export const CHANNELS = {
   excelGetRows: 'excel:getRows',
   excelGetCell: 'excel:getCell',
   excelGetRowDiff: 'excel:getRowDiff',
+  // Excel 差分モードのコンフリクトの採用（決定 34）
+  excelResolveConflict: 'excel:resolveConflict',
 
   remoteList: 'remote:list',
   remoteFetch: 'remote:fetch',
@@ -518,11 +519,8 @@ export interface UnityNodeDto {
    * ヒエラルキーでは持ち込んだ PrefabInstance の下に並び、画面では「継承」の印を付ける。
    */
   readonly inherited: boolean;
-  /**
-   * 行内に「スクリプト名を検索」を出すか（2026-10-03）。`m_Script` の guid を持つ MonoBehaviour なら
-   * 名前の解決の有無によらず真。継承（stripped）・スクリプトの参照が欠けたものだけ偽。
-   */
-  readonly scriptSearchable: boolean;
+  /** MonoBehaviour の `m_Script` がまだスクリプト名に解決できていないか（行内の「スクリプト名を検索」の出し分け）。 */
+  readonly unresolvedScript: boolean;
   readonly mark: UnityNodeMarkDto;
   /**
    * 子孫のどこかに `same` 以外が居るか。
@@ -666,11 +664,61 @@ export interface ExcelViewDto {
   readonly path: string;
   /** HEAD 側を読んだパス（リネームなら元のパス）。 */
   readonly headPath: string;
+  /** 未マージのときは old = 自分側（ours）、new = 相手側（theirs）。決定 34。 */
   readonly old: ExcelSideDto;
   readonly new: ExcelSideDto;
   readonly sheets: readonly ExcelSheetSummaryDto[];
   /** マクロが変わったか。どちらにもマクロが無ければ null。 */
   readonly vbaChanged: boolean | null;
+  /** 未マージのときだけ。無ければ通常の HEAD ↔ 作業ツリーの比較。 */
+  readonly conflict?: ExcelConflictDto | null;
+}
+
+/**
+ * 未マージのファイルの比較の様子（決定 34）。
+ *
+ *  - source `markers` … CSV の作業ツリーのマーカーを解いて両側を作った。違いは衝突した所だけ。セル・行・列単位で採れる
+ *  - source `stages`  … index の段（:2: / :3:）を読んだ。ファイル単位でだけ採れる
+ */
+export interface ExcelConflictDto {
+  readonly source: 'markers' | 'stages';
+  /** CSV のマーカーの読め方（ブックは not-csv）。markers に入れなかった理由の案内に使う。 */
+  readonly markers: 'split' | 'none' | 'malformed' | 'unsupported' | 'not-csv';
+  /** markers のときの衝突ブロックの数。 */
+  readonly blocks: number;
+  /** 作業ツリーが今どちらの側と同じか（stages のとき）。markers では neither（マーカー入り）。 */
+  readonly worktree: 'ours' | 'theirs' | 'neither' | 'absent' | 'unknown';
+  /** 値バーに共通祖先を出せるか（ブックの stages のときだけ読む）。 */
+  readonly hasBase: boolean;
+  readonly cellResolvable: boolean;
+  /** 作業ツリーの指紋。これが同じ間だけ、renderer は選んだ採り方を持ち越す。 */
+  readonly fingerprint: string;
+}
+
+export type ExcelConflictSideDto = 'ours' | 'theirs';
+
+/** セル・行・列単位の採り方（揃えた座標）。優先順位はセル > 行 > 列 > 残りすべて。 */
+export interface ExcelCellChoicesDto {
+  readonly cells: readonly { readonly row: number; readonly col: number; readonly side: ExcelConflictSideDto }[];
+  readonly rows: readonly { readonly row: number; readonly side: ExcelConflictSideDto }[];
+  readonly cols: readonly { readonly col: number; readonly side: ExcelConflictSideDto }[];
+  readonly rest: ExcelConflictSideDto | null;
+}
+
+/**
+ * 採用の要求（決定 34）。送るのは座標と側だけで、本文は main が読み直したものから作る。
+ * token は表示中の比較のもの（古ければ diff-stale）。
+ */
+export interface ExcelResolveRequestDto {
+  readonly path: string;
+  readonly token: string;
+  readonly resolution:
+    | { readonly kind: 'file'; readonly side: ExcelConflictSideDto }
+    | { readonly kind: 'cells'; readonly choices: ExcelCellChoicesDto };
+}
+
+export interface ExcelResolveResultDto {
+  readonly statusSeq: number;
 }
 
 /** 罫線 1 辺（決定 33 の M2）。style は SpreadsheetML の線の種類（thin / medium / dashed …）。 */
@@ -742,6 +790,11 @@ export interface ExcelSheetLayoutDto {
   /** 列ごとの、その側の列の書式（無ければ -1）。行の書式もセルも無い位置に効く。 */
   readonly oldColStyle: readonly number[];
   readonly newColStyle: readonly number[];
+  /**
+   * 未マージでセル単位に採れるとき（決定 34）だけ: 両側にある行で値が違うセル（揃えた行, 列 の組の平らな並び）。
+   * 片側にしか無い行は rowState（追加・削除）で分かるので入れない。多すぎれば null。
+   */
+  readonly conflictCells?: readonly number[] | null;
 }
 
 export interface ExcelRowSideDto {
@@ -783,6 +836,8 @@ export interface ExcelCellDetailDto {
   readonly old: ExcelCellSideDto | null;
   readonly new: ExcelCellSideDto | null;
   readonly changed: boolean;
+  /** 共通祖先の同じ番地のセル（未マージのブックだけ。決定 34）。行の対応付けはしない。 */
+  readonly base?: ExcelCellSideDto | null;
 }
 
 export type ExcelRowDiffKindDto = 'same' | 'changed' | 'added' | 'removed';
@@ -942,10 +997,6 @@ export interface BranchCreateResultDto {
 }
 
 export interface BranchMergeResultDto {
-  readonly statusSeq: number;
-}
-
-export interface BranchDeleteResultDto {
   readonly statusSeq: number;
 }
 
@@ -1280,8 +1331,19 @@ export interface FeatherTreeBridge {
   ): Promise<Result<ExcelCellDetailDto>>;
   /** 差分モードの行単位比較（C 案）。excelGetView とキャッシュを共有する。 */
   excelGetRowDiff(id: string, path: string): Promise<Result<ExcelRowDiffDto>>;
+  /**
+   * 未マージの Excel / CSV の採用（決定 34）。作業ツリーへ書き戻すだけで index には触れない。
+   * ファイル単位（ブック）は採る側の段を #49 で読み直す（1 プロセス）。それ以外は git 0。
+   * 作業ツリーが自分側・相手側のどちらとも違う（または確かめられない）ときのファイル単位の採用は 'needs-confirmation'
+   * （overwrite-conflict-worktree）で断り、confirmed で呼び直すと書く。
+   */
+  excelResolveConflict(
+    id: string,
+    req: ExcelResolveRequestDto,
+    confirmed?: boolean,
+  ): Promise<Result<ExcelResolveResultDto>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
-  /** 対応表 #50: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
+  /** 対応表 #49: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
   logHeadMessage(id: string): Promise<Result<string | null>>;
   /** 対応表 #21。マージコミットでは空配列（`git show` の既定）。 */
   commitGetFiles(id: string, oid: string): Promise<Result<readonly CommitFileChangeDto[]>>;
@@ -1325,12 +1387,6 @@ export interface FeatherTreeBridge {
   branchSwitch(id: string, branchName: string): Promise<Result<BranchSwitchResultDto>>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<Result<BranchCreateResultDto>>;
   branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<Result<BranchMergeResultDto>>;
-  /**
-   * 対応表 #16: ローカルブランチの削除（リモートには触れない）。
-   * マージ済みなら確認なしで `-d`。未マージなら 'needs-confirmation'（delete-unmerged-branch）で断り、
-   * confirmed で呼び直すと `-D`。現在のブランチは消せない。
-   */
-  branchDelete(id: string, branchName: string, confirmed?: boolean): Promise<Result<BranchDeleteResultDto>>;
   /** リモート名の一覧（対応表 #4 の結果のキャッシュ。git は走らない）。 */
   remoteList(id: string): Promise<Result<readonly string[]>>;
   remoteFetch(id: string, remote: string): Promise<Result<RemoteResultDto>>;

@@ -13,6 +13,7 @@ import type {
   ConflictFileDto,
   ConflictSectionDto,
   ConfirmationDto,
+  ExcelResolveRequestDto,
   ExcelRowDiffDto,
   EnvironmentDto,
   GitIdentityDto,
@@ -1329,6 +1330,23 @@ export class AppState {
     const selected = this.selected;
     if (selected !== null && isOpenableExcelPath(selected.path)) this.excel.preselect(selected.path);
     await this.#writeSettings({ viewMode: 'excel' });
+  }
+
+  /**
+   * Excel のコンフリクトを採用して作業ツリーへ書き戻す（決定 34）。index には触れない。
+   *
+   * 送るのは座標と側だけ（本文は main が読み直したものから作る）。作業ツリーがどちらの側とも違うときの
+   * ファイル単位の採用は main が 'needs-confirmation' で断ってくるので、確認してから送り直す。
+   * 書いた後は #operate の取り直し（reloadActive → excel.reload）で比較を作り直す。
+   */
+  resolveExcelConflict(resolution: ExcelResolveRequestDto['resolution']): Promise<void> {
+    const view = this.excel.view;
+    if (view === null || (view.conflict ?? null) === null) return Promise.resolve();
+    const req: ExcelResolveRequestDto = { path: view.path, token: view.token, resolution };
+    return this.#operate(
+      (confirmed) => this.#ft.excelResolveConflict(this.#id(), req, confirmed),
+      () => this.#operate(() => this.#ft.excelResolveConflict(this.#id(), req, true)),
+    );
   }
 
   /** 差分ペインの「Excel モードで開く」。main のキャッシュに当たるので git は走らない。 */

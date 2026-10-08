@@ -50,6 +50,15 @@ export {
 
 export { openWorkbook, openWorkbookSteps } from './workbook/workbook.js';
 export { CSV_SHEET_NAME, csvRecords, decodeCsv, openCsv, openCsvSteps, type CsvEncoding } from './csv/csv.js';
+export {
+  composeCsv,
+  csvRecordSpans,
+  splitCsvConflict,
+  type CsvConflictSplit,
+  type CsvRecordSpan,
+  type CsvRowPlan,
+  type CsvSpans,
+} from './csv/conflict.js';
 export { isCsvPath, openSpreadsheetSteps } from './open.js';
 export { cellAddress, columnName, parseCellRef, parseRange, MAX_COLS, MAX_ROWS, type CellRange, type CellRef } from './sheet/ref.js';
 export { columnWidthPx, rowHeightPx, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PT } from './sheet/worksheet.js';
@@ -78,6 +87,7 @@ export {
   VALUE_NUMBER,
   VALUE_TEXT,
   cellsEqual,
+  changedColumns,
   displayText,
   formatContextOf,
   formattedText,
@@ -97,7 +107,7 @@ export {
   type WorkbookComparison,
 } from './compare/compare.js';
 export { HIDDEN_NEW, HIDDEN_OLD, buildGeometry, type SheetGeometry } from './compare/geometry.js';
-export { buildRowPage, cellDetail, type CellDetail, type CellSide, type RowPageEntry, type RowSide } from './compare/pages.js';
+export { buildRowPage, cellDetail, cellSideIn, type CellDetail, type CellSide, type RowPageEntry, type RowSide } from './compare/pages.js';
 export {
   buildRowDiff,
   type RowDiff,

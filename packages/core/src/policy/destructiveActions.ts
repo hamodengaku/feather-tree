@@ -12,7 +12,8 @@ export type DestructiveAction =
   | 'delete-unmerged-branch'
   | 'stash-drop'
   | 'amend-pushed-commit'
-  | 'merge-branch';
+  | 'merge-branch'
+  | 'overwrite-conflict-worktree';
 
 export interface ConfirmationSpec {
   readonly title: string;
@@ -66,6 +67,17 @@ const SPECS: Record<DestructiveAction, ConfirmationSpec> = {
     message: '現在のブランチに取り込みます。コンフリクトが起きた場合は解決が必要です。',
     confirmLabel: 'マージする',
     recoverable: true,
+  },
+  /*
+   * Excel のコンフリクトのファイル単位の採用で、作業ツリーが自分側・相手側のどちらとも違うとき（決定 34）。
+   * どちらかと同じなら同じものが index の段に残っているので確認しない。手で編集した分だけは git のどこにも無い。
+   */
+  'overwrite-conflict-worktree': {
+    title: '作業ツリーのファイルを上書きしますか？',
+    message:
+      '作業ツリーのファイルは自分側・相手側のどちらとも違います（衝突の解消中に編集した可能性があります）。採用すると、その編集は失われます（git には残っていないため復元できません）。',
+    confirmLabel: '上書きして採用',
+    recoverable: false,
   },
   'amend-pushed-commit': {
     title: 'プッシュ済みのコミットを修正しますか？',
