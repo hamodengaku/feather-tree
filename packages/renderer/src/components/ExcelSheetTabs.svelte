@@ -4,6 +4,7 @@
    *
    * 印: + 追加 / − 削除 / ● 変更。名前が変わったシートは「旧 → 新」。非表示のシートは斜体。
    * 右端に「前の変更 / 次の変更」と「非表示も表示」を置く。
+   * コンフリクトをセル単位で解消しているとき（決定 34）は、シートごとの未決定の数を添える。
    */
   import type { ExcelSheetLayoutDto, ExcelSheetSummaryDto } from '@feathertree/ipc';
   import { sheetLabel, sheetMarkSymbol } from '../lib/excelText.js';
@@ -16,9 +17,11 @@
     onselect: (index: number) => void;
     onmove: (direction: 1 | -1) => void;
     ontogglehidden: () => void;
+    /** シートごとの未決定の数（コンフリクトの解消中だけ）。 */
+    unresolvedOf?: ((sheet: ExcelSheetSummaryDto) => number) | null;
   }
 
-  const { sheets, current, layout, showHidden, onselect, onmove, ontogglehidden }: Props = $props();
+  const { sheets, current, layout, showHidden, onselect, onmove, ontogglehidden, unresolvedOf = null }: Props = $props();
 
   const currentSheet = $derived(sheets.find((s) => s.index === current) ?? null);
   const changeCount = $derived(layout?.changedRows.length ?? 0);
@@ -51,6 +54,9 @@
       >
         {#if sheetMarkSymbol(s) !== ''}<span class="mark">{sheetMarkSymbol(s)}</span>{/if}
         <span class="name">{sheetLabel(s)}</span>
+        {#if unresolvedOf !== null && unresolvedOf(s) > 0}
+          <span class="unresolved" title="このシートの未決定の数">{unresolvedOf(s)}</span>
+        {/if}
       </button>
     {/each}
   </div>
@@ -71,6 +77,15 @@
 </div>
 
 <style>
+  .unresolved {
+    margin-left: 4px;
+    padding: 0 4px;
+    border-radius: var(--app-metric-radius);
+    border: 1px solid var(--app-text-conflict);
+    color: var(--app-text-conflict);
+    font-size: var(--app-font-size-mono);
+  }
+
   .sheet-tabs {
     display: flex;
     align-items: stretch;

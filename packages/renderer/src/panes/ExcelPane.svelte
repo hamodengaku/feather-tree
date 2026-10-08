@@ -19,7 +19,7 @@
   import ExcelValueBar from '../components/ExcelValueBar.svelte';
   import { app } from '../lib/appState.svelte.js';
   import { effectiveColWidths, effectiveRowHeights, mirrorScroll, rowHeaderWidth } from '../lib/excelGrid.js';
-  import { choiceAt, type ConflictSide } from '../lib/excelConflict.js';
+  import { choiceAt, unresolvedInSheet, type ConflictSide } from '../lib/excelConflict.js';
   import {
     conflictSideNotice,
     conflictWorkbookSummary,
@@ -124,10 +124,11 @@
 
   /** グリッドに出す採り方の印（セル単位で採れるときだけ）。 */
   const choiceOf = $derived.by(() => {
-    const current = layout;
-    if (conflict?.cellResolvable !== true || current === null) return null;
+    const index = ex.sheet;
+    if (conflict?.cellResolvable !== true || layout === null || index === null || sheet?.conflict == null) return null;
+    const summary = sheet;
     const choices = ex.choices;
-    return (row: number, col: number): ConflictSide | null => choiceAt(current, choices, row, col);
+    return (row: number, col: number): ConflictSide | null => choiceAt(summary, choices, index, row, col);
   });
 </script>
 
@@ -237,6 +238,7 @@
       onselect={(i) => void ex.selectSheet(i)}
       onmove={(d) => void ex.moveToChange(d)}
       ontogglehidden={() => ex.toggleShowHidden()}
+      unresolvedOf={conflict?.cellResolvable === true ? (sh) => unresolvedInSheet(sh, ex.choices) : null}
     />
   {/if}
 </section>

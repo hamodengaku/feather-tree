@@ -59,6 +59,12 @@ export class XmlScanner {
   /** 属性値の範囲（`attrRaw` が当たったとき）。 */
   valueStart = 0;
   valueEnd = 0;
+  /**
+   * 直前の `next()` が返したもの（タグ・文字）のバイト範囲。書き換え（決定 34 の第 2 段階）で、
+   * 要素や文字を元のバイトのまま置き換えるのに使う。タグなら `<` から `>` の直後まで。
+   */
+  tokenStart = 0;
+  tokenEnd = 0;
 
   constructor(bytes: Uint8Array, start = 0, end = bytes.length) {
     this.#b = bytes;
@@ -84,6 +90,8 @@ export class XmlScanner {
         this.#textEnd = lt;
         this.#cdata = false;
         this.#pos = lt;
+        this.tokenStart = pos;
+        this.tokenEnd = lt;
         return (this.kind = XML_TEXT);
       }
 
@@ -102,6 +110,8 @@ export class XmlScanner {
           this.#textEnd = close;
           this.#cdata = true;
           this.#pos = Math.min(this.#end, close + 3);
+          this.tokenStart = pos;
+          this.tokenEnd = this.#pos;
           return (this.kind = XML_TEXT);
         }
         // <!DOCTYPE ...> などは読み飛ばす（DTD は解釈しない）
@@ -118,6 +128,8 @@ export class XmlScanner {
         const gt = this.#indexOf(GT, this.nameEnd);
         this.#pos = Math.min(this.#end, gt + 1);
         this.selfClosing = false;
+        this.tokenStart = pos;
+        this.tokenEnd = this.#pos;
         return (this.kind = XML_END);
       }
 
@@ -140,6 +152,8 @@ export class XmlScanner {
       this.#attrStart = afterName;
       this.#attrEnd = this.selfClosing ? at - 1 : at;
       this.#pos = Math.min(this.#end, at + 1);
+      this.tokenStart = pos;
+      this.tokenEnd = this.#pos;
       return (this.kind = XML_START);
     }
   }
@@ -230,6 +244,25 @@ export class XmlScanner {
     if (len === 1) return b[this.valueStart] === 0x31;
     if (len === 4) return this.#rangeIs(this.valueStart, this.valueEnd, 'true');
     return fallback;
+  }
+
+  /** 直前の XML_TEXT の中身のバイト範囲（CDATA なら中身だけ）。 */
+  get textStart(): number {
+    return this.#textStart;
+  }
+
+  get textEnd(): number {
+    return this.#textEnd;
+  }
+
+  /** 直前の XML_TEXT が CDATA か。 */
+  get isCdata(): boolean {
+    return this.#cdata;
+  }
+
+  /** 次に読む位置（直前のトークンの直後）。 */
+  get position(): number {
+    return this.#pos;
   }
 
   /** 直前の XML_TEXT の中身。 */

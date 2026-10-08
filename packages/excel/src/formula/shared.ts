@@ -14,20 +14,20 @@
 
 import { MAX_COLS, MAX_ROWS } from '../sheet/ref.js';
 
-function isLetter(c: number): boolean {
+export function isLetter(c: number): boolean {
   return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
 }
 
-function isDigit(c: number): boolean {
+export function isDigit(c: number): boolean {
   return c >= 48 && c <= 57;
 }
 
 /** 名前（関数名・定義名・シート名）の一部になりうる文字。直前がこれなら参照の始まりではない。 */
-function isNameChar(c: number): boolean {
+export function isNameChar(c: number): boolean {
   return isLetter(c) || isDigit(c) || c === 95 /* _ */ || c === 46 /* . */ || c === 92 /* \ */ || c === 63 /* ? */ || c >= 0x80;
 }
 
-interface Part {
+export interface Part {
   /** 読み終えた位置。 */
   readonly end: number;
   readonly absolute: boolean;
@@ -35,7 +35,7 @@ interface Part {
 }
 
 /** `$?[A-Za-z]{1,3}` を読む。value は 0 始まりの列番号。 */
-function readColumn(s: string, at: number): Part | null {
+export function readColumn(s: string, at: number): Part | null {
   let i = at;
   const absolute = s.charCodeAt(i) === 36;
   if (absolute) i += 1;
@@ -53,7 +53,7 @@ function readColumn(s: string, at: number): Part | null {
 }
 
 /** `$?[0-9]{1,7}` を読む。value は 0 始まりの行番号。 */
-function readRow(s: string, at: number): Part | null {
+export function readRow(s: string, at: number): Part | null {
   let i = at;
   const absolute = s.charCodeAt(i) === 36;
   if (absolute) i += 1;
@@ -69,7 +69,7 @@ function readRow(s: string, at: number): Part | null {
   return { end: i, absolute, value: row - 1 };
 }
 
-function colText(col: number, absolute: boolean): string {
+export function colText(col: number, absolute: boolean): string {
   let n = col + 1;
   let out = '';
   while (n > 0) {
@@ -80,12 +80,12 @@ function colText(col: number, absolute: boolean): string {
   return (absolute ? '$' : '') + out;
 }
 
-function rowText(row: number, absolute: boolean): string {
+export function rowText(row: number, absolute: boolean): string {
   return (absolute ? '$' : '') + String(row + 1);
 }
 
 /** 参照の終わりの直後として正しいか（名前の途中・関数呼び出し・シート名でない）。 */
-function endsReference(s: string, at: number): boolean {
+export function endsReference(s: string, at: number): boolean {
   if (at >= s.length) return true;
   const c = s.charCodeAt(at);
   if (isNameChar(c)) return false;
@@ -198,7 +198,7 @@ function tryReference(s: string, at: number, dRow: number, dCol: number): Replac
 }
 
 /** 引用符で始まる区間の終わり（閉じ引用符の直後）。二重の引用符は逃がし。閉じていなければ末尾。 */
-function skipQuoted(s: string, at: number, quote: number): number {
+export function skipQuoted(s: string, at: number, quote: number): number {
   let i = at + 1;
   while (i < s.length) {
     if (s.charCodeAt(i) === quote) {
@@ -213,7 +213,7 @@ function skipQuoted(s: string, at: number, quote: number): number {
   return s.length;
 }
 
-function skipBrackets(s: string, at: number): number {
+export function skipBrackets(s: string, at: number): number {
   let depth = 0;
   let i = at;
   while (i < s.length) {

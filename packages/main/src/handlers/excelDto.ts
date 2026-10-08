@@ -7,6 +7,7 @@
 import {
   baseCellOf,
   buildRowPage,
+  conflictTargetsOf,
   cellDetail,
   excelToken,
   type ExcelComparison,
@@ -85,6 +86,16 @@ function toConflictDto(conflict: ExcelConflict | null): ExcelConflictDto | null 
   };
 }
 
+/** 未マージでセル単位に採れるとき、シートごとの決めるべき所・採れない所を添える（決定 34）。 */
+function withConflictTargets(view: ExcelComparison, sheets: ExcelSheetSummaryDto[]): ExcelSheetSummaryDto[] {
+  if (view.conflict === null) return sheets;
+  const targets = conflictTargetsOf(view);
+  return sheets.map((summary, i) => {
+    const t = targets?.[i];
+    return { ...summary, conflict: t === undefined ? null : { cells: [...t.cells], rows: [...t.rows], blocked: t.blocked.map((b) => ({ ...b })) } };
+  });
+}
+
 export function toExcelViewDto(view: ExcelComparison): ExcelViewDto {
   return {
     token: excelToken(view),
@@ -92,7 +103,7 @@ export function toExcelViewDto(view: ExcelComparison): ExcelViewDto {
     headPath: view.headPath,
     old: toSideDto(view.old),
     new: toSideDto(view.new),
-    sheets: view.comparison.sheets.map(toSheetSummary),
+    sheets: withConflictTargets(view, view.comparison.sheets.map(toSheetSummary)),
     vbaChanged: view.comparison.vbaChanged,
     conflict: toConflictDto(view.conflict),
   };

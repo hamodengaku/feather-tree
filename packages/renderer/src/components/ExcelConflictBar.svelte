@@ -3,23 +3,29 @@
    * Excel 差分モードのコンフリクトの帯（決定 34）。値バーの上に出す。
    *
    * 1 段目: 何が起きているか（出どころ・作業ツリーの様子）と、ファイル単位の採用。
-   * 2 段目（CSV のマーカー方式だけ）: 選んでいるセル・その行・その列・残りすべての採り方と、書き込み。
+   * 2 段目（セル単位で採れるとき。CSV のマーカー方式・ブック）: 選んでいるセル・その行・その列・残りすべての
+   * 採り方と、書き込み。ブックではシートをまたいで決めた内容を持ち、未決定はブック全体で数える。
    *
-   * 採り方のボタンは押し直すと外れる（aria-pressed で今の指定を示す）。書き込むのは作業ツリーだけで、
+   * 採り方のボタンは押し直すと外れる（aria-pressed で今の指定を示す）。相手側を採れない所（docs/07 3.2）は
+   * 選ぶと理由を出し、そこに相手側が指定されている間は書き込めない。書き込むのは作業ツリーだけで、
    * 解決済みにするのは差分モードでのステージ（決定 30 と同じ）。
    */
   import type { ExcelConflictDto, ExcelViewDto } from '@feathertree/ipc';
   import { app } from '../lib/appState.svelte.js';
   import {
+    blockedChoices,
+    blockReasonAt,
+    cellKey,
     choiceForCell,
     choiceForRow,
     isOneSidedRow,
+    lineKey,
     toChoicesDto,
     unresolvedCount,
     type ConflictSide,
   } from '../lib/excelConflict.js';
   import { columnLabel } from '../lib/excelGrid.js';
-  import { conflictSummary } from '../lib/excelText.js';
+  import { blockReasonText, conflictSummary } from '../lib/excelText.js';
 
   interface Props {
     view: ExcelViewDto;
@@ -31,20 +37,24 @@
 
   const layout = $derived(ex.layout);
   const sel = $derived(ex.selection);
+  const sheet = $derived(ex.sheet);
+  const summary = $derived(view.sheets.find((s) => s.index === sheet));
   const oursAbsent = $derived(view.old.state === 'absent');
   const theirsAbsent = $derived(view.new.state === 'absent');
-  const cellMode = $derived(conflict.cellResolvable && layout !== null && layout.conflictCells != null);
-  const unresolved = $derived(layout === null ? null : unresolvedCount(layout, ex.choices));
-  const oneSided = $derived(layout !== null && sel !== null && isOneSidedRow(layout, sel.row));
+  const cellMode = $derived(conflict.cellResolvable && view.sheets.length > 0 && view.sheets.every((s) => s.conflict != null));
+  const unresolved = $derived(unresolvedCount(view.sheets, ex.choices));
+  const blocked = $derived(blockedChoices(view.sheets, ex.choices));
+  const oneSided = $derived(sel !== null && isOneSidedRow(summary, sel.row));
+  const reason = $derived(sel === null ? null : blockReasonAt(summary, sel.row, sel.col));
 
   /** 選んでいる所の、今効いている採り方（どの指定から来たかは問わない）。 */
   const effective = $derived.by((): ConflictSide | null => {
-    if (layout === null || sel === null) return null;
-    return oneSided ? choiceForRow(ex.choices, sel.row) : choiceForCell(ex.choices, sel.row, sel.col);
+    if (sel === null || sheet === null) return null;
+    return oneSided ? choiceForRow(ex.choices, sheet, sel.row) : choiceForCell(ex.choices, sheet, sel.row, sel.col);
   });
-  const cellPick = $derived(sel === null ? null : (ex.conflictCells.get(sel.row + ':' + sel.col) ?? null));
-  const rowPick = $derived(sel === null ? null : (ex.conflictRows.get(sel.row) ?? null));
-  const colPick = $derived(sel === null ? null : (ex.conflictCols.get(sel.col) ?? null));
+  const cellPick = $derived(sel === null || sheet === null ? null : (ex.conflictCells.get(cellKey(sheet, sel.row, sel.col)) ?? null));
+  const rowPick = $derived(sel === null || sheet === null ? null : (ex.conflictRows.get(lineKey(sheet, sel.row)) ?? null));
+  const colPick = $derived(sel === null || sheet === null ? null : (ex.conflictCols.get(lineKey(sheet, sel.col)) ?? null));
 
   /** 選んでいる所の見出し（行番号は自分側、無ければ相手側の行番号）。 */
   const where = $derived.by(() => {
@@ -53,7 +63,7 @@
     const n = layout.newRow[sel.row] ?? -1;
     const row = o >= 0 ? o : n;
     if (row < 0) return null;
-    return oneSided ? `${String(row + 1)} 行` : columnLabel(sel.col) + String(row + 1);
+    return oneSided ? String(row + 1) + ' 行' : columnLabel(sel.col) + String(row + 1);
   });
 
   function sideText(side: ConflictSide | null): string {
@@ -67,6 +77,22 @@
   function writeCells(): void {
     void app.resolveExcelConflict({ kind: 'cells', choices: toChoicesDto(ex.choices) });
   }
+
+  /** 相手側を採れない所に相手側が指定されている最初の所へ。 */
+  async function showBlocked(): Promise<void> {
+    const first = blocked.first;
+    if (first === null) return;
+    if (first.sheet !== ex.sheet) await ex.selectSheet(first.sheet);
+    await ex.selectCell(first.row, first.col);
+  }
+
+  const writeTitle = $derived(
+    unresolved !== 0
+      ? 'すべての違いを決めると書き込めます'
+      : blocked.count > 0
+        ? '相手側を採れない所に相手側が指定されています'
+        : '決めた内容で作業ツリーのファイルを書き換えます',
+  );
 </script>
 
 {#snippet pair(label: string, current: ConflictSide | null, choose: (side: ConflictSide) => void, disabled: boolean)}
@@ -102,6 +128,9 @@
   {#if cellMode}
     <div class="line cells">
       <span class="where">{where ?? 'セル未選択'}：{sideText(effective)}</span>
+      {#if reason !== null}
+        <span class="blocked" title={blockReasonText(reason)}>相手側は採れません（{blockReasonText(reason)}）</span>
+      {/if}
       {#if oneSided}
         {@render pair('この行（片側だけの行）', rowPick, (s) => ex.chooseRow(s), sel === null)}
       {:else}
@@ -113,17 +142,20 @@
       <span class="spacer"></span>
       <button onclick={() => void ex.moveToUnresolved()} disabled={unresolved === 0}>次の未決定へ</button>
       <button onclick={() => ex.clearChoices()}>指定をすべて外す</button>
+      {#if blocked.count > 0}
+        <button class="blocked-button" onclick={() => void showBlocked()}>採れない所の相手側 {blocked.count} 件</button>
+      {/if}
       <button
         class="primary"
-        disabled={app.busy || unresolved !== 0}
-        title={unresolved === 0 ? '決めた内容で作業ツリーのファイルを書き換えます' : 'すべての違いを決めると書き込めます'}
+        disabled={app.busy || unresolved !== 0 || blocked.count > 0}
+        title={writeTitle}
         onclick={writeCells}
       >
         書き込む{#if unresolved !== null && unresolved > 0}（未決定 {unresolved} 件）{/if}
       </button>
     </div>
-  {:else if conflict.source === 'markers'}
-    <p class="note">違いが多すぎる・上限で途中までしか読んでいないため、ファイル全体でのみ採用できます。</p>
+  {:else if conflict.source === 'markers' || view.old.state === 'ok'}
+    <p class="note">違いが多すぎる・上限で途中までしか読んでいないなどの理由で、ファイル全体でのみ採用できます。</p>
   {/if}
   <p class="note">
     採用は作業ツリーのファイルを書き換えるだけです。解決済みにするには、差分モードでこのファイルをステージしてください。
@@ -196,6 +228,14 @@
     border-color: var(--app-accent);
     color: var(--app-accent);
     font-weight: 700;
+  }
+
+  .blocked {
+    color: var(--app-text-danger);
+  }
+
+  .blocked-button {
+    color: var(--app-text-danger);
   }
 
   .note {

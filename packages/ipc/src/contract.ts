@@ -656,6 +656,24 @@ export interface ExcelSheetSummaryDto {
   readonly positional: boolean;
   /** 列の上限より右を読んでいない。 */
   readonly columnsTruncated: boolean;
+  /** 未マージでセル単位に採れるとき（決定 34）だけ: このシートの決めるべき所と、相手側を採れない所。 */
+  readonly conflict?: ExcelSheetConflictDto | null;
+}
+
+/**
+ * 相手側を採れない理由（docs/07-xlsx-cell-merge.md 3.2）。
+ * sheet-structure = 片側にしか無いシート / array-formula = 配列数式 / table-header = テーブルの見出し /
+ * unsafe-part = 行のずらし方が分からない部品（ピボット等）を持つシートの行の挿入・削除
+ */
+export type ExcelBlockReasonDto = 'sheet-structure' | 'array-formula' | 'table-header' | 'unsafe-part';
+
+export interface ExcelSheetConflictDto {
+  /** 両側にある行で値が違うセル（揃えた行, 列 の組の平らな並び）。 */
+  readonly cells: readonly number[];
+  /** 片側にしか無い揃えた行（行全体で決める）。 */
+  readonly rows: readonly number[];
+  /** 相手側を採れない所。col が -1 なら行全体。 */
+  readonly blocked: readonly { readonly row: number; readonly col: number; readonly reason: ExcelBlockReasonDto }[];
 }
 
 export interface ExcelViewDto {
@@ -677,8 +695,8 @@ export interface ExcelViewDto {
 /**
  * 未マージのファイルの比較の様子（決定 34）。
  *
- *  - source `markers` … CSV の作業ツリーのマーカーを解いて両側を作った。違いは衝突した所だけ。セル・行・列単位で採れる
- *  - source `stages`  … index の段（:2: / :3:）を読んだ。ファイル単位でだけ採れる
+ *  - source `markers` … CSV の作業ツリーのマーカーを解いて両側を作った。違いは衝突した所だけ
+ *  - source `stages`  … index の段（:2: / :3:）を読んだ。ブックならセル・行・列単位でも採れる（docs/07）
  */
 export interface ExcelConflictDto {
   readonly source: 'markers' | 'stages';
@@ -697,11 +715,14 @@ export interface ExcelConflictDto {
 
 export type ExcelConflictSideDto = 'ours' | 'theirs';
 
-/** セル・行・列単位の採り方（揃えた座標）。優先順位はセル > 行 > 列 > 残りすべて。 */
+/**
+ * セル・行・列単位の採り方。sheet はシートの添字（ExcelSheetSummaryDto.index）、行・列は揃えた座標。
+ * 優先順位はセル > 行 > 列 > 残りすべて（rest はブック全体）。
+ */
 export interface ExcelCellChoicesDto {
-  readonly cells: readonly { readonly row: number; readonly col: number; readonly side: ExcelConflictSideDto }[];
-  readonly rows: readonly { readonly row: number; readonly side: ExcelConflictSideDto }[];
-  readonly cols: readonly { readonly col: number; readonly side: ExcelConflictSideDto }[];
+  readonly cells: readonly { readonly sheet: number; readonly row: number; readonly col: number; readonly side: ExcelConflictSideDto }[];
+  readonly rows: readonly { readonly sheet: number; readonly row: number; readonly side: ExcelConflictSideDto }[];
+  readonly cols: readonly { readonly sheet: number; readonly col: number; readonly side: ExcelConflictSideDto }[];
   readonly rest: ExcelConflictSideDto | null;
 }
 
@@ -790,11 +811,6 @@ export interface ExcelSheetLayoutDto {
   /** 列ごとの、その側の列の書式（無ければ -1）。行の書式もセルも無い位置に効く。 */
   readonly oldColStyle: readonly number[];
   readonly newColStyle: readonly number[];
-  /**
-   * 未マージでセル単位に採れるとき（決定 34）だけ: 両側にある行で値が違うセル（揃えた行, 列 の組の平らな並び）。
-   * 片側にしか無い行は rowState（追加・削除）で分かるので入れない。多すぎれば null。
-   */
-  readonly conflictCells?: readonly number[] | null;
 }
 
 export interface ExcelRowSideDto {

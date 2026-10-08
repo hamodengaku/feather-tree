@@ -89,8 +89,21 @@ export type {
   ExcelWorktreeMatch,
 } from './session/excelView.js';
 // Excel のコンフリクトの採用（決定 34）
-export { conflictCellsOf, planCsvResolution, resolveExcelConflict } from './session/excelConflict.js';
-export type { ExcelCellChoices, ExcelConflictSide, ExcelResolveRequest } from './session/excelConflict.js';
+export {
+  MAX_CONFLICT_CELLS,
+  conflictTargetsOf,
+  planCsvResolution,
+  planXlsxResolution,
+  resolveExcelConflict,
+} from './session/excelConflict.js';
+export type {
+  ExcelBlockReason,
+  ExcelBlockedTarget,
+  ExcelCellChoices,
+  ExcelConflictSide,
+  ExcelConflictTargets,
+  ExcelResolveRequest,
+} from './session/excelConflict.js';
 export { isExcelPath, isOpenableExcelPath, listExcelFiles, MAX_EXCEL_FILES } from './session/excelFiles.js';
 export type { ExcelFileEntry, ExcelFileList } from './session/excelFiles.js';
 export { zlibInflater } from './session/zlibInflater.js';

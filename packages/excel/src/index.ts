@@ -60,6 +60,10 @@ export {
   type CsvSpans,
 } from './csv/conflict.js';
 export { isCsvPath, openSpreadsheetSteps } from './open.js';
+export { mergeXlsx, XlsxMergeError, type XlsxMergeInput, type XlsxSheetMerge } from './write/merge.js';
+export type { OutRow } from './write/sheet.js';
+export { inspectXlsx, type CellBox, type SheetInspection, type TableHeader } from './write/package.js';
+export { type Deflater } from './write/zipWriter.js';
 export { cellAddress, columnName, parseCellRef, parseRange, MAX_COLS, MAX_ROWS, type CellRange, type CellRef } from './sheet/ref.js';
 export { columnWidthPx, rowHeightPx, DEFAULT_COL_WIDTH_PX, DEFAULT_ROW_HEIGHT_PT } from './sheet/worksheet.js';
 export { shiftFormula } from './formula/shared.js';

@@ -14,12 +14,20 @@ import type {
   ExcelFileEntryDto,
   ExcelRowDto,
   ExcelSheetLayoutDto,
+  ExcelSheetSummaryDto,
   ExcelViewDto,
   FeatherTreeBridge,
   FtErrorDto,
 } from '@feathertree/ipc';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-import { cellKey, isOneSidedRow, nextUnresolved, type ConflictChoiceState, type ConflictSide } from './excelConflict.js';
+import {
+  cellKey,
+  isOneSidedRow,
+  lineKey,
+  nextUnresolved,
+  type ConflictChoiceState,
+  type ConflictSide,
+} from './excelConflict.js';
 import { nextChangedRow, pagesFor, ROW_PAGE } from './excelGrid.js';
 
 /** 同じ値ならキーを外し、違えば入れる（採り方のボタンの押し直しで外す）。 */
@@ -90,9 +98,10 @@ export class ExcelState {
    * 同じ間だけ持ち越す**——更新・ウィンドウ復帰ではトークンが変わるが、作業ツリーが同じなら揃え方も同じなので、
    * 決めたものを捨てない。書き込んだ（指紋が変わった）ら捨てる。
    */
+  /** キーは `シート:揃えた行:列` / `シート:揃えた行` / `シート:列`（lib/excelConflict.ts）。 */
   readonly conflictCells = new SvelteMap<string, ConflictSide>();
-  readonly conflictRows = new SvelteMap<number, ConflictSide>();
-  readonly conflictCols = new SvelteMap<number, ConflictSide>();
+  readonly conflictRows = new SvelteMap<string, ConflictSide>();
+  readonly conflictCols = new SvelteMap<string, ConflictSide>();
   conflictRest = $state<ConflictSide | null>(null);
   #choicesKey: string | null = null;
 
@@ -327,25 +336,25 @@ export class ExcelState {
    */
   chooseCell(side: ConflictSide): void {
     const sel = this.selection;
-    const layout = this.layout;
-    if (sel === null || layout === null) return;
-    if (isOneSidedRow(layout, sel.row)) {
+    const sheet = this.sheet;
+    if (sel === null || sheet === null) return;
+    if (isOneSidedRow(this.#summary(), sel.row)) {
       this.chooseRow(side);
       return;
     }
-    toggle(this.conflictCells, cellKey(sel.row, sel.col), side);
+    toggle(this.conflictCells, cellKey(sheet, sel.row, sel.col), side);
   }
 
   /** 選んでいるセルの行の採り方を決める。同じ側をもう一度押すと外す。 */
   chooseRow(side: ConflictSide): void {
     const sel = this.selection;
-    if (sel !== null) toggle(this.conflictRows, sel.row, side);
+    if (sel !== null && this.sheet !== null) toggle(this.conflictRows, lineKey(this.sheet, sel.row), side);
   }
 
   /** 選んでいるセルの列の採り方を決める。同じ側をもう一度押すと外す。 */
   chooseCol(side: ConflictSide): void {
     const sel = this.selection;
-    if (sel !== null) toggle(this.conflictCols, sel.col, side);
+    if (sel !== null && this.sheet !== null) toggle(this.conflictCols, lineKey(this.sheet, sel.col), side);
   }
 
   /** 個別に決めていない残りすべて。同じ側をもう一度押すと外す。 */
@@ -360,14 +369,23 @@ export class ExcelState {
     this.conflictRest = null;
   }
 
-  /** 次の未決定へ（無ければ何もしない）。 */
+  /** 次の未決定へ（別のシートならシートを開く。無ければ何もしない）。 */
   async moveToUnresolved(): Promise<void> {
-    const layout = this.layout;
-    if (layout === null) return;
-    const target = nextUnresolved(layout, this.choices, this.selection);
+    const view = this.view;
+    const sheet = this.sheet;
+    if (view === null) return;
+    const from = sheet === null || this.selection === null ? null : { sheet, ...this.selection };
+    const target = nextUnresolved(view.sheets, this.choices, from);
     if (target === null) return;
+    if (target.sheet !== this.sheet) await this.selectSheet(target.sheet);
+    if (this.sheet !== target.sheet) return;
     this.#requestScroll(target.row, target.col);
     await this.selectCell(target.row, target.col);
+  }
+
+  /** 今のシートの概要。 */
+  #summary(): ExcelSheetSummaryDto | undefined {
+    return this.view?.sheets.find((s) => s.index === this.sheet);
   }
 
   #syncChoices(view: ExcelViewDto): void {

@@ -28,7 +28,6 @@ import {
   rowsFor,
   selectionForNode,
   EXCEL_LIMITS,
-  conflictCellsOf,
   geometryOf,
   rowDiffOf,
   type ExcelCellChoices,
@@ -735,10 +734,7 @@ export function createService(deps: ServiceDeps): Service {
     if (resolution?.kind === 'file') return [view, { kind: 'file', side: validSide(resolution.side) }];
     if (resolution?.kind !== 'cells') throw new HandlerError({ kind: 'internal', message: '採用の指定が不正です。' });
 
-    const sheet = view.comparison.sheets[0];
-    const rowCount = sheet?.oldRow.length ?? 0;
-    const colCount = sheet?.colCount ?? 0;
-    return [view, { kind: 'cells', choices: validChoices(resolution.choices, rowCount, colCount) }];
+    return [view, { kind: 'cells', choices: validChoices(resolution.choices, view.comparison.sheets) }];
   };
 
   const validSide = (side: unknown): ExcelConflictSideDto => {
@@ -746,8 +742,8 @@ export function createService(deps: ServiceDeps): Service {
     throw new HandlerError({ kind: 'internal', message: '採用する側の指定が不正です。' });
   };
 
-  /** 揃えた座標の検証。数は「シートのセル数」を上限にする（巨大な配列で main を止めさせない）。 */
-  const validChoices = (choices: ExcelCellChoicesDto, rowCount: number, colCount: number): ExcelCellChoices => {
+  /** シート・揃えた座標の検証。数は「シートのセル数」を上限にする（巨大な配列で main を止めさせない）。 */
+  const validChoices = (choices: ExcelCellChoicesDto, sheets: readonly SheetComparison[]): ExcelCellChoices => {
     const bad = (): never => {
       throw new HandlerError({ kind: 'internal', message: '採用するセルの指定が不正です。' });
     };
@@ -755,11 +751,19 @@ export function createService(deps: ServiceDeps): Service {
     if (choices === null || typeof choices !== 'object') return bad();
     const { cells, rows, cols, rest } = choices;
     if (!Array.isArray(cells) || !Array.isArray(rows) || !Array.isArray(cols)) return bad();
-    if (cells.length > EXCEL_LIMITS.maxCellsPerSheet || rows.length > rowCount || cols.length > colCount) return bad();
+    if (cells.length > EXCEL_LIMITS.maxCellsPerBook || rows.length > EXCEL_LIMITS.maxRowsPerSheet * sheets.length || cols.length > EXCEL_LIMITS.maxColumns * sheets.length) {
+      return bad();
+    }
+    const sheetOf = (n: unknown): SheetComparison => (inRange(n, sheets.length) ? (sheets[n] as SheetComparison) : bad());
+    const rowIn = (s: SheetComparison, r: unknown): number => (inRange(r, s.oldRow.length) ? r : bad());
+    const colIn = (s: SheetComparison, c: unknown): number => (inRange(c, s.colCount) ? c : bad());
     return {
-      cells: cells.map((c) => (inRange(c?.row, rowCount) && inRange(c.col, colCount) ? { row: c.row, col: c.col, side: validSide(c.side) } : bad())),
-      rows: rows.map((r) => (inRange(r?.row, rowCount) ? { row: r.row, side: validSide(r.side) } : bad())),
-      cols: cols.map((c) => (inRange(c?.col, colCount) ? { col: c.col, side: validSide(c.side) } : bad())),
+      cells: cells.map((c) => {
+        const s = sheetOf(c?.sheet);
+        return { sheet: c.sheet, row: rowIn(s, c.row), col: colIn(s, c.col), side: validSide(c.side) };
+      }),
+      rows: rows.map((r) => ({ sheet: r?.sheet, row: rowIn(sheetOf(r?.sheet), r.row), side: validSide(r.side) })),
+      cols: cols.map((c) => ({ sheet: c?.sheet, col: colIn(sheetOf(c?.sheet), c.col), side: validSide(c.side) })),
       rest: rest === null ? null : validSide(rest),
     };
   };
@@ -1269,15 +1273,13 @@ export function createService(deps: ServiceDeps): Service {
       const target = requireSheet(view, sheet);
       const geometry = geometryOf(view, target.index);
       if (geometry === null) throw new HandlerError({ kind: 'internal', message: 'シートの指定が不正です。' });
-      const layout = toSheetLayoutDto(
+      return toSheetLayoutDto(
         token,
         target.index,
         geometry,
         view.old.workbook?.styles ?? null,
         view.new.workbook?.styles ?? null,
       );
-      // 未マージでセル単位に採れるときだけ、衝突セルの一覧を添える（決定 34）
-      return view.conflict === null ? layout : { ...layout, conflictCells: conflictCellsOf(view, target) };
     },
 
     excelGetRows: async (id, token, sheet, start, count) => {
@@ -1308,7 +1310,7 @@ export function createService(deps: ServiceDeps): Service {
      * Excel のコンフリクトの採用（決定 34）。作業ツリーへ書き戻すだけで index には触れないので、
      * status は取り直さない（決定 30 と同じ）。
      *
-     * 確認は**段の方式のファイル単位で、作業ツリーがどちらの側とも違うとき**だけ。どちらかと同じなら
+     * 確認は**段の方式（ブック）で、作業ツリーがどちらの側とも違うとき**だけ。どちらかと同じなら
      * 同じものが index の段に残っていて取り戻せる。比較を作ってから作業ツリーが変わっていれば、
      * core が書く直前の照合で diff-stale にする（ここで見た worktree が古いまま上書きすることは無い）。
      */
@@ -1318,7 +1320,8 @@ export function createService(deps: ServiceDeps): Service {
       const conflict = view.conflict;
       // 確かめられなかった（大きすぎる・読めない）ときも、手で編集したものを黙って消さないよう確認に倒す
       const unsure = conflict?.worktree === 'neither' || conflict?.worktree === 'unknown';
-      if (request.kind === 'file' && conflict?.source === 'stages' && unsure) {
+      // ブックはファイル単位でもセル単位でも、作業ツリーを丸ごと書き換える（docs/07 6 章の 6）
+      if (conflict?.source === 'stages' && unsure) {
         requireConfirmed('overwrite-conflict-worktree', confirmed);
       }
       await withSignal(id, (signal) => session.resolveExcelConflict(view, request, signal));

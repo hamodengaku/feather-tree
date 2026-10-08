@@ -6,8 +6,8 @@
  * 上限を超えると Node は `ERR_BUFFER_TOO_LARGE`（RangeError）を投げるので、それを too-large に写す。
  */
 
-import { inflateRawSync } from 'node:zlib';
-import type { InflateResult, Inflater } from '@feathertree/excel';
+import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import type { Deflater, InflateResult, Inflater } from '@feathertree/excel';
 
 export const zlibInflater: Inflater = (data: Uint8Array, maxOutputLength: number): InflateResult => {
   try {
@@ -19,3 +19,6 @@ export const zlibInflater: Inflater = (data: Uint8Array, maxOutputLength: number
     return { ok: false, reason: 'broken' };
   }
 };
+
+/** 書き換えた部品の圧縮（決定 34 の第 2 段階。docs/07-xlsx-cell-merge.md 2 章）。 */
+export const zlibDeflater: Deflater = (data: Uint8Array): Uint8Array => deflateRawSync(data);

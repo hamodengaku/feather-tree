@@ -11,11 +11,13 @@ import {
   SessionManager,
   StaleDiffError,
   baseCellOf,
-  conflictCellsOf,
+  conflictTargetsOf,
   excelToken,
+  zlibInflater,
   type ExcelCellChoices,
   type RepositorySession,
 } from '../src/index.js';
+import { openWorkbook } from '@feathertree/excel';
 import { buildXlsx, type BookSpec } from '../../excel/test/xlsxBuilder.js';
 
 /*
@@ -131,7 +133,7 @@ describe('Excel のコンフリクト（決定 34）', () => {
     if (sheet === undefined) throw new Error('no sheet');
     expect(sheet.changedCells).toBe(1);
     expect(sheet.addedRows + sheet.removedRows).toBe(0);
-    expect(conflictCellsOf(view, sheet)).toEqual([5, 1]);
+    expect(conflictTargetsOf(view)?.[0]?.cells).toEqual([5, 1]);
   });
 
   it('CSV をセル単位で採用すると、決めたとおりに継ぎ合わせて書き、index は触らない', async () => {
@@ -149,7 +151,7 @@ describe('Excel のコンフリクト（決定 34）', () => {
     const again = await session.getExcelComparison('d.csv');
     await session.resolveExcelConflict(again, {
       kind: 'cells',
-      choices: { ...NO_CHOICES, cells: [{ row, col: 1, side: 'theirs' }], rest: 'ours' },
+      choices: { ...NO_CHOICES, cells: [{ sheet: 0, row, col: 1, side: 'theirs' }], rest: 'ours' },
     });
     expect(await readFile(join(dir, 'd.csv'), 'utf8')).toBe('id,name,price\n1,b,3\n');
     expect(await unmerged(session, 'd.csv')).toBe(true);
@@ -176,7 +178,8 @@ describe('Excel のコンフリクト（決定 34）', () => {
     expect(args).toEqual(['read-worktree', 'cat-file', 'cat-file', 'cat-file']);
     expect(view.conflict?.source).toBe('stages');
     expect(view.conflict?.worktree).toBe('ours');
-    expect(view.conflict?.cellResolvable).toBe(false);
+    // ブックは段の方式でセル単位に採れる（docs/07）
+    expect(view.conflict?.cellResolvable).toBe(true);
     const sheet = view.comparison.sheets[0];
     if (sheet === undefined) throw new Error('no sheet');
     expect(sheet.changedCells).toBe(2);
@@ -209,12 +212,72 @@ describe('Excel のコンフリクト（決定 34）', () => {
     expect(await readFile(join(dir, 'b.xlsx'), 'utf8')).toBe('edited by hand');
   });
 
-  it('ブックはセル単位では採用できない', async () => {
+  /** 作業ツリーのブックを開いて、シートの値を 2 次元配列で。 */
+  async function gridOf(rel: string): Promise<string[][]> {
+    const opened = openWorkbook(await readFile(join(dir, rel)), zlibInflater);
+    if (!opened.ok) throw new Error('open ' + opened.reason);
+    const book = opened.workbook;
+    const data = book.sheets[0]?.data;
+    if (data == null) throw new Error('no data');
+    const out: string[][] = [];
+    for (let r = 0; r <= data.maxRow; r += 1) {
+      const row: string[] = [];
+      for (let c = 0; c <= data.maxCol; c += 1) {
+        const cell = data.rows[r]?.cells.find((x) => x.col === c);
+        if (cell === undefined) row.push('');
+        else if (cell.formula !== null) row.push('=' + cell.formula);
+        else if (cell.kind === 2) row.push(book.sst[cell.num] ?? '');
+        else if (cell.kind === 1) row.push(String(cell.num));
+        else row.push(cell.text ?? '');
+      }
+      out.push(row);
+    }
+    return out;
+  }
+
+  it('ブックをセル単位で採用すると、選んだセルだけ相手側になる（index は触らない）', async () => {
     await conflict('b.xlsx', xlsx(book(1000, 'base')), xlsx(book(1200, 'theirs')), xlsx(book(900, 'ours')));
     const session = await manager.open(dir);
     const view = await session.getExcelComparison('b.xlsx');
-    await expect(
-      session.resolveExcelConflict(view, { kind: 'cells', choices: { ...NO_CHOICES, rest: 'ours' } }),
-    ).rejects.toBeInstanceOf(ConflictUnsupportedError);
+    expect(view.conflict?.cellResolvable).toBe(true);
+    // 単価（B2）は相手側、備考（C2）は自分側
+    const { args } = await logged(() =>
+      session.resolveExcelConflict(view, {
+        kind: 'cells',
+        choices: { ...NO_CHOICES, cells: [{ sheet: 0, row: 1, col: 1, side: 'theirs' }], rest: 'ours' },
+      }),
+    );
+    expect(args).toEqual(['read-worktree', 'cat-file', 'cat-file', 'write-worktree']);
+    expect(await gridOf('b.xlsx')).toEqual([
+      ['品名', '単価', '備考'],
+      ['剣', '1200', 'ours'],
+      ['盾', '800', ''],
+    ]);
+    expect(await unmerged(session, 'b.xlsx')).toBe(true);
+  });
+
+  it('ブックで相手側にしか無い行を採ると、途中に挿入し、下の行の数式をずらす', async () => {
+    const base: BookSpec = { sheets: [{ name: 'S', rows: [['a', 1], ['b', 2], ['合計', { f: 'SUM(B1:B2)', v: 3 }]] }] };
+    const theirsBook: BookSpec = { sheets: [{ name: 'S', rows: [['a', 1], ['new', 5], ['b', 2], ['合計', { f: 'SUM(B1:B3)', v: 8 }]] }] };
+    const oursBook: BookSpec = { sheets: [{ name: 'S', rows: [['a', 10], ['b', 2], ['合計', { f: 'SUM(B1:B2)', v: 12 }]] }] };
+    await conflict('s.xlsx', xlsx(base), xlsx(theirsBook), xlsx(oursBook));
+    const session = await manager.open(dir);
+    const view = await session.getExcelComparison('s.xlsx');
+    await session.resolveExcelConflict(view, { kind: 'cells', choices: { ...NO_CHOICES, rest: 'theirs' } });
+    expect(await gridOf('s.xlsx')).toEqual([
+      ['a', '1'],
+      ['new', '5'],
+      ['b', '2'],
+      ['合計', '=SUM(B1:B3)'],
+    ]);
+  });
+
+  it('決めていない違いが残っていれば書かない', async () => {
+    await conflict('b.xlsx', xlsx(book(1000, 'base')), xlsx(book(1200, 'theirs')), xlsx(book(900, 'ours')));
+    const session = await manager.open(dir);
+    const view = await session.getExcelComparison('b.xlsx');
+    await expect(session.resolveExcelConflict(view, { kind: 'cells', choices: NO_CHOICES })).rejects.toBeInstanceOf(
+      ConflictUnsupportedError,
+    );
   });
 });

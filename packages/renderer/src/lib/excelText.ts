@@ -5,7 +5,7 @@
  * 白い画面に落とさない。
  */
 
-import type { ExcelConflictDto, ExcelSheetSummaryDto, ExcelSideDto, ExcelSideStateDto } from '@feathertree/ipc';
+import type { ExcelBlockReasonDto, ExcelConflictDto, ExcelSheetSummaryDto, ExcelSideDto, ExcelSideStateDto } from '@feathertree/ipc';
 
 export type ExcelSideName = 'old' | 'new';
 
@@ -138,6 +138,22 @@ export function sheetMarkSymbol(sheet: ExcelSheetSummaryDto): string {
       return '●';
     default:
       return '';
+  }
+}
+
+/** 相手側を採れない理由（docs/07-xlsx-cell-merge.md 3.2）。ファイル単位でなら採れる。 */
+export function blockReasonText(reason: ExcelBlockReasonDto): string {
+  switch (reason) {
+    case 'sheet-structure':
+      return 'シートの追加・削除はファイル単位でのみ採れます';
+    case 'array-formula':
+      return '配列数式・データテーブルに関わる所はファイル単位でのみ採れます';
+    case 'table-header':
+      return 'テーブルの見出しはファイル単位でのみ採れます';
+    case 'unsafe-part':
+      return 'ピボット等を持つシートの行の挿入・削除はファイル単位でのみ採れます';
+    default:
+      return 'ファイル単位でのみ採れます';
   }
 }
 

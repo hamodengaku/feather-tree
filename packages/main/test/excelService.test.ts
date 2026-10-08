@@ -317,8 +317,10 @@ describe('Excel 差分の IPC ハンドラ', () => {
       expect(view.conflict?.source).toBe('stages');
       expect(view.conflict?.worktree).toBe('ours');
       expect(view.conflict?.hasBase).toBe(true);
-      const layout = await service.excelGetSheet(id, view.token, 0);
-      expect(layout.conflictCells).toBeNull();
+      // ブックもセル単位で採れる（docs/07）。売上シートの B2 だけが違う。メモシートは同じ
+      expect(view.conflict?.cellResolvable).toBe(true);
+      expect(view.sheets[0]?.conflict).toEqual({ cells: [1, 1], rows: [], blocked: [] });
+      expect(view.sheets[1]?.conflict).toEqual({ cells: [], rows: [], blocked: [] });
       const cell = await service.excelGetCell(id, view.token, 0, 1, 1);
       expect(cell.old?.raw).toBe('900');
       expect(cell.new?.raw).toBe('1200');
@@ -337,7 +339,7 @@ describe('Excel 差分の IPC ハンドラ', () => {
       ).rejects.toThrow();
       const cells = (row: number, col: number) => ({
         kind: 'cells' as const,
-        choices: { cells: [{ row, col, side: 'ours' as const }], rows: [], cols: [], rest: null },
+        choices: { cells: [{ sheet: 0, row, col, side: 'ours' as const }], rows: [], cols: [], rest: null },
       });
       await expect(service.excelResolveConflict(id, { path: 'd.csv', token: view.token, resolution: cells(99, 0) })).rejects.toThrow();
       await expect(service.excelResolveConflict(id, { path: 'd.csv', token: view.token, resolution: cells(0, 0.5) })).rejects.toThrow();
@@ -350,12 +352,11 @@ describe('Excel 差分の IPC ハンドラ', () => {
       const id = await openWithConflict('d.csv', 'h,v\n1,a\n', 'h,v\n1,b\n', 'h,v\n1,c\n');
       const view = await service.excelGetView(id, 'd.csv');
       expect(view.conflict?.source).toBe('markers');
-      const layout = await service.excelGetSheet(id, view.token, 0);
-      expect(layout.conflictCells).toEqual([1, 1]);
+      expect(view.sheets[0]?.conflict?.cells).toEqual([1, 1]);
       await service.excelResolveConflict(id, {
         path: 'd.csv',
         token: view.token,
-        resolution: { kind: 'cells', choices: { cells: [{ row: 1, col: 1, side: 'theirs' }], rows: [], cols: [], rest: null } },
+        resolution: { kind: 'cells', choices: { cells: [{ sheet: 0, row: 1, col: 1, side: 'theirs' }], rows: [], cols: [], rest: null } },
       });
       expect(await readFile(join(dir, 'd.csv'), 'utf8')).toBe('h,v\n1,b\n');
       await expect(service.excelGetSheet(id, view.token, 0)).rejects.toMatchObject({ dto: { kind: 'diff-stale' } });

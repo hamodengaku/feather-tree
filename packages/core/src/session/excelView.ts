@@ -20,6 +20,7 @@ import {
   buildRowDiff,
   cellSideIn,
   compareWorkbooksSteps,
+  inspectXlsx,
   isCsvPath,
   openSpreadsheetSteps,
   splitCsvConflict,
@@ -28,6 +29,7 @@ import {
   type RowDiff,
   type SheetComparison,
   type SheetGeometry,
+  type SheetInspection,
   type Workbook,
   type WorkbookComparison,
 } from '@feathertree/excel';
@@ -98,8 +100,14 @@ export interface ExcelConflict {
   readonly worktree: ExcelWorktreeMatch;
   /** 共通祖先（ブックの `stages` のときだけ読む。値バー用）。 */
   readonly base: ExcelSide | null;
-  /** セル・行・列単位で採れるか（`markers` で、両側とも上限内で読めたとき）。 */
+  /**
+   * セル・行・列単位で採れるか。CSV は `markers` で、ブックは `stages` で（docs/07）、両側とも上限内で読めたとき。
+   */
   readonly cellResolvable: boolean;
+  /** ブックの段の方式のとき: 読んだ自分側・相手側のハッシュ（採用の直前に読み直したものと照合する）。 */
+  readonly stageHashes: { readonly ours: string | null; readonly theirs: string | null };
+  /** ブックの段の方式のとき: 土台（自分側）のシートの様子（行をずらせるか・テーブルの見出し・配列数式）。 */
+  readonly inspection: ReadonlyMap<string, SheetInspection> | null;
   /**
    * 作業ツリーのバイト列の指紋（無ければ 'absent'、読めなければ 'unknown'）。
    * 採用の直前に読み直したものと照合する（違えば diff-stale）。renderer はこれが同じ間だけ選択を持ち越す。
@@ -292,6 +300,11 @@ async function readWorktreeSide(
   }
 }
 
+/** バイト列のハッシュ（無ければ null）。 */
+export function hashOf(bytes: Uint8Array | null): string | null {
+  return bytes === null ? null : createHash('sha1').update(bytes).digest('hex');
+}
+
 /** 作業ツリーの指紋。無ければ 'absent'、大きすぎる・読めなければ 'unknown'。 */
 export function worktreeFingerprint(read: BlobBytes | null | 'locked'): string {
   if (read === null) return 'absent';
@@ -351,6 +364,8 @@ async function buildConflictComparison(
           base: null,
           cellResolvable: oldSide.state === 'ok' && newSide.state === 'ok' && sheetsComplete(comparison),
           fingerprint,
+          stageHashes: { ours: null, theirs: null },
+          inspection: null,
         },
       };
     }
@@ -372,6 +387,8 @@ async function buildConflictComparison(
   else match = 'neither';
 
   const comparison = await drive(compareWorkbooksSteps(ours.side.workbook, theirs.side.workbook, limits), signal);
+  // ブックのセル単位の採用（docs/07）で土台にする自分側の部品の様子。CSV はマーカー方式でしかセル単位にしない
+  const inspection = !csv && ours.raw !== null ? inspectXlsx(ours.raw, zlibInflater) : null;
   return {
     path,
     headPath: path,
@@ -382,7 +399,17 @@ async function buildConflictComparison(
     comparison,
     geometry: new Map(),
     rowDiff: new Map(),
-    conflict: { source: 'stages', markers, blocks: 0, worktree: match, base, cellResolvable: false, fingerprint },
+    conflict: {
+      source: 'stages',
+      markers,
+      blocks: 0,
+      worktree: match,
+      base,
+      cellResolvable: inspection !== null && ours.side.state === 'ok' && theirs.side.state === 'ok' && sheetsComplete(comparison),
+      fingerprint,
+      stageHashes: { ours: hashOf(ours.raw), theirs: hashOf(theirs.raw) },
+      inspection,
+    },
   };
 }
 

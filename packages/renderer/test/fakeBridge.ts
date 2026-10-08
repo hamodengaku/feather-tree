@@ -435,8 +435,12 @@ export class FakeBridge {
   excelTokenSeq = 0;
   /** 今のトークン。 */
   excelToken = '';
-  /** 未マージの比較にする（決定 34）。cellResolvable なら売上シートの 1 行目 B・C 列を衝突セルにする。 */
+  /**
+   * 未マージの比較にする（決定 34）。cellResolvable なら売上シート（添字 1）の揃えた行 1 の B・C 列を衝突セルに、
+   * 揃えた行 3（相手側にだけある行）を行全体で決める所にする。excelBlocked で相手側を採れない所を足せる。
+   */
   excelConflict: ExcelConflictDto | null = null;
+  excelBlocked: readonly { row: number; col: number; reason: 'sheet-structure' | 'array-formula' | 'table-header' | 'unsafe-part' }[] = [];
 
   excelViewFor(path: string): ExcelViewDto {
     this.excelTokenSeq += 1;
@@ -488,6 +492,19 @@ export class FakeBridge {
     };
   }
 
+  /** 未マージでセル単位に採れるときの、シートごとの決めるべき所。 */
+  #withConflict(view: ExcelViewDto): ExcelViewDto {
+    if (this.excelConflict?.cellResolvable !== true) return view;
+    return {
+      ...view,
+      sheets: view.sheets.map((s) =>
+        s.index === 1
+          ? { ...s, conflict: { cells: [1, 1, 1, 2], rows: [3], blocked: [...this.excelBlocked] } }
+          : { ...s, conflict: { cells: [], rows: [], blocked: [] } },
+      ),
+    };
+  }
+
   /** 5 行 × 3 列。1 行目が変更、3 行目が追加。 */
   excelLayoutFor(sheet: number): ExcelSheetLayoutDto {
     return {
@@ -514,9 +531,6 @@ export class FakeBridge {
       newRowStyle: [-1, -1, -1, -1, -1],
       oldColStyle: [-1, -1, -1],
       newColStyle: [-1, -1, -1],
-      ...(this.excelConflict === null
-        ? {}
-        : { conflictCells: this.excelConflict.cellResolvable && sheet === 1 ? [1, 1, 1, 2] : null }),
     };
   }
 
@@ -928,7 +942,7 @@ export class FakeBridge {
       excelGetView: (id: string, path: string) => {
         this.record('excelGetView', id, path);
         if (this.excelViewError !== null) return this.#later<ExcelViewDto>({ ok: false, error: this.excelViewError });
-        return this.#later(ok(this.excelViewFor(path)));
+        return this.#later(ok(this.#withConflict(this.excelViewFor(path))));
       },
       excelGetSheet: (id: string, token: string, sheet: number) => {
         this.record('excelGetSheet', id, token, sheet);
