@@ -18,6 +18,8 @@ import {
   type ConflictSide,
 } from '../src/lib/excelConflict.js';
 import { blockReasonText, conflictSummary, sideLabel } from '../src/lib/excelText.js';
+import { buildPreviewRows, hasAnyChoice, previewIndexOf } from '../src/lib/excelPreview.js';
+import type { ExcelSheetLayoutDto } from '@feathertree/ipc';
 import { FakeBridge, entry, installDocumentStub } from './fakeBridge.js';
 
 installDocumentStub();
@@ -197,6 +199,46 @@ describe('両方を採用（docs/07 7.2）', () => {
   it('送る形にブロックの指定が載る', () => {
     expect(toChoicesDto(state({ hunks: [['0:1', { end: 3, order: 'ours-theirs' }]] })).hunks).toEqual([
       { sheet: 0, row: 1, end: 3, order: 'ours-theirs' },
+    ]);
+  });
+});
+
+describe('マージ後のプレビューの行の並び（docs/07 7.3）', () => {
+  /**
+   * 揃えた行: 0 同じ / 1 値の違う行 / 2 自分側だけ（O）/ 3 相手側だけ（T）/ 4 同じ。
+   * 決めるべき所: 行 1 の B 列、行 2・3（片側だけ）。行 1〜3 が 1 つのブロック。
+   */
+  const layout = {
+    rowCount: 5,
+    oldRow: [0, 1, 2, -1, 3],
+    newRow: [0, 1, -1, 2, 3],
+    rowState: [0, 1, 3, 2, 0],
+  } as unknown as ExcelSheetLayoutDto;
+  const S = summary(0, [1, 1], [2, 3]);
+  const pick = (rows: ReturnType<typeof buildPreviewRows>): string[] =>
+    rows.map((r) => String(r.aligned) + (r.side === 'ours' ? 'o' : 't') + (r.mixed ? 'm' : '') + (r.undecided ? '?' : ''));
+
+  it('決めていない片側だけの行は印を付けて出し、値の違う行はセルごと（mixed）', () => {
+    expect(pick(buildPreviewRows(layout, S, state({}), 0))).toEqual(['0o', '1om', '2o?', '3t?', '4o']);
+    expect(hasAnyChoice(state({}))).toBe(false);
+  });
+
+  it('片側だけの行は、その行がある側を採れば出し、無い側を採れば出さない', () => {
+    expect(pick(buildPreviewRows(layout, S, state({ rest: 'theirs' }), 0))).toEqual(['0o', '1om', '3t', '4o']);
+    expect(pick(buildPreviewRows(layout, S, state({ rest: 'ours' }), 0))).toEqual(['0o', '1om', '2o', '4o']);
+  });
+
+  it('両方を採用の範囲は、自分側の行を全部 → 相手側の行を全部（または逆）', () => {
+    const rows = buildPreviewRows(layout, S, state({ hunks: [['0:2', { end: 4, order: 'theirs-ours' }]] }), 0);
+    expect(pick(rows)).toEqual(['0o', '1om', '3t', '2o', '4o']);
+    expect(previewIndexOf(rows).get(2)).toBe(3);
+    // 行で両方を採用すると、値の違う行が 2 行に分かれる
+    expect(pick(buildPreviewRows(layout, S, state({ rowsBoth: [['0:1', 'ours-theirs']], rest: 'ours' }), 0))).toEqual([
+      '0o',
+      '1o',
+      '1t',
+      '2o',
+      '4o',
     ]);
   });
 });

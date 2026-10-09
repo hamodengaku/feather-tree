@@ -17,9 +17,11 @@
   import ExcelGrid from '../components/ExcelGrid.svelte';
   import ExcelSheetTabs from '../components/ExcelSheetTabs.svelte';
   import ExcelValueBar from '../components/ExcelValueBar.svelte';
+  import ExcelPreviewGrid from '../components/ExcelPreviewGrid.svelte';
   import FileContextMenu from '../components/FileContextMenu.svelte';
   import { app } from '../lib/appState.svelte.js';
   import { effectiveColWidths, effectiveRowHeights, mirrorScroll, rowHeaderWidth } from '../lib/excelGrid.js';
+  import { buildPreviewRows, hasAnyChoice, previewIndexOf } from '../lib/excelPreview.js';
   import { blockReasonAt, choiceAt, inRanges, unresolvedInSheet, type ConflictChoice } from '../lib/excelConflict.js';
   import {
     blockReasonText,
@@ -76,10 +78,41 @@
 
   function sync(from: 'old' | 'new', top: number, left: number): void {
     const target = from === 'old' ? newViewport : oldViewport;
+    // 横だけはプレビューとも揃える（列は共通。縦は行の並びが違う）
+    if (previewViewport !== null && previewViewport.scrollLeft !== left) previewViewport.scrollLeft = left;
     if (target === null) return;
     const m = mirrorScroll({ top, left }, { top: target.scrollTop, left: target.scrollLeft });
     if (m.top !== null) target.scrollTop = m.top;
     if (m.left !== null) target.scrollLeft = m.left;
+  }
+
+  // ---------------------------------------------------------------- マージ後のプレビュー（docs/07 7.3）
+
+  let previewViewport = $state<HTMLDivElement | null>(null);
+
+  /** 採り方を 1 つでも決めたら、3 つ目のペインとして出す。 */
+  const previewOn = $derived(
+    conflict?.cellResolvable === true && sheet?.conflict != null && layout !== null && hasAnyChoice(ex.choices),
+  );
+  const previewRows = $derived(
+    previewOn && layout !== null && ex.sheet !== null ? buildPreviewRows(layout, sheet ?? undefined, ex.choices, ex.sheet) : [],
+  );
+  const previewIndex = $derived(previewIndexOf(previewRows));
+
+  /** 上のグリッドで選んだ行へ、プレビューを動かす。 */
+  let previewFocusSeq = 0;
+  const previewFocus = $derived.by(() => {
+    const row = ex.selection?.row;
+    const index = row === undefined ? undefined : previewIndex.get(row);
+    if (index === undefined) return null;
+    previewFocusSeq += 1;
+    return { index, seq: previewFocusSeq };
+  });
+
+  function syncFromPreview(left: number): void {
+    for (const el of [oldViewport, newViewport]) {
+      if (el !== null && el.scrollLeft !== left) el.scrollLeft = left;
+    }
   }
 
   /** 見えている側（案内で塞がれていない側）の本体。スクロールの依頼はこちらに掛ける。 */
@@ -390,6 +423,40 @@
       {/if}
     </div>
 
+    {#if previewOn && layout !== null && ex.sheet !== null}
+      <!-- 3 つ目のペイン: マージ後のプレビュー（docs/07 7.3） -->
+      <div class="preview-label">
+        <span class="preview-title">マージ後のプレビュー</span>
+        <span class="legend">
+          書き込むとこうなります（行番号は書き込み後）。<span class="mark theirs">theirs から</span>
+          <span class="mark edited">手入力</span>
+          <span class="mark undecided">未決定（ours のまま表示）</span>
+        </span>
+      </div>
+      <div class="preview">
+        <ExcelPreviewGrid
+          {layout}
+          summary={sheet ?? undefined}
+          sheet={ex.sheet}
+          {previewRows}
+          rows={ex.rows}
+          {colOffsets}
+          rowHeaderWidth={headerWidth}
+          choices={ex.choices}
+          editOf={(row, col) => ex.editOf(row, col)}
+          selectedAligned={ex.selection?.row ?? null}
+          focusRow={previewFocus}
+          bind:viewport={previewViewport}
+          onscroll={syncFromPreview}
+          onneed={handleNeed}
+          onselect={(row, col) => {
+            ex.pointerDown('cell', row, col, { shift: false, ctrl: false });
+            ex.pointerUp();
+          }}
+        />
+      </div>
+    {/if}
+
     <ExcelSheetTabs
       sheets={view.sheets}
       current={ex.sheet}
@@ -404,6 +471,55 @@
 </section>
 
 <style>
+  /* マージ後のプレビュー（3 つ目のペイン）。上の左右のグリッドと 3:2 で分ける */
+  .preview-label {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 2px 8px;
+    border-top: 2px solid var(--app-border-strong);
+    background: var(--app-bg-raised);
+    font-size: var(--app-font-size-mono);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .preview-title {
+    font-weight: 700;
+    color: var(--app-text-secondary);
+  }
+
+  .legend {
+    color: var(--app-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mark {
+    margin-left: 6px;
+    padding: 0 4px;
+  }
+
+  .mark.theirs {
+    box-shadow: inset 0 0 0 2px var(--app-text-added);
+  }
+
+  .mark.edited {
+    box-shadow: inset 0 0 0 2px var(--app-accent);
+  }
+
+  .mark.undecided {
+    outline: 2px dashed var(--app-text-conflict);
+    outline-offset: -2px;
+  }
+
+  .preview {
+    flex: 2 1 0;
+    display: grid;
+    min-height: 0;
+  }
+
   .excel-pane {
     display: flex;
     flex-direction: column;
@@ -458,7 +574,7 @@
   }
 
   .grids {
-    flex: 1 1 auto;
+    flex: 3 1 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
     min-height: 0;
