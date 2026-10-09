@@ -106,6 +106,9 @@ import {
 } from './excelDto.js';
 import { createProgressThrottle } from './progressThrottle.js';
 
+/** 打った値の長さの上限（Excel の 1 セルの上限）。docs/07 7.1。 */
+const MAX_EDIT_LENGTH = 32767;
+
 /** ページで一度に返す最大件数。renderer が巨大な要求を投げても抑える。 */
 const MAX_PAGE_LIMIT = 1000;
 
@@ -750,6 +753,13 @@ export function createService(deps: ServiceDeps): Service {
     const inRange = (n: unknown, max: number): n is number => Number.isInteger(n) && (n as number) >= 0 && (n as number) < max;
     if (choices === null || typeof choices !== 'object') return bad();
     const { cells, rows, cols, rest } = choices;
+    const edits = choices.edits ?? [];
+    if (!Array.isArray(edits) || edits.length > EXCEL_LIMITS.maxCellsPerBook) return bad();
+    const hunks = choices.hunks ?? [];
+    if (!Array.isArray(hunks) || hunks.length > EXCEL_LIMITS.maxRowsPerSheet * sheets.length) return bad();
+    const validOrder = (o: unknown): 'ours-theirs' | 'theirs-ours' => (o === 'ours-theirs' || o === 'theirs-ours' ? o : bad());
+    const validRowChoice = (c: unknown): 'ours' | 'theirs' | 'ours-theirs' | 'theirs-ours' =>
+      c === 'ours-theirs' || c === 'theirs-ours' ? c : validSide(c);
     if (!Array.isArray(cells) || !Array.isArray(rows) || !Array.isArray(cols)) return bad();
     if (cells.length > EXCEL_LIMITS.maxCellsPerBook || rows.length > EXCEL_LIMITS.maxRowsPerSheet * sheets.length || cols.length > EXCEL_LIMITS.maxColumns * sheets.length) {
       return bad();
@@ -762,9 +772,21 @@ export function createService(deps: ServiceDeps): Service {
         const s = sheetOf(c?.sheet);
         return { sheet: c.sheet, row: rowIn(s, c.row), col: colIn(s, c.col), side: validSide(c.side) };
       }),
-      rows: rows.map((r) => ({ sheet: r?.sheet, row: rowIn(sheetOf(r?.sheet), r.row), side: validSide(r.side) })),
+      rows: rows.map((r) => ({ sheet: r?.sheet, row: rowIn(sheetOf(r?.sheet), r.row), side: validRowChoice(r.side) })),
       cols: cols.map((c) => ({ sheet: c?.sheet, col: colIn(sheetOf(c?.sheet), c.col), side: validSide(c.side) })),
       rest: rest === null ? null : validSide(rest),
+      edits: edits.map((e) => {
+        const s = sheetOf(e?.sheet);
+        // Excel の 1 セルの上限（32,767 文字）。NUL は XML に書けない
+        if (typeof e.value !== 'string' || e.value.length > MAX_EDIT_LENGTH || e.value.includes(String.fromCharCode(0))) return bad();
+        return { sheet: e.sheet, row: rowIn(s, e.row), col: colIn(s, e.col), value: e.value };
+      }),
+      hunks: hunks.map((h) => {
+        const s = sheetOf(h?.sheet);
+        const row = rowIn(s, h.row);
+        const end = Number.isInteger(h.end) && h.end > row && h.end <= s.oldRow.length ? h.end : bad();
+        return { sheet: h.sheet, row, end, order: validOrder(h.order) };
+      }),
     };
   };
 

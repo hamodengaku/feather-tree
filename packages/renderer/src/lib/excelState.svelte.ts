@@ -22,16 +22,25 @@ import type {
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import {
   cellKey,
+  choiceForCell,
+  blocksInRanges,
+  isBothOrder,
   isOneSidedRow,
   lineKey,
   nextUnresolved,
+  rangeOf,
+  targetsInRanges,
+  type BothBlock,
+  type BothOrder,
+  type CellRange,
+  type RowChoice,
   type ConflictChoiceState,
   type ConflictSide,
 } from './excelConflict.js';
 import { nextChangedRow, pagesFor, ROW_PAGE } from './excelGrid.js';
 
 /** 同じ値ならキーを外し、違えば入れる（採り方のボタンの押し直しで外す）。 */
-function toggle<K>(map: SvelteMap<K, ConflictSide>, key: K, side: ConflictSide): void {
+function toggle<K, V extends string>(map: SvelteMap<K, V>, key: K, side: V): void {
   if (map.get(key) === side) map.delete(key);
   else map.set(key, side);
 }
@@ -100,10 +109,23 @@ export class ExcelState {
    */
   /** キーは `シート:揃えた行:列` / `シート:揃えた行` / `シート:列`（lib/excelConflict.ts）。 */
   readonly conflictCells = new SvelteMap<string, ConflictSide>();
-  readonly conflictRows = new SvelteMap<string, ConflictSide>();
+  readonly conflictRows = new SvelteMap<string, RowChoice>();
+  /** 続いた行の範囲で両方を採用（docs/07 7.2）。キーは `シート:範囲の先頭の揃えた行`。 */
+  readonly conflictHunks = new SvelteMap<string, BothBlock>();
   readonly conflictCols = new SvelteMap<string, ConflictSide>();
   conflictRest = $state<ConflictSide | null>(null);
+  /** 打った値（docs/07 7.1）。キーは `シート:揃えた行:列`。 */
+  readonly conflictEdits = new SvelteMap<string, string>();
   #choicesKey: string | null = null;
+
+  /** 選んでいる範囲（揃えた座標）。左右のグリッドで共有する。selection はその中の「今のセル」。 */
+  ranges = $state<readonly CellRange[]>([]);
+  /** Shift で範囲を広げるときの起点。 */
+  #anchor: { row: number; col: number } | null = null;
+  /** ドラッグ中なら、押し始めた所の種類。 */
+  #drag: 'cell' | 'row' | 'col' | null = null;
+  /** 編集中のセル（入力欄を出すグリッドと、今の文字）。 */
+  editing = $state<{ sheet: number; row: number; col: number; side: 'old' | 'new'; value: string } | null>(null);
 
   #listSeq = 0;
   #viewSeq = 0;
@@ -228,6 +250,8 @@ export class ExcelState {
     if (!keepSelection) {
       this.selection = null;
       this.cell = null;
+      this.ranges = [];
+      this.editing = null;
     }
     this.layoutLoading = true;
     try {
@@ -291,13 +315,21 @@ export class ExcelState {
     }
   }
 
-  /** セルを選ぶ。値バーの中身（旧値・新値・数式）を取りに行く。 */
-  async selectCell(row: number, col: number): Promise<void> {
+  /**
+   * セルを選ぶ。値バーの中身（旧値・新値・数式）を取りに行く。
+   * keepRanges が偽なら、選択範囲もこのセル 1 つにする（移動・次の変更へなど、マウス以外からの選択）。
+   */
+  async selectCell(row: number, col: number, keepRanges = false): Promise<void> {
     const id = this.#activeId();
     const view = this.view;
     const sheet = this.sheet;
     if (id === null || view === null || sheet === null) return;
     this.selection = { row, col };
+    if (!keepRanges) {
+      this.ranges = [rangeOf({ row, col }, { row, col })];
+      this.#anchor = { row, col };
+    }
+    if (this.editing !== null && (this.editing.row !== row || this.editing.col !== col)) this.editing = null;
     const seq = (this.#cellSeq += 1);
     const result = await this.#ft.excelGetCell(id, view.token, sheet, row, col);
     if (seq !== this.#cellSeq || id !== this.#activeId()) return;
@@ -327,7 +359,183 @@ export class ExcelState {
 
   /** 今の採り方（純関数 lib/excelConflict.ts に渡す形）。 */
   get choices(): ConflictChoiceState {
-    return { cells: this.conflictCells, rows: this.conflictRows, cols: this.conflictCols, rest: this.conflictRest };
+    return {
+      cells: this.conflictCells,
+      rows: this.conflictRows,
+      cols: this.conflictCols,
+      rest: this.conflictRest,
+      edits: this.conflictEdits,
+      hunks: this.conflictHunks,
+    };
+  }
+
+  // ---------------------------------------------------------------- 範囲の選択（docs/07 7.1）
+
+  /**
+   * マウスを押した。Shift なら起点から範囲を広げ、Ctrl なら範囲を足す（Excel と同じ）。
+   * kind は押した所: セル・行番号・列番号。押したまま動かすと onPointerEnter で範囲が伸びる。
+   */
+  pointerDown(kind: 'cell' | 'row' | 'col', row: number, col: number, mods: { shift: boolean; ctrl: boolean }): void {
+    const layout = this.layout;
+    if (layout === null) return;
+    const at = this.#clampPos(kind, row, col);
+    const anchor = mods.shift && this.#anchor !== null ? this.#anchor : at;
+    const range = this.#rectFor(kind, anchor, at);
+    if (mods.shift && this.ranges.length > 0) this.ranges = [...this.ranges.slice(0, -1), range];
+    else if (mods.ctrl) this.ranges = [...this.ranges, range];
+    else this.ranges = [range];
+    if (!mods.shift) this.#anchor = at;
+    this.#drag = kind;
+    // 値バーと帯の「選んでいる所」は、押したセル（Shift なら起点のまま）
+    const active = mods.shift ? anchor : at;
+    void this.selectCell(active.row, active.col, true);
+  }
+
+  /** 押したまま別の所に入った。直前の範囲を起点からそこまでに伸ばす。 */
+  pointerEnter(kind: 'cell' | 'row' | 'col', row: number, col: number): void {
+    const drag = this.#drag;
+    const anchor = this.#anchor;
+    if (drag === null || anchor === null || this.ranges.length === 0) return;
+    // 行番号で始めたドラッグは行全体、列番号なら列全体のまま伸ばす
+    const at = this.#clampPos(drag === 'cell' ? kind : drag, row, col);
+    this.ranges = [...this.ranges.slice(0, -1), this.#rectFor(drag, anchor, at)];
+  }
+
+  pointerUp(): void {
+    this.#drag = null;
+  }
+
+  #clampPos(kind: 'cell' | 'row' | 'col', row: number, col: number): { row: number; col: number } {
+    const layout = this.layout;
+    const maxRow = Math.max(0, (layout?.rowCount ?? 1) - 1);
+    const maxCol = Math.max(0, (layout?.colCount ?? 1) - 1);
+    return {
+      row: kind === 'col' ? 0 : Math.min(maxRow, Math.max(0, row)),
+      col: kind === 'row' ? 0 : Math.min(maxCol, Math.max(0, col)),
+    };
+  }
+
+  #rectFor(kind: 'cell' | 'row' | 'col', a: { row: number; col: number }, b: { row: number; col: number }): CellRange {
+    const layout = this.layout;
+    const lastRow = Math.max(0, (layout?.rowCount ?? 1) - 1);
+    const lastCol = Math.max(0, (layout?.colCount ?? 1) - 1);
+    if (kind === 'row') return { r1: Math.min(a.row, b.row), c1: 0, r2: Math.max(a.row, b.row), c2: lastCol };
+    if (kind === 'col') return { r1: 0, c1: Math.min(a.col, b.col), r2: lastRow, c2: Math.max(a.col, b.col) };
+    return rangeOf(a, b);
+  }
+
+  /** 選んだ範囲に含まれる決めるべき所（今のシート）。 */
+  get selectionTargets(): { readonly cells: readonly { row: number; col: number }[]; readonly rows: readonly number[] } {
+    return targetsInRanges(this.#summary(), this.ranges);
+  }
+
+  /**
+   * 選んだ範囲の決めるべき所に、まとめて採り方を当てる（右クリックの「ours を採用」など）。
+   * null なら個別の指定（セル・片側だけの行の指定と打った値）を外す。
+   */
+  chooseSelection(side: ConflictSide | null): void {
+    const sheet = this.sheet;
+    if (sheet === null) return;
+    const { cells, rows } = this.selectionTargets;
+    // 片側を採るなら、範囲に掛かる「両方を採用」は外す（そちらが強いので、残すと効かない）
+    for (const b of blocksInRanges(this.#summary(), this.ranges)) this.#dropBlocks(sheet, b.start, b.end);
+    for (const c of cells) {
+      const key = lineKey(sheet, c.row);
+      if (isBothOrder(this.conflictRows.get(key))) this.conflictRows.delete(key);
+    }
+    for (const c of cells) {
+      const key = cellKey(sheet, c.row, c.col);
+      this.conflictEdits.delete(key);
+      if (side === null) this.conflictCells.delete(key);
+      else this.conflictCells.set(key, side);
+    }
+    for (const r of rows) {
+      const key = lineKey(sheet, r);
+      if (side === null) this.conflictRows.delete(key);
+      else this.conflictRows.set(key, side);
+    }
+  }
+
+  // ---------------------------------------------------------------- 両方を採用（docs/07 7.2）
+
+  /** 範囲が掛かる「両方を採用」の単位（ブロックごとの、選んだ行の続いた範囲）。 */
+  get selectionBlocks(): readonly { start: number; end: number }[] {
+    return blocksInRanges(this.#summary(), this.ranges);
+  }
+
+  /**
+   * 選んだ行で両方を採用する。同じ範囲に同じ並びが既にあれば外す（押し直し）。重なる範囲は置き換える。
+   */
+  chooseBothSelection(order: BothOrder): void {
+    const sheet = this.sheet;
+    if (sheet === null) return;
+    for (const b of this.selectionBlocks) {
+      const same = this.conflictHunks.get(lineKey(sheet, b.start));
+      this.#dropBlocks(sheet, b.start, b.end);
+      if (same?.end === b.end && same.order === order) continue;
+      this.conflictHunks.set(lineKey(sheet, b.start), { end: b.end, order });
+    }
+  }
+
+  /** [start, end) と重なる「両方を採用」を外す。 */
+  #dropBlocks(sheet: number, start: number, end: number): void {
+    const prefix = String(sheet) + ':';
+    for (const [key, block] of [...this.conflictHunks]) {
+      if (!key.startsWith(prefix)) continue;
+      const s = Number(key.slice(prefix.length));
+      if (s < end && block.end > start) this.conflictHunks.delete(key);
+    }
+  }
+
+  // ---------------------------------------------------------------- セルの編集（docs/07 7.1）
+
+  /**
+   * 編集できるか: 範囲が 1 セルだけで、それが両側にある行の値の違うセル。
+   */
+  get editableCell(): { row: number; col: number } | null {
+    const range = this.ranges.length === 1 ? this.ranges[0] : undefined;
+    if (range === undefined || range.r1 !== range.r2 || range.c1 !== range.c2) return null;
+    const { cells } = this.selectionTargets;
+    return cells.length === 1 ? (cells[0] ?? null) : null;
+  }
+
+  /** 打った値（無ければ undefined）。 */
+  editOf(row: number, col: number): string | undefined {
+    return this.sheet === null ? undefined : this.conflictEdits.get(cellKey(this.sheet, row, col));
+  }
+
+  /**
+   * 編集を始める。initial を渡せばそれで始め（文字の打鍵）、無ければ今の値（打った値 → 採った側の値 → 自分側の値）。
+   * side は入力欄を出すグリッド。
+   */
+  startEdit(side: 'old' | 'new', initial?: string): void {
+    const target = this.editableCell;
+    const sheet = this.sheet;
+    if (target === null || sheet === null) return;
+    let value = initial;
+    if (value === undefined) {
+      const typed = this.editOf(target.row, target.col);
+      const chosen = choiceForCell(this.choices, sheet, target.row, target.col, this.#summary());
+      const cell = this.cell !== null && this.cell.row === target.row && this.cell.col === target.col ? this.cell : null;
+      value = typed ?? (chosen === 'theirs' ? cell?.new?.raw : cell?.old?.raw) ?? '';
+    }
+    this.editing = { sheet, row: target.row, col: target.col, side, value };
+  }
+
+  /** 編集を確かめる（Enter・欄の外を押す）。 */
+  commitEdit(value: string): void {
+    const editing = this.editing;
+    if (editing === null) return;
+    this.editing = null;
+    this.conflictEdits.set(cellKey(editing.sheet, editing.row, editing.col), value);
+    // 打った値を効かせるため、その行・ブロックの「両方を採用」は外す（そちらが強い）
+    const rowKey = lineKey(editing.sheet, editing.row);
+    if (isBothOrder(this.conflictRows.get(rowKey))) this.conflictRows.delete(rowKey);
+    this.#dropBlocks(editing.sheet, editing.row, editing.row + 1);
+  }
+
+  cancelEdit(): void {
+    this.editing = null;
   }
 
   /**
@@ -342,6 +550,8 @@ export class ExcelState {
       this.chooseRow(side);
       return;
     }
+    // 打った値はセルの指定より強いので、側を選び直したら外す
+    this.conflictEdits.delete(cellKey(sheet, sel.row, sel.col));
     toggle(this.conflictCells, cellKey(sheet, sel.row, sel.col), side);
   }
 
@@ -363,6 +573,9 @@ export class ExcelState {
   }
 
   clearChoices(): void {
+    this.conflictHunks.clear();
+    this.conflictEdits.clear();
+    this.editing = null;
     this.conflictCells.clear();
     this.conflictRows.clear();
     this.conflictCols.clear();
@@ -459,6 +672,9 @@ export class ExcelState {
     this.#inflight.clear();
     this.selection = null;
     this.cell = null;
+    this.ranges = [];
+    this.#anchor = null;
+    this.editing = null;
   }
 
   #requestScroll(row: number, col: number | null): void {

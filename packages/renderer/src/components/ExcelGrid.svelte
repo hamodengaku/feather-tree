@@ -27,6 +27,7 @@
     visibleMerges,
     type MergeRect,
   } from '../lib/excelGrid.js';
+  import type { CellRange } from '../lib/excelConflict.js';
   import type { ExcelSelection } from '../lib/excelState.svelte.js';
   import { cellCss, styleIndexFor, type CellCss } from '../lib/excelStyle.js';
 
@@ -42,12 +43,25 @@
     viewport?: HTMLDivElement | null;
     onscroll: (top: number, left: number) => void;
     onneed: (start: number, end: number) => void;
-    onselect: (row: number, col: number) => void;
+    /** 左ボタンを押した（セル・行番号・列番号）。Shift / Ctrl は範囲の広げ方（docs/07 7.1）。 */
+    onpointer: (kind: 'cell' | 'row' | 'col', row: number, col: number, mods: { shift: boolean; ctrl: boolean }) => void;
+    /** 押したまま入った（ドラッグで範囲を伸ばす）。 */
+    onpointerenter: (kind: 'cell' | 'row' | 'col', row: number, col: number) => void;
+    /** 右クリック。画面の座標を添える（メニューを出す位置）。 */
+    oncontext?: ((row: number, col: number, x: number, y: number) => void) | undefined;
+    /** ダブルクリック（セルの編集を始める）。 */
+    ondblcell?: (row: number, col: number) => void;
+    /** 選んでいる範囲（左右で共有）。 */
+    ranges?: readonly CellRange[];
+    /** このグリッドで編集中のセル。 */
+    editing?: { readonly row: number; readonly col: number; readonly value: string } | null;
+    oneditcommit?: (value: string) => void;
+    oneditcancel?: () => void;
     /**
      * 未マージでセル単位に採れるとき（決定 34）: 揃えた座標の採り方（自分側・相手側・未決定）。
      * 採った側のセルに印を付け、採らなかった側を薄くする。null なら印を出さない。
      */
-    choiceOf?: ((row: number, col: number) => 'ours' | 'theirs' | null) | null;
+    choiceOf?: ((row: number, col: number) => 'ours' | 'theirs' | 'edit' | 'ours-theirs' | 'theirs-ours' | null) | null;
   }
 
   let {
@@ -61,9 +75,97 @@
     viewport = $bindable(null),
     onscroll,
     onneed,
-    onselect,
+    onpointer,
+    onpointerenter,
+    oncontext,
+    ondblcell,
+    ranges = [],
+    editing = null,
+    oneditcommit,
+    oneditcancel,
     choiceOf = null,
   }: Props = $props();
+
+  function mods(e: MouseEvent): { shift: boolean; ctrl: boolean } {
+    return { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
+  }
+
+  /** 左ボタンで押した。文字の選択（ブラウザの既定）を止め、キーボードの打鍵を受けられるよう本体に焦点を置く。 */
+  function down(e: MouseEvent, kind: 'cell' | 'row' | 'col', row: number, col: number): void {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    viewport?.focus();
+    onpointer(kind, row, col, mods(e));
+  }
+
+  function context(e: MouseEvent, row: number, col: number): void {
+    if (oncontext === undefined) return;
+    e.preventDefault();
+    oncontext(row, col, e.clientX, e.clientY);
+  }
+
+  let canvas = $state<HTMLDivElement | null>(null);
+  let lastHover = { row: -1, col: -1 };
+
+  /** 累積和の中で pos を含む添字（幅・高さ 0 の非表示は飛ばして手前を返す）。 */
+  function indexAt(offsets: Float64Array, pos: number): number {
+    let lo = 0;
+    let hi = offsets.length - 2;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if ((offsets[mid] ?? 0) <= pos) lo = mid;
+      else hi = mid - 1;
+    }
+    return Math.max(0, lo);
+  }
+
+  /** マウスの位置の揃えた行・列。結合セルの中なら左上のセル。 */
+  function hit(e: MouseEvent): { row: number; col: number } | null {
+    if (canvas === null || layout.rowCount === 0) return null;
+    const rect = canvas.getBoundingClientRect();
+    const row = Math.min(layout.rowCount - 1, indexAt(rowOffsets, e.clientY - rect.top));
+    const col = Math.min(Math.max(0, layout.colCount - 1), indexAt(colOffsets, e.clientX - rect.left));
+    const m = merges.find((x) => row >= x.r1 && row <= x.r2 && col >= x.c1 && col <= x.c2);
+    return m !== undefined ? { row: m.r1, col: m.c1 } : { row, col };
+  }
+
+  /** 行番号・列番号を、範囲に掛かっていれば強調する。 */
+  function rowSelected(r: number): boolean {
+    return ranges.some((x) => r >= x.r1 && r <= x.r2);
+  }
+  function colSelected(c: number): boolean {
+    return ranges.some((x) => c >= x.c1 && c <= x.c2);
+  }
+
+  /** 範囲の箱（揃えた座標 → 画素）。 */
+  function rangeBox(r: CellRange): { top: number; left: number; width: number; height: number } {
+    const r2 = Math.min(r.r2, layout.rowCount - 1);
+    const c2 = Math.min(r.c2, Math.max(0, layout.colCount - 1));
+    return {
+      top: top(r.r1),
+      left: left(r.c1),
+      width: (colOffsets[c2 + 1] ?? 0) - left(r.c1),
+      height: (rowOffsets[r2 + 1] ?? 0) - top(r.r1),
+    };
+  }
+
+  /** 入力欄が出たら焦点を移し、中身を選ぶ（打てばそのまま置き換わる）。 */
+  function focusEditor(el: HTMLInputElement): void {
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }
+
+  function editorKey(e: KeyboardEvent): void {
+    const target = e.currentTarget as HTMLInputElement;
+    e.stopPropagation();
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      oneditcommit?.(target.value);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      oneditcancel?.();
+    }
+  }
 
   /** このグリッドが表す側（未マージでは old = 自分側、new = 相手側）。 */
   const mySide = $derived(side === 'old' ? 'ours' : 'theirs');
@@ -73,6 +175,9 @@
     if (choiceOf === null || !changed) return '';
     const pick = choiceOf(r, c);
     if (pick === null) return 'undecided';
+    if (pick === 'edit') return 'edited';
+    // 両方を採用（docs/07 7.2）: 両側とも残る
+    if (pick === 'ours-theirs' || pick === 'theirs-ours') return 'both';
     return pick === mySide ? 'picked' : 'rejected';
   }
 
@@ -207,9 +312,14 @@
       {#each visibleCols as c (c)}
         <div
           class="ch"
+          role="columnheader"
+          tabindex="-1"
           class:hidden-col={(layout.colHidden[c] ?? 0) !== 0}
+          class:in-range={colSelected(c)}
           style:left={left(c) + 'px'}
           style:width={width(c) + 'px'}
+          onmousedown={(e) => down(e, 'col', 0, c)}
+          onmouseenter={() => onpointerenter('col', 0, c)}
         >
           {columnLabel(c)}
         </div>
@@ -223,11 +333,16 @@
         {@const n = sideRow(r)}
         <div
           class="rh {rowTone(r)}"
+          role="rowheader"
+          tabindex="-1"
           class:changed={(layout.rowState[r] ?? 0) === 1}
           class:hidden-row={rowHiddenSomewhere(layout, r)}
+          class:in-range={rowSelected(r)}
           style:top={top(r) + 'px'}
           style:height={height(r) + 'px'}
           title={rowHiddenSomewhere(layout, r) ? '非表示の行' : undefined}
+          onmousedown={(e) => down(e, 'row', r, 0)}
+          onmouseenter={() => onpointerenter('row', r, 0)}
         >
           {n >= 0 ? n + 1 : ''}
         </div>
@@ -245,7 +360,34 @@
     bind:clientHeight={viewportHeight}
     onscroll={handleScroll}
   >
-    <div class="canvas" style:width={totalWidth + 'px'} style:height={totalHeight + 'px'}>
+    <!-- 押した・動かした・右クリックした位置から行と列を引く（埋め行・結合セルでも同じに扱う） -->
+    <div
+      class="canvas"
+      role="presentation"
+      style:width={totalWidth + 'px'}
+      style:height={totalHeight + 'px'}
+      bind:this={canvas}
+      onmousedown={(e) => {
+        const at = hit(e);
+        if (at !== null) down(e, 'cell', at.row, at.col);
+      }}
+      onmousemove={(e) => {
+        if ((e.buttons & 1) === 0) return;
+        const at = hit(e);
+        if (at !== null && (at.row !== lastHover.row || at.col !== lastHover.col)) {
+          lastHover = at;
+          onpointerenter('cell', at.row, at.col);
+        }
+      }}
+      oncontextmenu={(e) => {
+        const at = hit(e);
+        if (at !== null) context(e, at.row, at.col);
+      }}
+      ondblclick={(e) => {
+        const at = hit(e);
+        if (at !== null) ondblcell?.(at.row, at.col);
+      }}
+    >
       {#each visibleRows as r (r)}
         {@const tone = rowTone(r)}
         {#if tone !== ''}
@@ -268,7 +410,6 @@
                 style:width={width(c) + 'px'}
                 style:height={height(r) + 'px'}
                 title={cell !== null && cell.text.length > 0 ? cell.text : undefined}
-                onmousedown={() => onselect(r, c)}
               >
                 {cell?.text ?? ''}
               </div>
@@ -293,12 +434,40 @@
             style:left={box.left + 'px'}
             style:width={box.width + 'px'}
             style:height={box.height + 'px'}
-            onmousedown={() => onselect(m.r1, m.c1)}
           >
             {cell?.text ?? ''}
           </div>
         {/if}
       {/each}
+
+      {#each ranges as range, i (i)}
+        {@const box = rangeBox(range)}
+        <div
+          class="range"
+          aria-hidden="true"
+          style:top={box.top + 'px'}
+          style:left={box.left + 'px'}
+          style:width={box.width + 'px'}
+          style:height={box.height + 'px'}
+        ></div>
+      {/each}
+
+      {#if editing !== null && editing.row < layout.rowCount}
+        {@const box = rangeBox({ r1: editing.row, c1: editing.col, r2: editing.row, c2: editing.col })}
+        <input
+          class="editor"
+          aria-label="セルの値（Enter で決定・Esc で取り消し）"
+          value={editing.value}
+          style:top={box.top + 'px'}
+          style:left={box.left + 'px'}
+          style:min-width={box.width + 'px'}
+          style:height={box.height + 'px'}
+          use:focusEditor
+          onkeydown={editorKey}
+          onmousedown={(e) => e.stopPropagation()}
+          onblur={(e) => oneditcommit?.((e.currentTarget as HTMLInputElement).value)}
+        />
+      {/if}
 
       {#if selectionBox !== null}
         <div
@@ -513,6 +682,55 @@
 
   .row-tone.undecided {
     box-shadow: inset 4px 0 0 var(--app-text-conflict);
+  }
+
+  /* 選んでいる範囲（Excel と同じく薄い塗り）。行番号・列番号も強調する */
+  .range {
+    position: absolute;
+    box-sizing: border-box;
+    background: color-mix(in srgb, var(--app-excel-selection) 14%, transparent);
+    border: 1px solid var(--app-excel-selection);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .ch.in-range,
+  .rh.in-range {
+    background: color-mix(in srgb, var(--app-excel-selection) 22%, transparent);
+  }
+
+  .ch,
+  .rh {
+    cursor: default;
+  }
+
+  /* 両方を採用した所（docs/07 7.2）。両側とも残るので、両側に同じ印 */
+  .cell.both {
+    box-shadow: inset 0 0 0 3px var(--app-text-added);
+    outline: 1px dashed var(--app-accent);
+    outline-offset: -5px;
+  }
+
+  .row-tone.both {
+    box-shadow: inset 4px 0 0 var(--app-accent);
+  }
+
+  /* 打った値で決めたセル（docs/07 7.1） */
+  .cell.edited {
+    box-shadow: inset 0 0 0 3px var(--app-accent);
+  }
+
+  .editor {
+    position: absolute;
+    box-sizing: border-box;
+    z-index: 4;
+    padding: 0 3px;
+    border: 2px solid var(--app-accent);
+    background: var(--app-excel-paper);
+    color: var(--app-excel-ink);
+    font: inherit;
+    font-size: var(--cell-font);
+    outline: none;
   }
 
   .selection {

@@ -53,6 +53,7 @@ export { CSV_SHEET_NAME, csvRecords, decodeCsv, openCsv, openCsvSteps, type CsvE
 export {
   composeCsv,
   csvRecordSpans,
+  encodeCsvField,
   splitCsvConflict,
   type CsvConflictSplit,
   type CsvRecordSpan,
@@ -62,6 +63,7 @@ export {
 export { isCsvPath, openSpreadsheetSteps } from './open.js';
 export { mergeXlsx, XlsxMergeError, type XlsxMergeInput, type XlsxSheetMerge } from './write/merge.js';
 export type { OutRow } from './write/sheet.js';
+export { editedCell } from './write/sheet.js';
 export { inspectXlsx, type CellBox, type SheetInspection, type TableHeader } from './write/package.js';
 export { type Deflater } from './write/zipWriter.js';
 export { cellAddress, columnName, parseCellRef, parseRange, MAX_COLS, MAX_ROWS, type CellRange, type CellRef } from './sheet/ref.js';

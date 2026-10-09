@@ -272,6 +272,81 @@ describe('Excel のコンフリクト（決定 34）', () => {
     ]);
   });
 
+  it('打った値で決める（CSV は引用符を付け、ブックは数値・文字列で書く）', async () => {
+    await conflict('d.csv', 'id,name\n1,a\n', 'id,name\n1,b\n', 'id,name\n1,c\n');
+    const session = await manager.open(dir);
+    const csvView = await session.getExcelComparison('d.csv');
+    await session.resolveExcelConflict(csvView, {
+      kind: 'cells',
+      choices: { ...NO_CHOICES, edits: [{ sheet: 0, row: 1, col: 1, value: 'b, c' }] },
+    });
+    expect(await readFile(join(dir, 'd.csv'), 'utf8')).toBe('id,name\n1,"b, c"\n');
+  });
+
+  it('ブックのセルに打った値を書く', async () => {
+    await conflict('b.xlsx', xlsx(book(1000, 'base')), xlsx(book(1200, 'theirs')), xlsx(book(900, 'ours')));
+    const session = await manager.open(dir);
+    const view = await session.getExcelComparison('b.xlsx');
+    await session.resolveExcelConflict(view, {
+      kind: 'cells',
+      choices: {
+        ...NO_CHOICES,
+        rest: 'ours',
+        edits: [
+          { sheet: 0, row: 1, col: 1, value: '1100' },
+          { sheet: 0, row: 1, col: 2, value: '相談して決定' },
+        ],
+      },
+    });
+    expect(await gridOf('b.xlsx')).toEqual([
+      ['品名', '単価', '備考'],
+      ['剣', '1100', '相談して決定'],
+      ['盾', '800', ''],
+    ]);
+  });
+
+  it('CSV: 両側が同じ場所に足した行を、ブロックで両方採用して好きな順に並べる', async () => {
+    await conflict(
+      'd.csv',
+      'id,name\n1,a\n9,z\n',
+      'id,name\n1,a\n3,theirs-row\n9,z\n',
+      'id,name\n1,a\n2,ours-row\n9,z\n',
+    );
+    const session = await manager.open(dir);
+    const view = await session.getExcelComparison('d.csv');
+    const start = Array.from(view.comparison.sheets[0]?.rowState ?? []).findIndex((s) => s !== 0);
+    await session.resolveExcelConflict(view, {
+      kind: 'cells',
+      choices: { ...NO_CHOICES, hunks: [{ sheet: 0, row: start, end: start + 2, order: 'theirs-ours' }] },
+    });
+    expect(await readFile(join(dir, 'd.csv'), 'utf8')).toBe('id,name\n1,a\n3,theirs-row\n2,ours-row\n9,z\n');
+  });
+
+  it('ブック: 両側が足した行を両方採用し、下の行の数式も挿入に合わせてずれる', async () => {
+    const base: BookSpec = { sheets: [{ name: 'S', rows: [['a', 1], ['合計', { f: 'SUM(B1:B1)', v: 1 }]] }] };
+    const theirsBook: BookSpec = { sheets: [{ name: 'S', rows: [['a', 1], ['T', 20], ['合計', { f: 'SUM(B1:B2)', v: 21 }]] }] };
+    const oursBook: BookSpec = { sheets: [{ name: 'S', rows: [['a', 1], ['O', 10], ['合計', { f: 'SUM(B1:B2)', v: 11 }]] }] };
+    await conflict('s.xlsx', xlsx(base), xlsx(theirsBook), xlsx(oursBook));
+    const session = await manager.open(dir);
+    const view = await session.getExcelComparison('s.xlsx');
+    const sheet = view.comparison.sheets[0];
+    if (sheet === undefined) throw new Error('no sheet');
+    // O と T は似ていない（同じ値の列が半分未満）ので片側だけの行 2 つ。合計の行はキャッシュ値が違うので同じブロックに入る。
+    // 足された 2 行だけを選んで両方を採用すれば、合計の行は 2 行にならない
+    const start = Array.from(sheet.rowState).findIndex((s) => s !== 0);
+    await session.resolveExcelConflict(view, {
+      kind: 'cells',
+      // 合計の行は相手側（相手側の SUM の範囲は T の行を含むので、付け替えると O・T の両方を含む）
+      choices: { ...NO_CHOICES, rest: 'theirs', hunks: [{ sheet: 0, row: start, end: start + 2, order: 'ours-theirs' }] },
+    });
+    expect(await gridOf('s.xlsx')).toEqual([
+      ['a', '1'],
+      ['O', '10'],
+      ['T', '20'],
+      ['合計', '=SUM(B1:B3)'],
+    ]);
+  });
+
   it('決めていない違いが残っていれば書かない', async () => {
     await conflict('b.xlsx', xlsx(book(1000, 'base')), xlsx(book(1200, 'theirs')), xlsx(book(900, 'ours')));
     const session = await manager.open(dir);

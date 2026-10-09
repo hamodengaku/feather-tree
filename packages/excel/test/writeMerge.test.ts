@@ -205,6 +205,25 @@ describe('行の挿入・削除', () => {
   });
 });
 
+describe('打った値（docs/07 7.1）', () => {
+  it("数値として読めれば数値、それ以外は文字列、先頭の ' は外す。書式は土台のまま", () => {
+    const o: BookSpec = { sheets: [{ name: 'S', rows: [['h', 'a', 'b', 'c'], ['x', 1, 2, 3]] }] };
+    const t: BookSpec = { sheets: [{ name: 'S', rows: [['h', 'a', 'b', 'c'], ['x', 10, 20, 30]] }] };
+    const rows: OutRow[] = [
+      ours(0),
+      { kind: 'ours', row: 1, theirsRow: 1, theirsCols: new Set(), edits: new Map([[1, '1.5e2'], [2, "'007"], [3, '=A1']]) },
+    ];
+    const out = merge(o, t, [plan('S', rows, [0, 1], 0, [0, 1])]);
+    expect(grid(open(out), 'S')).toEqual([
+      ['h', 'a', 'b', 'c'],
+      ['x', '150', '007', '=A1'],
+    ]);
+    // 数式は扱わない（= で始まっても文字列）
+    const cell = open(out).sheets[0]?.data?.rows[1]?.cells.find((c) => c.col === 3);
+    expect(cell?.formula).toBeNull();
+  });
+});
+
 describe('書式の持ち込み', () => {
   const styles = (fonts: string, xfs: string): string =>
     '<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +

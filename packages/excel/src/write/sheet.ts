@@ -13,7 +13,17 @@
  */
 
 import { cellAddress } from '../sheet/ref.js';
-import { FORMULA_ARRAY, FORMULA_DATA_TABLE, type CellData, type RowData, type SheetData } from '../model/types.js';
+import {
+  CELL_BLANK,
+  CELL_INLINE,
+  CELL_NUMBER,
+  FORMULA_ARRAY,
+  FORMULA_DATA_TABLE,
+  FORMULA_NONE,
+  type CellData,
+  type RowData,
+  type SheetData,
+} from '../model/types.js';
 import { decodeUtf8 } from '../text/utf8.js';
 import { MAX_ROWS } from '../sheet/ref.js';
 import { XML_END, XML_EOF, XML_START, XML_TEXT, XmlScanner } from '../xml/scanner.js';
@@ -25,7 +35,14 @@ import type { StyleImporter } from './styles.js';
 /** 出力の 1 行。並び順がそのまま新しい行番号（0 始まり）になる。 */
 export type OutRow =
   /** 土台の行を残す。theirsCols の列だけ相手側の行（theirsRow）のセルに差し替える。 */
-  | { readonly kind: 'ours'; readonly row: number; readonly theirsRow: number; readonly theirsCols: ReadonlySet<number> }
+  | {
+      readonly kind: 'ours';
+      readonly row: number;
+      readonly theirsRow: number;
+      readonly theirsCols: ReadonlySet<number>;
+      /** 利用者が打った値で書く列（docs/07 7.1）。theirsCols より強い。 */
+      readonly edits?: ReadonlyMap<number, string>;
+    }
   /** 相手側の行を挿入する。 */
   | { readonly kind: 'theirs'; readonly row: number };
 
@@ -321,6 +338,24 @@ function theirsFormula(formula: string, ctx: FormulaContext): string {
   return next;
 }
 
+/** 数値として読める文字（Excel が数値として受け取る形の部分集合）。 */
+const NUMBER_TEXT = /^[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?$/;
+
+/**
+ * 利用者が打った値をセルにする（docs/07 7.1）。数値として読めれば数値、それ以外は文字列。
+ * 先頭の ' は「文字列として扱う」印として外す。空なら値を消す（書式は残す）。数式は扱わない。
+ */
+export function editedCell(value: string, style: number, col: number): CellData {
+  const base = { col, num: 0, text: null, formula: null, formulaKind: FORMULA_NONE, style } as const;
+  if (value === '') return { ...base, kind: CELL_BLANK };
+  if (value.startsWith("'")) return { ...base, kind: CELL_INLINE, text: value.slice(1) };
+  if (NUMBER_TEXT.test(value.trim())) {
+    const num = Number(value.trim());
+    if (Number.isFinite(num)) return { ...base, kind: CELL_NUMBER, num };
+  }
+  return { ...base, kind: CELL_INLINE, text: value };
+}
+
 /** 相手側のセルを書く形にする。 */
 function theirsWrite(theirs: TheirsSide, cell: CellData): CellWrite {
   if (cell.formulaKind === FORMULA_ARRAY || cell.formulaKind === FORMULA_DATA_TABLE) {
@@ -380,13 +415,23 @@ function rebuildSheetData(
 
     const el = rows.get(o.row);
     const rowData = input.data.rows[o.row];
-    const picks = [...o.theirsCols].sort((a, b) => a - b);
-    const theirsRow = picks.length > 0 && theirs !== null ? theirs.data.rows[o.theirsRow] : undefined;
+    const edits = o.edits ?? new Map<number, string>();
+    const picks = [...new Set([...o.theirsCols, ...edits.keys()])].sort((a, b) => a - b);
+    const theirsRow = o.theirsCols.size > 0 && theirs !== null ? theirs.data.rows[o.theirsRow] : undefined;
+    /** 差し替える列を書く（打った値 > 相手側）。 */
+    const writePick = (col: number): string => {
+      const value = edits.get(col);
+      if (value === undefined) return writeTheirs(rowNumber, theirsRow, col);
+      const cell = editedCell(value, cellAt(rowData, col)?.style ?? 0, col);
+      const xml = cellXml(cellAddress(rowNumber, col), { cell, style: cell.style, formula: null, sharedInner: null, sharedText: '' });
+      if (xml !== '') notify?.({ row: rowNumber, col, side: 'ours', source: cell, formula: null });
+      return xml;
+    };
 
     if (el === undefined) {
       if (picks.length === 0) return;
       let cells = '';
-      for (const col of picks) cells += writeTheirs(rowNumber, theirsRow, col);
+      for (const col of picks) cells += writePick(col);
       if (cells !== '') out += `<row r="${String(rowNumber + 1)}">${cells}</row>`;
       return;
     }
@@ -425,7 +470,7 @@ function rebuildSheetData(
       }
       tag = tag.replace(/\s*\/>$/, '>');
       let cells = '';
-      for (const col of picks) cells += writeTheirs(rowNumber, theirsRow, col);
+      for (const col of picks) cells += writePick(col);
       out += tag + cells + '</row>';
       return;
     }
@@ -434,18 +479,18 @@ function rebuildSheetData(
     let p = 0;
     for (const cell of el.cells) {
       while (p < picks.length && (picks[p] ?? 0) < cell.col) {
-        body += writeTheirs(rowNumber, theirsRow, picks[p] ?? 0);
+        body += writePick(picks[p] ?? 0);
         p += 1;
       }
       if (p < picks.length && picks[p] === cell.col) {
-        body += writeTheirs(rowNumber, theirsRow, cell.col);
+        body += writePick(cell.col);
         p += 1;
         continue;
       }
       body += keptCell(cell);
     }
     while (p < picks.length) {
-      body += writeTheirs(rowNumber, theirsRow, picks[p] ?? 0);
+      body += writePick(picks[p] ?? 0);
       p += 1;
     }
     out += tag + body + decodeUtf8(bytes, el.tailStart, el.end);

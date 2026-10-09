@@ -22,6 +22,7 @@
     lineKey,
     toChoicesDto,
     unresolvedCount,
+    type ConflictChoice,
     type ConflictSide,
   } from '../lib/excelConflict.js';
   import { columnLabel } from '../lib/excelGrid.js';
@@ -48,12 +49,18 @@
   const reason = $derived(sel === null ? null : blockReasonAt(summary, sel.row, sel.col));
 
   /** 選んでいる所の、今効いている採り方（どの指定から来たかは問わない）。 */
-  const effective = $derived.by((): ConflictSide | null => {
+  const effective = $derived.by((): ConflictChoice | null => {
     if (sel === null || sheet === null) return null;
-    return oneSided ? choiceForRow(ex.choices, sheet, sel.row) : choiceForCell(ex.choices, sheet, sel.row, sel.col);
+    return oneSided
+      ? choiceForRow(ex.choices, sheet, sel.row, summary)
+      : choiceForCell(ex.choices, sheet, sel.row, sel.col, summary);
   });
   const cellPick = $derived(sel === null || sheet === null ? null : (ex.conflictCells.get(cellKey(sheet, sel.row, sel.col)) ?? null));
-  const rowPick = $derived(sel === null || sheet === null ? null : (ex.conflictRows.get(lineKey(sheet, sel.row)) ?? null));
+  /** 行の指定のうち片側を採るもの（両方を採用は帯の対ボタンでは出さない）。 */
+  const rowPick = $derived.by((): ConflictSide | null => {
+    const c = sel === null || sheet === null ? undefined : ex.conflictRows.get(lineKey(sheet, sel.row));
+    return c === 'ours' || c === 'theirs' ? c : null;
+  });
   const colPick = $derived(sel === null || sheet === null ? null : (ex.conflictCols.get(lineKey(sheet, sel.col)) ?? null));
 
   /** 選んでいる所の見出し（行番号は自分側、無ければ相手側の行番号）。 */
@@ -66,8 +73,14 @@
     return oneSided ? String(row + 1) + ' 行' : columnLabel(sel.col) + String(row + 1);
   });
 
-  function sideText(side: ConflictSide | null): string {
-    return side === 'ours' ? '自分側' : side === 'theirs' ? '相手側' : '未決定';
+  function sideText(side: ConflictChoice | null): string {
+    if (side === 'edit') {
+      const typed = sel === null ? undefined : ex.editOf(sel.row, sel.col);
+      return '手入力「' + (typed ?? '') + '」';
+    }
+    if (side === 'ours-theirs') return '両方（ours → theirs）';
+    if (side === 'theirs-ours') return '両方（theirs → ours）';
+    return side === 'ours' ? '自分側（ours）' : side === 'theirs' ? '相手側（theirs）' : '未決定';
   }
 
   function adoptFile(side: ConflictSide): void {

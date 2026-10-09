@@ -21,6 +21,8 @@ import {
   XlsxMergeError,
   changedColumns,
   composeCsv,
+  decodeCsv,
+  encodeCsvField,
   mergeXlsx,
   splitCsvConflict,
   type CellData,
@@ -43,15 +45,71 @@ import { zlibDeflater, zlibInflater } from './zlibInflater.js';
 
 export type ExcelConflictSide = 'ours' | 'theirs';
 
+/** 両方を採用するときの並び（git の ours → theirs / theirs → ours）。docs/07 7.2。 */
+export type ExcelBothOrder = 'ours-theirs' | 'theirs-ours';
+
+/** 行の指定。両側にある行なら、両方を採用して 2 行に分けられる。 */
+export type ExcelRowChoice = ExcelConflictSide | ExcelBothOrder;
+
 /**
  * セル・行・列単位の採り方。優先順位はセル > 行 > 列 > 残りすべて。
  * sheet は比較の中のシートの添字、行・列は揃えた座標。rest はブック全体に効く。
  */
 export interface ExcelCellChoices {
   readonly cells: readonly { readonly sheet: number; readonly row: number; readonly col: number; readonly side: ExcelConflictSide }[];
-  readonly rows: readonly { readonly sheet: number; readonly row: number; readonly side: ExcelConflictSide }[];
+  readonly rows: readonly { readonly sheet: number; readonly row: number; readonly side: ExcelRowChoice }[];
   readonly cols: readonly { readonly sheet: number; readonly col: number; readonly side: ExcelConflictSide }[];
   readonly rest: ExcelConflictSide | null;
+  /**
+   * 利用者が打った値（docs/07 7.1）。両側にある行の値の違うセルにだけ効き、セルの指定より強い。
+   * 省略は「無し」（CSV の第 1 段階からの呼び出しの互換）。
+   */
+  readonly edits?: readonly { readonly sheet: number; readonly row: number; readonly col: number; readonly value: string }[];
+  /**
+   * 続いた行の範囲 [row, end) で両方を採用する（docs/07 7.2）。範囲はブロック（違いのある行が続く区間）の中に
+   * 収まるよう切り詰める。範囲の中のどの指定よりも強い。
+   */
+  readonly hunks?: readonly { readonly sheet: number; readonly row: number; readonly end: number; readonly order: ExcelBothOrder }[];
+}
+
+const isBoth = (c: ExcelRowChoice | undefined): c is ExcelBothOrder => c === 'ours-theirs' || c === 'theirs-ours';
+
+/**
+ * 揃えた行ごとの、属するブロックの先頭（違いの無い行は -1）。ブロックは違いのある行が続く区間。
+ * renderer も同じ区切り方をする（決めるべき所の行が続く区間）。
+ */
+export function hunkStartsOf(sheet: SheetComparison): Int32Array {
+  const out = new Int32Array(sheet.oldRow.length).fill(-1);
+  let start = -1;
+  for (let i = 0; i < sheet.oldRow.length; i += 1) {
+    if ((sheet.rowState[i] ?? ROW_SAME) === ROW_SAME) {
+      start = -1;
+      continue;
+    }
+    if (start < 0) start = i;
+    out[i] = start;
+  }
+  return out;
+}
+
+/** 両方を採用する範囲の終わり（含まない）。i を含むブロックの中に切り詰め、少なくとも 1 行。 */
+function blockEnd(starts: Int32Array, i: number, end: number): number {
+  let e = i + 1;
+  while (e < end && e < starts.length && starts[e] === starts[i]) e += 1;
+  return e;
+}
+
+/** 両方を採用するブロック・行を、出す行の並びにする（自分側の行どうし・相手側の行どうしの順は保つ）。 */
+function bothRows(sheet: SheetComparison, from: number, to: number, order: ExcelBothOrder): { kind: 'ours' | 'theirs'; row: number; aligned: number }[] {
+  const ours: { kind: 'ours'; row: number; aligned: number }[] = [];
+  const theirs: { kind: 'theirs'; row: number; aligned: number }[] = [];
+  for (let i = from; i < to; i += 1) {
+    const o = sheet.oldRow[i] ?? -1;
+    const n = sheet.newRow[i] ?? -1;
+    if (o >= 0) ours.push({ kind: 'ours', row: o, aligned: i });
+    if (n >= 0) theirs.push({ kind: 'theirs', row: n, aligned: i });
+  }
+  return order === 'ours-theirs' ? [...ours, ...theirs] : [...theirs, ...ours];
 }
 
 export type ExcelResolveRequest =
@@ -67,30 +125,60 @@ export interface ExcelResolveSource {
 /** 採り方の引き。 */
 class Choices {
   readonly #cells = new Map<string, ExcelConflictSide>();
-  readonly #rows = new Map<string, ExcelConflictSide>();
+  readonly #rows = new Map<string, ExcelRowChoice>();
+  readonly #hunks = new Map<string, { readonly end: number; readonly order: ExcelBothOrder }>();
   readonly #cols = new Map<string, ExcelConflictSide>();
   readonly #rest: ExcelConflictSide | null;
+  readonly #edits = new Map<string, string>();
 
   constructor(choices: ExcelCellChoices) {
+    for (const e of choices.edits ?? []) this.#edits.set(`${String(e.sheet)}:${String(e.row)}:${String(e.col)}`, e.value);
     for (const c of choices.cells) this.#cells.set(`${String(c.sheet)}:${String(c.row)}:${String(c.col)}`, c.side);
     for (const r of choices.rows) this.#rows.set(`${String(r.sheet)}:${String(r.row)}`, r.side);
     for (const c of choices.cols) this.#cols.set(`${String(c.sheet)}:${String(c.col)}`, c.side);
     this.#rest = choices.rest;
+    for (const h of choices.hunks ?? []) this.#hunks.set(`${String(h.sheet)}:${String(h.row)}`, { end: h.end, order: h.order });
+  }
+
+  /** その行から始まる「両方を採用」の範囲。無ければ null。 */
+  block(sheet: number, row: number): { readonly end: number; readonly order: ExcelBothOrder } | null {
+    return this.#hunks.get(`${String(sheet)}:${String(row)}`) ?? null;
+  }
+
+  /** 行で両方を採用するなら、その並び（両側にある行だけ）。 */
+  rowBoth(sheet: number, row: number): ExcelBothOrder | null {
+    const c = this.#rows.get(`${String(sheet)}:${String(row)}`);
+    return isBoth(c) ? c : null;
+  }
+
+  /** 行の指定のうち、片側を採るもの。 */
+  #rowSide(sheet: number, row: number): ExcelConflictSide | undefined {
+    const c = this.#rows.get(`${String(sheet)}:${String(row)}`);
+    return isBoth(c) ? undefined : c;
   }
 
   cell(sheet: number, row: number, col: number): ExcelConflictSide | null {
     const s = String(sheet);
     return (
       this.#cells.get(`${s}:${String(row)}:${String(col)}`) ??
-      this.#rows.get(`${s}:${String(row)}`) ??
+      this.#rowSide(sheet, row) ??
       this.#cols.get(`${s}:${String(col)}`) ??
       this.#rest
     );
   }
 
-  /** 片側にしか無い行（行 > 残りすべて）。 */
-  row(sheet: number, row: number): ExcelConflictSide | null {
-    return this.#rows.get(`${String(sheet)}:${String(row)}`) ?? this.#rest;
+  /** そのセルに打った値。無ければ undefined。 */
+  edit(sheet: number, row: number, col: number): string | undefined {
+    return this.#edits.get(`${String(sheet)}:${String(row)}:${String(col)}`);
+  }
+
+  /**
+   * 片側にしか無い行（行 > 残りすべて）。両方を採用する指定は「その行を残す」（行がある側を採る）と同じ。
+   */
+  row(sheet: number, row: number, presentSide: ExcelConflictSide): ExcelConflictSide | null {
+    const c = this.#rows.get(`${String(sheet)}:${String(row)}`);
+    if (isBoth(c)) return presentSide;
+    return c ?? this.#rest;
   }
 }
 
@@ -108,7 +196,12 @@ export interface CsvPlanResult {
  *   - 片側にしか無い行: 「行 > 残り」で決める（列やセルの指定は効かない。行を入れるか入れないかの話なので）。
  *     その行がある側を採れば入れ、無い側を採れば落とす
  */
-export function planCsvResolution(view: ExcelComparison, choices: ExcelCellChoices): CsvPlanResult {
+export function planCsvResolution(
+  view: ExcelComparison,
+  choices: ExcelCellChoices,
+  /** 打った値を欄にする（引用符と文字コード）。書けなければ null。 */
+  encodeField: (text: string) => Uint8Array | null = () => null,
+): CsvPlanResult {
   const sheet = view.comparison.sheets[0];
   if (sheet === undefined || view.comparison.sheets.length !== 1) return { plans: [], unresolved: 0 };
   const pick = new Choices(choices);
@@ -119,11 +212,20 @@ export function planCsvResolution(view: ExcelComparison, choices: ExcelCellChoic
 
   const plans: CsvRowPlan[] = [];
   let unresolved = 0;
+  const starts = hunkStartsOf(sheet);
   for (let i = 0; i < sheet.oldRow.length; i += 1) {
     const o = sheet.oldRow[i] ?? -1;
     const n = sheet.newRow[i] ?? -1;
+    // 両方を採用する範囲: 先頭の行で範囲（ブロックの中に切り詰め）を出して、末尾まで飛ばす
+    const blk = (starts[i] ?? -1) >= 0 ? pick.block(0, i) : null;
+    if (blk !== null) {
+      const end = blockEnd(starts, i, blk.end);
+      for (const r of bothRows(sheet, i, end, blk.order)) plans.push({ kind: r.kind, row: r.row });
+      i = end - 1;
+      continue;
+    }
     if (o < 0 || n < 0) {
-      const side = pick.row(0, i);
+      const side = pick.row(0, i, o >= 0 ? 'ours' : 'theirs');
       if (side === null) {
         unresolved += 1;
         continue;
@@ -136,11 +238,24 @@ export function planCsvResolution(view: ExcelComparison, choices: ExcelCellChoic
       plans.push({ kind: 'ours', row: o });
       continue;
     }
+    const rowOrder = pick.rowBoth(0, i);
+    if (rowOrder !== null) {
+      for (const r of bothRows(sheet, i, i + 1, rowOrder)) plans.push({ kind: r.kind, row: r.row });
+      continue;
+    }
     const changed = changedColumns(oldData?.rows[o]?.cells, sstOld, newData?.rows[n]?.cells, sstNew);
     const theirsCols = new Set<number>();
+    const edits = new Map<number, Uint8Array>();
     let fromOurs = 0;
     let missing = 0;
     for (const col of changed) {
+      const typed = pick.edit(0, i, col);
+      if (typed !== undefined) {
+        const field = encodeField(typed);
+        if (field === null) throw new ConflictUnsupportedError('打った値に、このファイルの文字コードで書けない文字があります。');
+        edits.set(col, field);
+        continue;
+      }
       const side = pick.cell(0, i, col);
       if (side === null) missing += 1;
       else if (side === 'theirs') theirsCols.add(col);
@@ -150,7 +265,8 @@ export function planCsvResolution(view: ExcelComparison, choices: ExcelCellChoic
       unresolved += missing;
       continue;
     }
-    if (theirsCols.size === 0) plans.push({ kind: 'ours', row: o });
+    if (edits.size > 0) plans.push({ kind: 'mixed', oursRow: o, theirsRow: n, theirsCols, edits });
+    else if (theirsCols.size === 0) plans.push({ kind: 'ours', row: o });
     else if (fromOurs === 0) plans.push({ kind: 'theirs', row: n });
     else plans.push({ kind: 'mixed', oursRow: o, theirsRow: n, theirsCols });
   }
@@ -315,7 +431,9 @@ export function planXlsxResolution(view: ExcelComparison, choices: ExcelCellChoi
 
     if (sheet.old === null || sheet.new === null) {
       for (let i = 0; i < sheet.oldRow.length; i += 1) {
-        const side = pick.row(s, i);
+        const side = pick.row(s, i, sheet.old !== null ? 'ours' : 'theirs');
+        // 両方を採用するのも、シートを足す・消すことになる
+        if (pick.block(s, i) !== null) blocked ??= BLOCK_MESSAGE['sheet-structure'];
         if (side === null) unresolved += 1;
         else if (side === 'theirs') blocked ??= BLOCK_MESSAGE['sheet-structure'];
       }
@@ -328,14 +446,57 @@ export function planXlsxResolution(view: ExcelComparison, choices: ExcelCellChoi
     const theirsNewIndex = new Int32Array(theirsCount).fill(-1);
     const rows: OutRow[] = [];
     let changed = false;
+    const starts = hunkStartsOf(sheet);
+    const insp = view.conflict?.inspection?.get(sheet.old.name.toLowerCase());
+    const unsafe = (insp?.unsafeRelations.length ?? 0) > 0;
+
+    /** 両方を採用して出す行（相手側の行は挿入になる）。採れない所を含めば断る。 */
+    const emitBoth = (from: number, to: number, order: ExcelBothOrder): void => {
+      for (let i = from; i < to; i += 1) {
+        if (unsafe) blocked ??= BLOCK_MESSAGE['unsafe-part'];
+        for (const key of blockedAt.keys()) if (key.startsWith(`${String(i)}:`)) block(i, Number(key.split(':')[1]));
+      }
+      for (const r of bothRows(sheet, from, to, order)) {
+        if (r.kind === 'ours') {
+          oursNewIndex[r.row] = rows.length;
+          rows.push({ kind: 'ours', row: r.row, theirsRow: -1, theirsCols: new Set() });
+        } else {
+          theirsNewIndex[r.row] = rows.length;
+          rows.push({ kind: 'theirs', row: r.row });
+        }
+      }
+      changed = true;
+    };
 
     for (let i = 0; i < sheet.oldRow.length; i += 1) {
       const o = sheet.oldRow[i] ?? -1;
       const n = sheet.newRow[i] ?? -1;
+      const blk = (starts[i] ?? -1) >= 0 ? pick.block(s, i) : null;
+      if (blk !== null) {
+        const end = blockEnd(starts, i, blk.end);
+        emitBoth(i, end, blk.order);
+        i = end - 1;
+        continue;
+      }
+      if (o >= 0 && n >= 0 && (sheet.rowState[i] ?? ROW_SAME) !== ROW_SAME) {
+        const rowOrder = pick.rowBoth(s, i);
+        if (rowOrder !== null) {
+          emitBoth(i, i + 1, rowOrder);
+          continue;
+        }
+      }
       if (o >= 0 && n >= 0) {
         const theirsCols = new Set<number>();
+        const edits = new Map<number, string>();
         if ((sheet.rowState[i] ?? ROW_SAME) !== ROW_SAME) {
           for (const col of changedColumns(sheet.old.data?.rows[o]?.cells, sstOld, sheet.new.data?.rows[n]?.cells, sstNew)) {
+            const typed = pick.edit(s, i, col);
+            if (typed !== undefined) {
+              // 打った値も、配列数式・テーブルの見出しには書けない（相手側を採るのと同じ扱い）
+              block(i, col);
+              edits.set(col, typed);
+              continue;
+            }
             const side = pick.cell(s, i, col);
             if (side === null) unresolved += 1;
             else if (side === 'theirs') {
@@ -344,13 +505,13 @@ export function planXlsxResolution(view: ExcelComparison, choices: ExcelCellChoi
             }
           }
         }
-        if (theirsCols.size > 0) changed = true;
+        if (theirsCols.size > 0 || edits.size > 0) changed = true;
         oursNewIndex[o] = rows.length;
         theirsNewIndex[n] = rows.length;
-        rows.push({ kind: 'ours', row: o, theirsRow: n, theirsCols });
+        rows.push({ kind: 'ours', row: o, theirsRow: n, theirsCols, edits });
         continue;
       }
-      const side = pick.row(s, i);
+      const side = pick.row(s, i, o >= 0 ? 'ours' : 'theirs');
       if (side === null) {
         unresolved += 1;
         // 決まっていない間は自分側のまま並べておく（行の対応を作るため。書き込みは unresolved で止まる）
@@ -442,7 +603,11 @@ export async function resolveExcelConflict(
       if (!conflict.cellResolvable) {
         throw new ConflictUnsupportedError('このファイルはセル単位では採用できません。ファイル単位で採用してください。');
       }
-      const { plans, unresolved } = planCsvResolution(view, request.choices);
+      // 打った値は、ファイルの文字コード（UTF-8 / Shift_JIS）で書く
+      const encoding = decodeCsv(split.ours)?.encoding ?? null;
+      const { plans, unresolved } = planCsvResolution(view, request.choices, (text) =>
+        encoding === null ? null : encodeCsvField(text, encoding),
+      );
       if (unresolved > 0) throw unresolvedError(unresolved);
       bytes = composeCsv(split.ours, split.theirs, plans);
     }

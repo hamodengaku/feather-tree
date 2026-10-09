@@ -99,6 +99,8 @@ export {
 export type {
   ExcelBlockReason,
   ExcelBlockedTarget,
+  ExcelBothOrder,
+  ExcelRowChoice,
   ExcelCellChoices,
   ExcelConflictSide,
   ExcelConflictTargets,

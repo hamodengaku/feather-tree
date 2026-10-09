@@ -715,15 +715,28 @@ export interface ExcelConflictDto {
 
 export type ExcelConflictSideDto = 'ours' | 'theirs';
 
+/** 両方を採用するときの並び（git の ours → theirs / theirs → ours）。docs/07 7.2。 */
+export type ExcelBothOrderDto = 'ours-theirs' | 'theirs-ours';
+
 /**
  * セル・行・列単位の採り方。sheet はシートの添字（ExcelSheetSummaryDto.index）、行・列は揃えた座標。
  * 優先順位はセル > 行 > 列 > 残りすべて（rest はブック全体）。
  */
 export interface ExcelCellChoicesDto {
   readonly cells: readonly { readonly sheet: number; readonly row: number; readonly col: number; readonly side: ExcelConflictSideDto }[];
-  readonly rows: readonly { readonly sheet: number; readonly row: number; readonly side: ExcelConflictSideDto }[];
+  /** 行の指定。両側にある行なら、両方を採用して 2 行に分けられる（並びを選ぶ）。 */
+  readonly rows: readonly { readonly sheet: number; readonly row: number; readonly side: ExcelConflictSideDto | ExcelBothOrderDto }[];
   readonly cols: readonly { readonly sheet: number; readonly col: number; readonly side: ExcelConflictSideDto }[];
   readonly rest: ExcelConflictSideDto | null;
+  /**
+   * 利用者が打った値（docs/07 7.1）。両側にある行の値の違うセルにだけ効き、セルの指定より強い。
+   * 数値として読めれば数値、それ以外は文字列（先頭の ' は外す）。数式は扱わない。
+   */
+  readonly edits?: readonly { readonly sheet: number; readonly row: number; readonly col: number; readonly value: string }[];
+  /**
+   * 続いた行の範囲 [row, end) で両方を採用する（docs/07 7.2）。範囲はブロック（違いのある行が続く区間）の中に切り詰める。
+   */
+  readonly hunks?: readonly { readonly sheet: number; readonly row: number; readonly end: number; readonly order: ExcelBothOrderDto }[];
 }
 
 /**

@@ -17,10 +17,12 @@
   import ExcelGrid from '../components/ExcelGrid.svelte';
   import ExcelSheetTabs from '../components/ExcelSheetTabs.svelte';
   import ExcelValueBar from '../components/ExcelValueBar.svelte';
+  import FileContextMenu from '../components/FileContextMenu.svelte';
   import { app } from '../lib/appState.svelte.js';
   import { effectiveColWidths, effectiveRowHeights, mirrorScroll, rowHeaderWidth } from '../lib/excelGrid.js';
-  import { choiceAt, unresolvedInSheet, type ConflictSide } from '../lib/excelConflict.js';
+  import { blockReasonAt, choiceAt, inRanges, unresolvedInSheet, type ConflictChoice } from '../lib/excelConflict.js';
   import {
+    blockReasonText,
     conflictSideNotice,
     conflictWorkbookSummary,
     sheetNotice,
@@ -118,8 +120,145 @@
     ex.ensureRows(start, end);
   }
 
-  function handleSelect(row: number, col: number): void {
-    void ex.selectCell(row, col);
+  /** 最後に触ったグリッド（打鍵で編集を始めるとき、入力欄をそちらに出す）。 */
+  let activeSide = $state<'old' | 'new'>('new');
+
+  function handlePointer(
+    side: 'old' | 'new',
+    kind: 'cell' | 'row' | 'col',
+    row: number,
+    col: number,
+    mods: { shift: boolean; ctrl: boolean },
+  ): void {
+    activeSide = side;
+    ex.pointerDown(kind, row, col, mods);
+  }
+
+  // ---------------------------------------------------------------- 右クリックのメニュー（docs/07 7.1）
+
+  let menu = $state<{ x: number; y: number; side: 'old' | 'new' } | null>(null);
+
+  /** セル単位で採れるコンフリクトのときだけ右クリックを受ける。 */
+  const conflictMenu = $derived(conflict?.cellResolvable === true && sheet?.conflict != null);
+
+  function openMenu(side: 'old' | 'new', row: number, col: number, x: number, y: number): void {
+    activeSide = side;
+    // 範囲の外を右クリックしたら、そのセルを選び直す（Excel と同じ）
+    if (!inRanges(ex.ranges, row, col)) ex.pointerDown('cell', row, col, { shift: false, ctrl: false });
+    ex.pointerUp();
+    menu = { x, y, side };
+  }
+
+  /** メニューに添える値（長ければ切る。改行は空白に）。 */
+  function clip(text: string): string {
+    let flat = '';
+    for (const ch of text) flat += ch === '\n' || ch === '\r' ? ' ' : ch;
+    if (flat === '') return '（空）';
+    return flat.length > 24 ? flat.slice(0, 24) + '…' : flat;
+  }
+
+  function displayAt(row: number, col: number, side: 'old' | 'new'): string {
+    const r = ex.rows.get(row)?.[side] ?? null;
+    if (r === null) return '';
+    const i = r.cols.indexOf(col);
+    return i < 0 ? '' : (r.text[i] ?? '');
+  }
+
+  interface MenuAction {
+    readonly label: string;
+    readonly disabled?: boolean;
+    readonly onclick: () => void;
+  }
+
+  const menuActions = $derived.by((): MenuAction[] => {
+    if (menu === null || layout === null) return [];
+    const { cells, rows } = ex.selectionTargets;
+    const count = cells.length + rows.length;
+    if (count === 0) return [{ label: 'この範囲にコンフリクトはありません', disabled: true, onclick: () => undefined }];
+    const summary = sheet ?? undefined;
+    const reasons = [
+      ...cells.map((c) => blockReasonAt(summary, c.row, c.col)),
+      ...rows.map((r) => blockReasonAt(summary, r, -1)),
+    ];
+    const blocked = reasons.find((r) => r !== null) ?? null;
+
+    let ours: string;
+    let theirs: string;
+    const oneCell = count === 1 ? cells[0] : undefined;
+    const oneRow = count === 1 ? rows[0] : undefined;
+    if (oneCell !== undefined) {
+      ours = 'ours を採用「' + clip(displayAt(oneCell.row, oneCell.col, 'old')) + '」';
+      theirs = 'theirs を採用「' + clip(displayAt(oneCell.row, oneCell.col, 'new')) + '」';
+    } else if (oneRow !== undefined) {
+      const inOurs = (layout.oldRow[oneRow] ?? -1) >= 0;
+      ours = inOurs ? 'ours を採用（この行を残す）' : 'ours を採用（この行を入れない）';
+      theirs = inOurs ? 'theirs を採用（この行を削除する）' : 'theirs を採用（この行を挿入する）';
+    } else {
+      ours = 'ours を採用（' + String(count) + ' か所）';
+      theirs = 'theirs を採用（' + String(count) + ' か所）';
+    }
+    const actions: MenuAction[] = [
+      { label: ours, onclick: () => ex.chooseSelection('ours') },
+      {
+        label: blocked === null ? theirs : theirs + ' — ' + blockReasonText(blocked),
+        disabled: blocked !== null,
+        onclick: () => ex.chooseSelection('theirs'),
+      },
+    ];
+    // 両方を採用（docs/07 7.2）。相手側の行を挿入することになるので、相手側を採れない所を含めば押せない
+    const both = (label: string): string => (blocked === null ? label : label + ' — ' + blockReasonText(blocked));
+    if (ex.selectionBlocks.length > 0) {
+      actions.push(
+        {
+          label: both('選んだ行で両方を採用（ours → theirs）'),
+          disabled: blocked !== null,
+          onclick: () => ex.chooseBothSelection('ours-theirs'),
+        },
+        {
+          label: both('選んだ行で両方を採用（theirs → ours）'),
+          disabled: blocked !== null,
+          onclick: () => ex.chooseBothSelection('theirs-ours'),
+        },
+      );
+    }
+    actions.push({ label: '個別の指定を外す', onclick: () => ex.chooseSelection(null) });
+    if (ex.editableCell !== null) {
+      const side = menu.side;
+      actions.push({
+        label: blocked === null ? 'セルを編集…' : 'セルを編集… — ' + blockReasonText(blocked),
+        disabled: blocked !== null,
+        onclick: () => ex.startEdit(side),
+      });
+    }
+    return actions;
+  });
+
+  /** グリッドに焦点があるときの打鍵。1 セルだけ選んでいれば、F2・Enter・文字で編集を始める。 */
+  function gridKey(e: KeyboardEvent): void {
+    const target = ex.editableCell;
+    if (!conflictMenu || ex.editing !== null || target === null) return;
+    if (blockReasonAt(sheet ?? undefined, target.row, target.col) !== null) return;
+    if (e.key === 'F2' || e.key === 'Enter') {
+      e.preventDefault();
+      ex.startEdit(activeSide);
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      ex.startEdit(activeSide, e.key);
+    }
+  }
+
+  function startEditAt(side: 'old' | 'new', row: number, col: number): void {
+    activeSide = side;
+    const target = ex.editableCell;
+    if (!conflictMenu || target === null || target.row !== row || target.col !== col) return;
+    if (blockReasonAt(sheet ?? undefined, row, col) !== null) return;
+    ex.startEdit(side);
+  }
+
+  /** そのグリッドで編集中のセル。 */
+  function editingOn(side: 'old' | 'new'): { row: number; col: number; value: string } | null {
+    const e = ex.editing;
+    return e !== null && e.side === side && e.sheet === ex.sheet ? e : null;
   }
 
   /** グリッドに出す採り方の印（セル単位で採れるときだけ）。 */
@@ -128,9 +267,15 @@
     if (conflict?.cellResolvable !== true || layout === null || index === null || sheet?.conflict == null) return null;
     const summary = sheet;
     const choices = ex.choices;
-    return (row: number, col: number): ConflictSide | null => choiceAt(summary, choices, index, row, col);
+    return (row: number, col: number): ConflictChoice | null => choiceAt(summary, choices, index, row, col);
   });
 </script>
+
+<svelte:window onmouseup={() => ex.pointerUp()} />
+
+{#if menu !== null && menuActions.length > 0}
+  <FileContextMenu x={menu.x} y={menu.y} actions={menuActions} onclose={() => (menu = null)} />
+{/if}
 
 <section class="excel-pane" aria-label="Excel 差分">
   {#if app.activeId === null}
@@ -179,7 +324,8 @@
       <div class="side-label">{sideLabel('new', conflict !== null)}</div>
     </div>
 
-    <div class="grids">
+    <!-- 打鍵はグリッドの本体（焦点を持つ）から泡立ってくる -->
+    <div class="grids" role="presentation" onkeydown={gridKey}>
       {#if layout === null}
         <p class="empty span">{sheet === null ? 'シートがありません。' : '読み込み中…'}</p>
       {:else}
@@ -202,7 +348,14 @@
               bind:viewport={oldViewport}
               onscroll={(top, left) => sync('old', top, left)}
               onneed={handleNeed}
-              onselect={handleSelect}
+              ranges={ex.ranges}
+              onpointer={(kind, row, col, m) => handlePointer('old', kind, row, col, m)}
+              onpointerenter={(kind, row, col) => ex.pointerEnter(kind, row, col)}
+              oncontext={conflictMenu ? (row, col, x, y) => openMenu('old', row, col, x, y) : undefined}
+              ondblcell={(row, col) => startEditAt('old', row, col)}
+              editing={editingOn('old')}
+              oneditcommit={(value) => ex.commitEdit(value)}
+              oneditcancel={() => ex.cancelEdit()}
             />
           {/if}
         </div>
@@ -223,7 +376,14 @@
               bind:viewport={newViewport}
               onscroll={(top, left) => sync('new', top, left)}
               onneed={handleNeed}
-              onselect={handleSelect}
+              ranges={ex.ranges}
+              onpointer={(kind, row, col, m) => handlePointer('new', kind, row, col, m)}
+              onpointerenter={(kind, row, col) => ex.pointerEnter(kind, row, col)}
+              oncontext={conflictMenu ? (row, col, x, y) => openMenu('new', row, col, x, y) : undefined}
+              ondblcell={(row, col) => startEditAt('new', row, col)}
+              editing={editingOn('new')}
+              oneditcommit={(value) => ex.commitEdit(value)}
+              oneditcancel={() => ex.cancelEdit()}
             />
           {/if}
         </div>

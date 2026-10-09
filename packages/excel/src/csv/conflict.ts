@@ -16,6 +16,8 @@
  * ここがずれると、画面に出したセルと書き戻す欄が食い違う。
  */
 
+import type { CsvEncoding } from './csv.js';
+
 const LF = 0x0a;
 const CR = 0x0d;
 const COMMA = 0x2c;
@@ -223,8 +225,17 @@ export type CsvRowPlan =
   /** 自分側のレコードを丸ごと（元のバイトのまま）。 */
   | { readonly kind: 'ours'; readonly row: number }
   | { readonly kind: 'theirs'; readonly row: number }
-  /** 欄ごとに継ぎ合わせる。theirsCols に無い列は自分側の欄。 */
-  | { readonly kind: 'mixed'; readonly oursRow: number; readonly theirsRow: number; readonly theirsCols: ReadonlySet<number> };
+  /**
+   * 欄ごとに継ぎ合わせる。theirsCols に無い列は自分側の欄。edits の列は、利用者が打った値
+   * （encodeCsvField で引用符と文字コードを済ませたバイト列）を書く（docs/07 7.1）。
+   */
+  | {
+      readonly kind: 'mixed';
+      readonly oursRow: number;
+      readonly theirsRow: number;
+      readonly theirsCols: ReadonlySet<number>;
+      readonly edits?: ReadonlyMap<number, Uint8Array>;
+    };
 
 /**
  * 行ごとの採り方から、採用した結果のバイト列を組む。
@@ -249,9 +260,15 @@ export function composeCsv(ours: Uint8Array, theirs: Uint8Array, plans: readonly
     if (plan.kind === 'mixed') {
       const ro = o.records[plan.oursRow];
       const rt = t.records[plan.theirsRow];
-      const count = Math.max(ro?.fields.length ?? 0, rt?.fields.length ?? 0);
+      let count = Math.max(ro?.fields.length ?? 0, rt?.fields.length ?? 0);
+      for (const c of plan.edits?.keys() ?? []) count = Math.max(count, c + 1);
       for (let c = 0; c < count; c += 1) {
         if (c > 0) parts.push(Uint8Array.of(COMMA));
+        const edited = plan.edits?.get(c);
+        if (edited !== undefined) {
+          parts.push(edited);
+          continue;
+        }
         const fromTheirs = plan.theirsCols.has(c);
         const span = (fromTheirs ? rt : ro)?.fields[c];
         if (span !== undefined) parts.push((fromTheirs ? theirs : ours).subarray(span[0], span[1]));
@@ -289,4 +306,74 @@ function firstTerminator(bytes: Uint8Array, spans: CsvSpans): Uint8Array | null 
     if (r.terminator[1] > r.terminator[0]) return bytes.subarray(r.terminator[0], r.terminator[1]);
   }
   return null;
+}
+
+/** 引用符で囲む必要がある欄か（カンマ・引用符・改行・前後の空白）。 */
+function needsQuote(text: string): boolean {
+  for (const ch of text) {
+    const c = ch.charCodeAt(0);
+    if (c === 0x22 || c === 0x2c || c === 0x0a || c === 0x0d) return true;
+  }
+  const first = text.charCodeAt(0);
+  const last = text.charCodeAt(text.length - 1);
+  return text.length > 0 && (first === 0x20 || first === 0x09 || last === 0x20 || last === 0x09);
+}
+
+let sjisTable: Map<string, Uint8Array> | null = null;
+
+/**
+ * Shift_JIS の逆引き表。標準の TextEncoder は Shift_JIS を書けないので、TextDecoder で 2 バイトの並びを
+ * 一通り読んで作る（初めて要るときに 1 回だけ。1 万件ほど）。
+ */
+function shiftJisTable(): Map<string, Uint8Array> {
+  if (sjisTable !== null) return sjisTable;
+  const table = new Map<string, Uint8Array>();
+  const decoder = new TextDecoder('shift_jis', { fatal: true });
+  const tryAdd = (bytes: Uint8Array): void => {
+    let ch: string;
+    try {
+      ch = decoder.decode(bytes);
+    } catch {
+      return;
+    }
+    // 置換文字（U+FFFD）は読めなかった印なので表に入れない
+    if (ch.length > 0 && ch.charCodeAt(0) !== 0xfffd && !table.has(ch)) table.set(ch, bytes);
+  };
+  for (let b = 0; b < 0x80; b += 1) tryAdd(Uint8Array.of(b));
+  for (let b = 0xa1; b <= 0xdf; b += 1) tryAdd(Uint8Array.of(b));
+  for (let lead = 0x81; lead <= 0xfc; lead += 1) {
+    if (lead > 0x9f && lead < 0xe0) continue;
+    for (let trail = 0x40; trail <= 0xfc; trail += 1) {
+      if (trail === 0x7f) continue;
+      tryAdd(Uint8Array.of(lead, trail));
+    }
+  }
+  sjisTable = table;
+  return table;
+}
+
+/**
+ * 利用者が打った値を CSV の 1 欄にする（docs/07 7.1）。必要なら引用符で囲み、ファイルの文字コードで書く。
+ * その文字コードで書けない文字がある・UTF-16 なら null。
+ */
+export function encodeCsvField(text: string, encoding: CsvEncoding): Uint8Array | null {
+  const field = needsQuote(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+  if (encoding === 'utf-8') return new TextEncoder().encode(field);
+  if (encoding !== 'shift_jis') return null;
+  const table = shiftJisTable();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (const ch of field) {
+    const bytes = table.get(ch);
+    if (bytes === undefined) return null;
+    parts.push(bytes);
+    total += bytes.length;
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
 }

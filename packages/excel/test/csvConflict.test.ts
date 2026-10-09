@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { composeCsv, csvRecordSpans, csvRecords, splitCsvConflict, type CsvRowPlan } from '../src/index.js';
+import { composeCsv, csvRecordSpans, csvRecords, encodeCsvField, splitCsvConflict, type CsvRowPlan } from '../src/index.js';
 
 /*
  * CSV のコンフリクト（決定 34）。マーカーの分解と、行・欄の継ぎ合わせ。
@@ -106,5 +106,32 @@ describe('composeCsv', () => {
     const o = Uint8Array.of(0xef, 0xbb, 0xbf, ...encode('a\n'));
     const t = Uint8Array.of(0xef, 0xbb, 0xbf, ...encode('b\n'));
     expect(Array.from(composeCsv(o, t, [{ kind: 'theirs', row: 0 }]))).toEqual([0xef, 0xbb, 0xbf, 0x62, 0x0a]);
+  });
+});
+
+describe('打った値の欄（docs/07 7.1）', () => {
+  it('カンマ・引用符・改行・前後の空白があれば引用符で囲む', () => {
+    const d = (t: string): string => decode(encodeCsvField(t, 'utf-8') ?? new Uint8Array(0));
+    expect(d('abc')).toBe('abc');
+    expect(d('a,b')).toBe('"a,b"');
+    expect(d('say "hi"')).toBe('"say ""hi"""');
+    expect(d(' x')).toBe('" x"');
+    expect(d('')).toBe('');
+  });
+
+  it('Shift_JIS のファイルには Shift_JIS で書く。書けない文字・UTF-16 は null', () => {
+    // 「表」= 0x95 0x5c
+    expect(Array.from(encodeCsvField('表', 'shift_jis') ?? [])).toEqual([0x95, 0x5c]);
+    expect(encodeCsvField('😀', 'shift_jis')).toBeNull();
+    expect(encodeCsvField('a', 'utf-16le')).toBeNull();
+  });
+
+  it('混ざる行の打った値の列は、その値で書く（欄が足りなければ足す）', () => {
+    const o = encode('a,1\n');
+    const t = encode('a,2\n');
+    const out = composeCsv(o, t, [
+      { kind: 'mixed', oursRow: 0, theirsRow: 0, theirsCols: new Set(), edits: new Map([[1, encode('"x,y"')], [3, encode('z')]]) },
+    ]);
+    expect(decode(out)).toBe('a,"x,y",,z\n');
   });
 });
