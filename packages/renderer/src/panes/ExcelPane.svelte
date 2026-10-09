@@ -255,6 +255,11 @@
       );
     }
     actions.push({ label: '個別の指定を外す', onclick: () => ex.chooseSelection(null) });
+    // 残りすべて（帯から移した。docs/07 7.0）。ブック全体で、個別に決めていない所に効く
+    actions.push(
+      { label: '未決定の残りをすべて ours を採用', onclick: () => (ex.conflictRest = 'ours') },
+      { label: '未決定の残りをすべて theirs を採用', onclick: () => (ex.conflictRest = 'theirs') },
+    );
     if (ex.editableCell !== null) {
       const side = menu.side;
       actions.push({
@@ -353,8 +358,27 @@
     {/each}
 
     <div class="sides">
-      <div class="side-label">{sideLabel('old', conflict !== null)}</div>
-      <div class="side-label">{sideLabel('new', conflict !== null)}</div>
+      {#snippet sideHead(which: 'old' | 'new')}
+        <div class="side-label">
+          <span class="side-name">{sideLabel(which, conflict !== null)}</span>
+          {#if conflict !== null}
+            {@const absent = (which === 'old' ? view.old.state : view.new.state) === 'absent'}
+            <!-- ファイル全体の採用（docs/07 7.0）。削除された側は採れない（削除は差分モードで行う） -->
+            <button
+              class="adopt {which === 'old' ? 'ours' : 'theirs'}"
+              disabled={app.busy || absent}
+              title={absent
+                ? 'この側ではファイルが削除されています（削除は差分モードで行ってください）'
+                : 'ファイル全体を' + (which === 'old' ? '自分側（ours）' : '相手側（theirs）') + 'の内容にして作業ツリーへ書き込みます'}
+              onclick={() => void app.resolveExcelConflict({ kind: 'file', side: which === 'old' ? 'ours' : 'theirs' })}
+            >
+              {which === 'old' ? 'ours を採用' : 'theirs を採用'}
+            </button>
+          {/if}
+        </div>
+      {/snippet}
+      {@render sideHead('old')}
+      {@render sideHead('new')}
     </div>
 
     <!-- 打鍵はグリッドの本体（焦点を持つ）から泡立ってくる -->
@@ -428,7 +452,7 @@
       <div class="preview-label">
         <span class="preview-title">マージ後のプレビュー</span>
         <span class="legend">
-          書き込むとこうなります（行番号は書き込み後）。<span class="mark theirs">theirs から</span>
+          <span class="mark theirs">theirs から</span>
           <span class="mark edited">手入力</span>
           <span class="mark undecided">未決定（ours のまま表示）</span>
         </span>
@@ -449,6 +473,12 @@
           bind:viewport={previewViewport}
           onscroll={syncFromPreview}
           onneed={handleNeed}
+          ondblcell={(index, row, col, side) => void ex.startPreviewEdit(index, row, col, side)}
+          editing={ex.editing !== null && ex.editing.side === 'preview' && ex.editing.sheet === ex.sheet
+            ? { index: ex.editing.previewIndex ?? 0, col: ex.editing.col, value: ex.editing.value }
+            : null}
+          oneditcommit={(value) => ex.commitEdit(value)}
+          oneditcancel={() => ex.cancelEdit()}
           onselect={(row, col) => {
             ex.pointerDown('cell', row, col, { shift: false, ctrl: false });
             ex.pointerUp();
@@ -471,6 +501,28 @@
 </section>
 
 <style>
+  .side-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .adopt {
+    flex: 0 0 auto;
+    padding: 0 8px;
+    font-size: var(--app-font-size-mono);
+  }
+
+  .adopt.ours:not(:disabled) {
+    border-color: var(--app-text-modified);
+  }
+
+  .adopt.theirs:not(:disabled) {
+    border-color: var(--app-text-added);
+  }
+
   /* マージ後のプレビュー（3 つ目のペイン）。上の左右のグリッドと 3:2 で分ける */
   .preview-label {
     flex: 0 0 auto;
@@ -568,7 +620,11 @@
   }
 
   .side-label {
-    padding: 2px 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 2px 4px 2px 8px;
     background: var(--app-bg-raised);
     color: var(--app-text-secondary);
   }

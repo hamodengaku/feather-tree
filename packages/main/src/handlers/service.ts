@@ -244,6 +244,7 @@ export interface Service {
   excelGetCell(id: string, token: string, sheet: number, row: number, col: number): Promise<ExcelCellDetailDto>;
   excelGetRowDiff(id: string, path: string): Promise<ExcelRowDiffDto>;
   excelResolveConflict(id: string, req: ExcelResolveRequestDto, confirmed?: boolean): Promise<ExcelResolveResultDto>;
+  mergeAbort(id: string, confirmed?: boolean): Promise<ExcelResolveResultDto>;
   logGetPage(id: string, skip: number): Promise<readonly CommitSummaryDto[]>;
   logHeadMessage(id: string): Promise<string | null>;
   commitGetFiles(id: string, oid: string): Promise<readonly CommitFileChangeDto[]>;
@@ -1336,6 +1337,13 @@ export function createService(deps: ServiceDeps): Service {
      * 同じものが index の段に残っていて取り戻せる。比較を作ってから作業ツリーが変わっていれば、
      * core が書く直前の照合で diff-stale にする（ここで見た worktree が古いまま上書きすることは無い）。
      */
+    /* 対応表 #51: マージを取り消す（決定 34）。不可逆なので確認必須（決定 16） */
+    mergeAbort: async (id, confirmed) => {
+      const ops = opsFor(id);
+      requireConfirmed('abort-merge', confirmed);
+      return withSignal(id, (signal) => ops.abortMerge(signal));
+    },
+
     excelResolveConflict: async (id, req, confirmed) => {
       const session = requireSession(id);
       const [view, request] = await guardExcelResolve(id, req);

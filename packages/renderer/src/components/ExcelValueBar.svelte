@@ -6,8 +6,7 @@
    * 値は表示形式を当てたもの（M3）。生の値（日付のシリアル値・丸める前の数値）が違えば添える。
    * 数式は先頭に = を付けて出す。
    *
-   * 未マージ（決定 34）では左右が自分側・相手側になり、共通祖先の同じ番地の値があれば下に 1 行添える
-   * （行の対応付けはしないので、行の挿入があると別の行を指しうる）。
+   * 未マージ（決定 34）では左右が自分側・相手側になる。
    */
   import type { ExcelCellDetailDto, ExcelCellSideDto } from '@feathertree/ipc';
 
@@ -18,8 +17,6 @@
   }
 
   const { cell, conflict = false }: Props = $props();
-  /** 共通祖先の行を出すか（main が base を載せてきたときだけ）。 */
-  const showBase = $derived(cell !== null && cell.base !== undefined);
 
   /** 見えている値（表示形式を当てたもの。M3）。 */
   function valueOf(side: ExcelCellSideDto | null): string {
@@ -58,19 +55,6 @@
   {@render half(cell?.old ?? null, conflict ? '自分側' : '旧')}
   <div class="divider" aria-hidden="true"></div>
   {@render half(cell?.new ?? null, conflict ? '相手側' : '新')}
-  {#if showBase}
-    {@const base = cell?.base ?? null}
-    <div class="base" title="共通祖先の、自分側と同じ番地のセル（行の対応付けはしていません）">
-      <span class="label">共通祖先（同じ番地）</span>
-      {#if base === null}
-        <span class="muted">（共通祖先には無い行・シートです）</span>
-      {:else}
-        <span class="address">{base.address}</span>
-        {#if base.formula !== null}<span class="formula">={base.formula}</span>{/if}
-        <span class="value">{base.display === '' ? '（空）' : base.display}</span>
-      {/if}
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -81,18 +65,6 @@
     border-bottom: 1px solid var(--app-border-subtle);
     background: var(--app-bg-surface);
     font-size: var(--app-font-size-ui);
-  }
-
-  .base {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    min-width: 0;
-    padding: 2px 8px 4px;
-    border-top: 1px dashed var(--app-border-subtle);
-    white-space: nowrap;
-    overflow: hidden;
   }
 
   .divider {

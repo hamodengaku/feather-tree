@@ -5,7 +5,6 @@
  */
 
 import {
-  baseCellOf,
   buildRowPage,
   conflictTargetsOf,
   cellDetail,
@@ -80,7 +79,6 @@ function toConflictDto(conflict: ExcelConflict | null): ExcelConflictDto | null 
     markers: conflict.markers,
     blocks: conflict.blocks,
     worktree: conflict.worktree,
-    hasBase: conflict.base?.state === 'ok',
     cellResolvable: conflict.cellResolvable,
     fingerprint: conflict.fingerprint,
   };
@@ -196,8 +194,7 @@ export function toRowPageDto(
 
 export function toCellDetailDto(view: ExcelComparison, sheet: SheetComparison, row: number, col: number): ExcelCellDetailDto {
   const d = cellDetail(view.comparison, sheet, row, col);
-  if (view.conflict?.base?.state !== 'ok') return { row, col, old: d.old, new: d.new, changed: d.changed };
-  return { row, col, old: d.old, new: d.new, changed: d.changed, base: baseCellOf(view, sheet, row, col) };
+  return { row, col, old: d.old, new: d.new, changed: d.changed };
 }
 
 export function toRowDiffDto(view: ExcelComparison, diff: RowDiff): ExcelRowDiffDto {

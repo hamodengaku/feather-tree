@@ -10,7 +10,6 @@ import {
   DEFAULT_SETTINGS,
   SessionManager,
   StaleDiffError,
-  baseCellOf,
   conflictTargetsOf,
   excelToken,
   zlibInflater,
@@ -171,11 +170,11 @@ describe('Excel のコンフリクト（決定 34）', () => {
     expect(await readFile(join(dir, 'd.csv'), 'utf8')).toBe('h\nX-theirs\nm\nm\nm\nY-ours\n');
   });
 
-  it('ブックは段を #49 で 3 回読み、作業ツリーは自分側と同じと分かる。共通祖先の同じ番地も引ける', async () => {
+  it('ブックは段を #49 で 2 回読み（共通祖先は読まない）、作業ツリーは自分側と同じと分かる', async () => {
     await conflict('b.xlsx', xlsx(book(1000, 'base')), xlsx(book(1200, 'theirs')), xlsx(book(900, 'ours')));
     const session = await manager.open(dir);
     const { value: view, args } = await logged(() => session.getExcelComparison('b.xlsx'));
-    expect(args).toEqual(['read-worktree', 'cat-file', 'cat-file', 'cat-file']);
+    expect(args).toEqual(['read-worktree', 'cat-file', 'cat-file']);
     expect(view.conflict?.source).toBe('stages');
     expect(view.conflict?.worktree).toBe('ours');
     // ブックは段の方式でセル単位に採れる（docs/07）
@@ -183,7 +182,6 @@ describe('Excel のコンフリクト（決定 34）', () => {
     const sheet = view.comparison.sheets[0];
     if (sheet === undefined) throw new Error('no sheet');
     expect(sheet.changedCells).toBe(2);
-    expect(baseCellOf(view, sheet, 1, 1)?.raw).toBe('1000');
   });
 
   it('ブックのファイル単位の採用は採る側の段を読み直して書き、キャッシュを捨てる', async () => {
@@ -345,6 +343,50 @@ describe('Excel のコンフリクト（決定 34）', () => {
       ['T', '20'],
       ['合計', '=SUM(B1:B3)'],
     ]);
+  });
+
+  it('プレビューでの編集: 値の違わないセル・挿入する相手側の行のセルにも打った値を書く', async () => {
+    const base: BookSpec = { sheets: [{ name: 'S', rows: [['h', 'v'], ['a', 1], ['z', 9]] }] };
+    const theirsBook: BookSpec = { sheets: [{ name: 'S', rows: [['h', 'v'], ['a', 1], ['T', 20], ['z', 9]] }] };
+    const oursBook: BookSpec = { sheets: [{ name: 'S', rows: [['h', 'v'], ['a', 1], ['z', 10]] }] };
+    await conflict('p.xlsx', xlsx(base), xlsx(theirsBook), xlsx(oursBook));
+    const session = await manager.open(dir);
+    const view = await session.getExcelComparison('p.xlsx');
+    const sheet = view.comparison.sheets[0];
+    if (sheet === undefined) throw new Error('no sheet');
+    const tRow = Array.from(sheet.oldRow).findIndex((o, i) => o < 0 && (sheet.newRow[i] ?? -1) >= 0);
+    await session.resolveExcelConflict(view, {
+      kind: 'cells',
+      choices: {
+        ...NO_CHOICES,
+        rest: 'theirs',
+        edits: [
+          // 見出し（値の違わない行）と、挿入する相手側の行
+          { sheet: 0, row: 0, col: 1, value: '値' },
+          { sheet: 0, row: tRow, col: 0, value: 'T2' },
+        ],
+      },
+    });
+    expect(await gridOf('p.xlsx')).toEqual([
+      ['h', '値'],
+      ['a', '1'],
+      ['T2', '20'],
+      ['z', '9'],
+    ]);
+  });
+
+  it('CSV のプレビューでの編集: 挿入する相手側の行にも打った値を書く', async () => {
+    await conflict('e.csv', 'id,v\n1,a\n', 'id,v\n1,a\n2,t\n', 'id,v\n1,b\n');
+    const session = await manager.open(dir);
+    const view = await session.getExcelComparison('e.csv');
+    const sheet = view.comparison.sheets[0];
+    if (sheet === undefined) throw new Error('no sheet');
+    const tRow = Array.from(sheet.oldRow).findIndex((o, i) => o < 0 && (sheet.newRow[i] ?? -1) >= 0);
+    await session.resolveExcelConflict(view, {
+      kind: 'cells',
+      choices: { ...NO_CHOICES, rest: 'theirs', edits: [{ sheet: 0, row: tRow, col: 1, value: 'x' }] },
+    });
+    expect(await readFile(join(dir, 'e.csv'), 'utf8')).toBe('id,v\n1,a\n2,x\n');
   });
 
   it('決めていない違いが残っていれば書かない', async () => {

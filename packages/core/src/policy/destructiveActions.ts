@@ -13,7 +13,8 @@ export type DestructiveAction =
   | 'stash-drop'
   | 'amend-pushed-commit'
   | 'merge-branch'
-  | 'overwrite-conflict-worktree';
+  | 'overwrite-conflict-worktree'
+  | 'abort-merge';
 
 export interface ConfirmationSpec {
   readonly title: string;
@@ -78,6 +79,14 @@ const SPECS: Record<DestructiveAction, ConfirmationSpec> = {
       '作業ツリーのファイルは自分側・相手側のどちらとも違います（衝突の解消中に編集した可能性があります）。採用すると、その編集は失われます（git には残っていないため復元できません）。',
     confirmLabel: '上書きして採用',
     recoverable: false,
+  },
+  /* 対応表 #51（決定 34）。解消の途中経過も、マージで入った変更も作業ツリーから消える */
+  'abort-merge': {
+    title: 'マージをキャンセルしますか？',
+    message:
+      '作業ツリーと index をマージを始める前の状態に戻します。コンフリクトの解消の途中経過と、マージで取り込まれた変更は失われます（もう一度マージすればやり直せます）。',
+    confirmLabel: 'マージをキャンセル',
+    recoverable: true,
   },
   'amend-pushed-commit': {
     title: 'プッシュ済みのコミットを修正しますか？',

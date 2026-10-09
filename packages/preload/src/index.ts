@@ -101,6 +101,7 @@ const bridge: FeatherTreeBridge = {
   excelGetRowDiff: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.excelGetRowDiff, id, path),
   excelResolveConflict: (id: string, req: ExcelResolveRequestDto, confirmed?: boolean) =>
     ipcRenderer.invoke(CHANNELS.excelResolveConflict, id, req, confirmed),
+  mergeAbort: (id: string, confirmed?: boolean) => ipcRenderer.invoke(CHANNELS.mergeAbort, id, confirmed),
   conflictResolve: (id: string, req: ConflictResolveRequest) =>
     ipcRenderer.invoke(CHANNELS.conflictResolve, id, req),
   logGetPage: (id: string, skip: number) => ipcRenderer.invoke(CHANNELS.logGetPage, id, skip),

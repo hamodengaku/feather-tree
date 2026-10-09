@@ -130,9 +130,17 @@ class Choices {
   readonly #cols = new Map<string, ExcelConflictSide>();
   readonly #rest: ExcelConflictSide | null;
   readonly #edits = new Map<string, string>();
+  /** 行ごとの打った値（列 → 値）。値の違う所に限らず、出力のどのセルにも当てる（docs/07 7.3）。 */
+  readonly #rowEdits = new Map<string, Map<number, string>>();
 
   constructor(choices: ExcelCellChoices) {
-    for (const e of choices.edits ?? []) this.#edits.set(`${String(e.sheet)}:${String(e.row)}:${String(e.col)}`, e.value);
+    for (const e of choices.edits ?? []) {
+      this.#edits.set(`${String(e.sheet)}:${String(e.row)}:${String(e.col)}`, e.value);
+      const key = `${String(e.sheet)}:${String(e.row)}`;
+      const row = this.#rowEdits.get(key) ?? new Map<number, string>();
+      row.set(e.col, e.value);
+      this.#rowEdits.set(key, row);
+    }
     for (const c of choices.cells) this.#cells.set(`${String(c.sheet)}:${String(c.row)}:${String(c.col)}`, c.side);
     for (const r of choices.rows) this.#rows.set(`${String(r.sheet)}:${String(r.row)}`, r.side);
     for (const c of choices.cols) this.#cols.set(`${String(c.sheet)}:${String(c.col)}`, c.side);
@@ -165,6 +173,11 @@ class Choices {
       this.#cols.get(`${s}:${String(col)}`) ??
       this.#rest
     );
+  }
+
+  /** その行に打った値（列 → 値）。無ければ空。 */
+  editsInRow(sheet: number, row: number): ReadonlyMap<number, string> {
+    return this.#rowEdits.get(`${String(sheet)}:${String(row)}`) ?? new Map<number, string>();
   }
 
   /** そのセルに打った値。無ければ undefined。 */
@@ -213,6 +226,38 @@ export function planCsvResolution(
   const plans: CsvRowPlan[] = [];
   let unresolved = 0;
   const starts = hunkStartsOf(sheet);
+
+  const encodeAll = (values: ReadonlyMap<number, string>): Map<number, Uint8Array> => {
+    const out = new Map<number, Uint8Array>();
+    for (const [col, text] of values) {
+      const field = encodeField(text);
+      if (field === null) throw new ConflictUnsupportedError('打った値に、このファイルの文字コードで書けない文字があります。');
+      out.set(col, field);
+    }
+    return out;
+  };
+  /** 片側の行を丸ごと出す。その揃えた行に打った値があれば、その欄だけ差し替える（docs/07 7.3）。 */
+  const pushRow = (kind: 'ours' | 'theirs', row: number, aligned: number, withEdits: boolean): void => {
+    const typed = withEdits ? pick.editsInRow(0, aligned) : new Map<number, string>();
+    if (typed.size === 0) {
+      plans.push({ kind, row });
+      return;
+    }
+    const edits = encodeAll(typed);
+    plans.push(
+      kind === 'ours'
+        ? { kind: 'mixed', oursRow: row, theirsRow: -1, theirsCols: new Set(), edits }
+        : { kind: 'mixed', oursRow: -1, theirsRow: row, theirsCols: new Set(), edits },
+    );
+  };
+  /** 両方を採用: 打った値は自分側の版（無ければ相手側の版）にだけ当てる。 */
+  const pushBoth = (from: number, to: number, order: ExcelBothOrder): void => {
+    for (const r of bothRows(sheet, from, to, order)) {
+      const hasOurs = (sheet.oldRow[r.aligned] ?? -1) >= 0;
+      pushRow(r.kind, r.row, r.aligned, r.kind === 'ours' || !hasOurs);
+    }
+  };
+
   for (let i = 0; i < sheet.oldRow.length; i += 1) {
     const o = sheet.oldRow[i] ?? -1;
     const n = sheet.newRow[i] ?? -1;
@@ -220,7 +265,7 @@ export function planCsvResolution(
     const blk = (starts[i] ?? -1) >= 0 ? pick.block(0, i) : null;
     if (blk !== null) {
       const end = blockEnd(starts, i, blk.end);
-      for (const r of bothRows(sheet, i, end, blk.order)) plans.push({ kind: r.kind, row: r.row });
+      pushBoth(i, end, blk.order);
       i = end - 1;
       continue;
     }
@@ -230,17 +275,17 @@ export function planCsvResolution(
         unresolved += 1;
         continue;
       }
-      if (side === 'ours' && o >= 0) plans.push({ kind: 'ours', row: o });
-      if (side === 'theirs' && n >= 0) plans.push({ kind: 'theirs', row: n });
+      if (side === 'ours' && o >= 0) pushRow('ours', o, i, true);
+      if (side === 'theirs' && n >= 0) pushRow('theirs', n, i, true);
       continue;
     }
     if ((sheet.rowState[i] ?? ROW_SAME) === ROW_SAME) {
-      plans.push({ kind: 'ours', row: o });
+      pushRow('ours', o, i, true);
       continue;
     }
     const rowOrder = pick.rowBoth(0, i);
     if (rowOrder !== null) {
-      for (const r of bothRows(sheet, i, i + 1, rowOrder)) plans.push({ kind: r.kind, row: r.row });
+      pushBoth(i, i + 1, rowOrder);
       continue;
     }
     const changed = changedColumns(oldData?.rows[o]?.cells, sstOld, newData?.rows[n]?.cells, sstNew);
@@ -265,6 +310,8 @@ export function planCsvResolution(
       unresolved += missing;
       continue;
     }
+    // 値の違わない欄に打った値も書く（プレビューでの編集）
+    for (const [col, field] of encodeAll(pick.editsInRow(0, i))) if (!edits.has(col)) edits.set(col, field);
     if (edits.size > 0) plans.push({ kind: 'mixed', oursRow: o, theirsRow: n, theirsCols, edits });
     else if (theirsCols.size === 0) plans.push({ kind: 'ours', row: o });
     else if (fromOurs === 0) plans.push({ kind: 'theirs', row: n });
@@ -457,12 +504,15 @@ export function planXlsxResolution(view: ExcelComparison, choices: ExcelCellChoi
         for (const key of blockedAt.keys()) if (key.startsWith(`${String(i)}:`)) block(i, Number(key.split(':')[1]));
       }
       for (const r of bothRows(sheet, from, to, order)) {
+        // 打った値は自分側の版（無ければ相手側の版）にだけ当てる（docs/07 7.3）
+        const hasOurs = (sheet.oldRow[r.aligned] ?? -1) >= 0;
+        const typed = r.kind === 'ours' || !hasOurs ? pick.editsInRow(s, r.aligned) : new Map<number, string>();
         if (r.kind === 'ours') {
           oursNewIndex[r.row] = rows.length;
-          rows.push({ kind: 'ours', row: r.row, theirsRow: -1, theirsCols: new Set() });
+          rows.push({ kind: 'ours', row: r.row, theirsRow: -1, theirsCols: new Set(), edits: typed });
         } else {
           theirsNewIndex[r.row] = rows.length;
-          rows.push({ kind: 'theirs', row: r.row });
+          rows.push({ kind: 'theirs', row: r.row, edits: typed });
         }
       }
       changed = true;
@@ -505,6 +555,8 @@ export function planXlsxResolution(view: ExcelComparison, choices: ExcelCellChoi
             }
           }
         }
+        // 値の違わないセルに打った値も書く（プレビューでの編集）
+        for (const [col, value] of pick.editsInRow(s, i)) if (!edits.has(col)) edits.set(col, value);
         if (theirsCols.size > 0 || edits.size > 0) changed = true;
         oursNewIndex[o] = rows.length;
         theirsNewIndex[n] = rows.length;
@@ -524,14 +576,16 @@ export function planXlsxResolution(view: ExcelComparison, choices: ExcelCellChoi
       if (side === 'theirs') block(i, -1);
       if (o >= 0) {
         if (side === 'ours') {
+          const typed = pick.editsInRow(s, i);
+          if (typed.size > 0) changed = true;
           oursNewIndex[o] = rows.length;
-          rows.push({ kind: 'ours', row: o, theirsRow: -1, theirsCols: new Set() });
+          rows.push({ kind: 'ours', row: o, theirsRow: -1, theirsCols: new Set(), edits: typed });
         } else {
           changed = true;
         }
       } else if (side === 'theirs') {
         theirsNewIndex[n] = rows.length;
-        rows.push({ kind: 'theirs', row: n });
+        rows.push({ kind: 'theirs', row: n, edits: pick.editsInRow(s, i) });
         changed = true;
       }
     }

@@ -18,16 +18,13 @@ import {
   DEFAULT_LIMITS,
   buildGeometry,
   buildRowDiff,
-  cellSideIn,
   compareWorkbooksSteps,
   inspectXlsx,
   isCsvPath,
   openSpreadsheetSteps,
   splitCsvConflict,
-  type CellSide,
   type ExcelLimits,
   type RowDiff,
-  type SheetComparison,
   type SheetGeometry,
   type SheetInspection,
   type Workbook,
@@ -98,8 +95,6 @@ export interface ExcelConflict {
   /** `markers` のときの衝突ブロックの数。 */
   readonly blocks: number;
   readonly worktree: ExcelWorktreeMatch;
-  /** 共通祖先（ブックの `stages` のときだけ読む。値バー用）。 */
-  readonly base: ExcelSide | null;
   /**
    * セル・行・列単位で採れるか。CSV は `markers` で、ブックは `stages` で（docs/07）、両側とも上限内で読めたとき。
    */
@@ -321,7 +316,7 @@ function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
  *
  * CSV で作業ツリーのマーカーが読めれば、それを解いて両側を作る（git は 0）。マーカーの外は git の 3-way
  * マージの結果なので、違いとして出るのは本当に衝突した所だけになる。それ以外（ブック・マーカーが無い／壊れた
- * CSV）は index の段を #49 で読み、ブックなら共通祖先（`:1:`）も値バー用に読む。
+ * CSV）は index の段を #49 で読む（共通祖先 `:1:` は 2026-10-09 から読まない。値バーに出さなくなったため）。
  */
 async function buildConflictComparison(
   source: ExcelViewSource,
@@ -361,7 +356,6 @@ async function buildConflictComparison(
           markers,
           blocks: split.blocks,
           worktree: 'neither',
-          base: null,
           cellResolvable: oldSide.state === 'ok' && newSide.state === 'ok' && sheetsComplete(comparison),
           fingerprint,
           stageHashes: { ours: null, theirs: null },
@@ -375,8 +369,6 @@ async function buildConflictComparison(
   throwIfAborted(signal);
   const theirs = await readGitSide(source, ctx, 'theirs', path, limits, signal);
   throwIfAborted(signal);
-  // 共通祖先は値バーにだけ出す。CSV は行の対応がずれやすく、同じ番地の値が手掛かりにならないので読まない
-  const base = csv ? null : (await readGitSide(source, ctx, 'base', path, limits, signal)).side;
   throwIfAborted(signal);
 
   let match: ExcelWorktreeMatch;
@@ -404,7 +396,6 @@ async function buildConflictComparison(
       markers,
       blocks: 0,
       worktree: match,
-      base,
       cellResolvable: inspection !== null && ours.side.state === 'ok' && theirs.side.state === 'ok' && sheetsComplete(comparison),
       fingerprint,
       stageHashes: { ours: hashOf(ours.raw), theirs: hashOf(theirs.raw) },
@@ -438,23 +429,6 @@ export function geometryOf(view: ExcelComparison, sheetIndex: number): SheetGeom
   const geometry = buildGeometry(sheet);
   view.geometry.set(sheetIndex, geometry);
   return geometry;
-}
-
-/**
- * 共通祖先の同じ番地のセル（決定 34。値バー用）。共通祖先を読んでいなければ null。
- *
- * **行の対応付けはしない。** 自分側（無ければ相手側）の行番号・同じ名前のシートのセルを引くだけなので、
- * 行の挿入があると別の行を指しうる（画面にもそう出す）。
- */
-export function baseCellOf(view: ExcelComparison, sheet: SheetComparison, alignedRow: number, col: number): CellSide | null {
-  const base = view.conflict?.base?.workbook ?? null;
-  if (base === null) return null;
-  const name = sheet.old?.name ?? sheet.new?.name ?? null;
-  const baseSheet = base.sheets.find((s) => s.name === name) ?? null;
-  const o = sheet.oldRow[alignedRow] ?? -1;
-  const row = o >= 0 ? o : (sheet.newRow[alignedRow] ?? -1);
-  if (baseSheet === null || row < 0) return null;
-  return cellSideIn(base, baseSheet.data, row, col);
 }
 
 /** 行単位の比較（差分モードの C 案）。文脈行数ごとに 1 回だけ作る。 */

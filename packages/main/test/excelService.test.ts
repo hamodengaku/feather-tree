@@ -311,12 +311,11 @@ describe('Excel 差分の IPC ハンドラ', () => {
   }
 
   describe('コンフリクトの採用（決定 34）', () => {
-    it('未マージのブックは自分側 ｜ 相手側の比較で、共通祖先が値バーに載る', async () => {
+    it('未マージのブックは自分側 ｜ 相手側の比較になる', async () => {
       const id = await openWithConflict('b.xlsx', xlsx(book(1000)), xlsx(book(1200)), xlsx(book(900)));
       const view = await service.excelGetView(id, 'b.xlsx');
       expect(view.conflict?.source).toBe('stages');
       expect(view.conflict?.worktree).toBe('ours');
-      expect(view.conflict?.hasBase).toBe(true);
       // ブックもセル単位で採れる（docs/07）。売上シートの B2 だけが違う。メモシートは同じ
       expect(view.conflict?.cellResolvable).toBe(true);
       expect(view.sheets[0]?.conflict).toEqual({ cells: [1, 1], rows: [], blocked: [] });
@@ -324,7 +323,6 @@ describe('Excel 差分の IPC ハンドラ', () => {
       const cell = await service.excelGetCell(id, view.token, 0, 1, 1);
       expect(cell.old?.raw).toBe('900');
       expect(cell.new?.raw).toBe('1200');
-      expect(cell.base?.raw).toBe('1000');
     });
 
     it('古いトークン・不正な側や座標・リポジトリ外のパスは断る', async () => {
@@ -362,6 +360,21 @@ describe('Excel 差分の IPC ハンドラ', () => {
       await expect(service.excelGetSheet(id, view.token, 0)).rejects.toMatchObject({ dto: { kind: 'diff-stale' } });
       const after = await service.excelGetView(id, 'd.csv');
       expect(after.conflict?.markers).toBe('none');
+    });
+
+    it('マージをキャンセルする（#51）は確認を求め、確認後はマージ前に戻る', async () => {
+      const id = await openWithConflict('d.csv', 'a,1\n', 'a,2\n', 'a,3\n');
+      await expect(service.mergeAbort(id)).rejects.toMatchObject({
+        dto: { kind: 'needs-confirmation', confirmation: { action: 'abort-merge' } },
+      });
+      const { args } = await logged(() => service.mergeAbort(id, true));
+      expect(args[0]).toBe('merge');
+      expect(await readFile(join(dir, 'd.csv'), 'utf8')).toBe('a,3\n');
+      const page = await service.statusGetPage(id, { offset: 0, limit: 10, filter: { group: 'changes' } });
+      expect(page.entries.some((e) => e.kind === 'unmerged')).toBe(false);
+      // もう一度は取り消せない（取り消せるマージが無い）
+      // （IPC の包みが git-failed と「取り消せるマージがありません」に写す。errorMapping のテストで確かめる）
+      await expect(service.mergeAbort(id, true)).rejects.toMatchObject({ name: 'GitCommandError' });
     });
 
     it('作業ツリーがどちらの側とも違うときのファイル単位の採用は確認を求める', async () => {

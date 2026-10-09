@@ -85,6 +85,12 @@ describe('エラーメッセージのマッピング', () => {
     expect(mapped.exitCode).toBe(1);
   });
 
+  it('取り消せるマージが無い（#51 の merge --abort）は、その旨の文言にする', () => {
+    const mapped = mapGitStderr('fatal: There is no merge to abort (MERGE_HEAD missing).', 128);
+    expect(mapped.kind).toBe('git-failed');
+    expect(mapped.message).toContain('取り消せるマージがありません');
+  });
+
   it('未知の stderr は汎用メッセージ + 原文', () => {
     const mapped = mapGitStderr('fatal: something totally unexpected', 128);
     expect(mapped.kind).toBe('git-failed');

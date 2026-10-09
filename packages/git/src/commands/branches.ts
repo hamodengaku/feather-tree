@@ -114,6 +114,18 @@ export async function mergeBranch(ctx: GitContext, branchName: string): Promise<
   if (exit.code !== 0) throw new GitCommandError(['merge'], exit.code, exit.stderr, stdout);
 }
 
+/**
+ * 対応表 #51: マージを取り消す（`merge --abort`。決定 34）。
+ *
+ * 作業ツリーと index をマージを始める前に戻す。取り消せるマージが無い（MERGE_HEAD が無い。stash の適用や
+ * rebase による衝突）と git が断るので、そのまま GitCommandError にする（errorMapping が文言にする）。
+ * 名前を渡さないので `--` は要らない。
+ */
+export async function abortMerge(ctx: GitContext): Promise<void> {
+  const { exit, stdout } = await runGitText(commandFor(ctx, [...WRITE_PREFIX, 'merge', '--abort']), ctx.signal);
+  if (exit.code !== 0) throw new GitCommandError(['merge', '--abort'], exit.code, exit.stderr, stdout);
+}
+
 /** `branch -d` が「未マージ」を理由に断った（`-D` なら消せる）。 */
 export class BranchNotMergedError extends Error {
   readonly branchName: string;

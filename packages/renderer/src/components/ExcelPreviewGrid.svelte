@@ -35,6 +35,12 @@
     /** 揃えた行 [start, end) の中身が要る（上のグリッドと同じページの取り方）。 */
     onneed: (start: number, end: number) => void;
     onselect: (aligned: number, col: number) => void;
+    /** ダブルクリックで編集を始める（打った値を受け取る版のセルだけ）。side はそのセルに出ている側。 */
+    ondblcell?: (index: number, aligned: number, col: number, side: 'old' | 'new') => void;
+    /** プレビューで編集中のセル。 */
+    editing?: { readonly index: number; readonly col: number; readonly value: string } | null;
+    oneditcommit?: (value: string) => void;
+    oneditcancel?: () => void;
   }
 
   let {
@@ -53,7 +59,33 @@
     onscroll,
     onneed,
     onselect,
+    ondblcell,
+    editing = null,
+    oneditcommit,
+    oneditcancel,
   }: Props = $props();
+
+  /** 打った値を受け取る版か（自分側の版。自分側に行が無ければ相手側の版）。docs/07 7.3。 */
+  function receivesEdits(pr: PreviewRow): boolean {
+    return pr.side === 'ours' || (layout.oldRow[pr.aligned] ?? -1) < 0;
+  }
+
+  function focusEditor(el: HTMLInputElement): void {
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }
+
+  function editorKey(e: KeyboardEvent): void {
+    const target = e.currentTarget as HTMLInputElement;
+    e.stopPropagation();
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      oneditcommit?.(target.value);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      oneditcancel?.();
+    }
+  }
 
   let scrollTop = $state(0);
   let scrollLeft = $state(0);
@@ -135,6 +167,13 @@
   function cellOf(pr: PreviewRow, c: number): PreviewCell | null {
     const row = rows.get(pr.aligned);
     if (row === undefined) return null;
+    // 打った値（値の違わないセルも含む）。受け取る版にだけ出す
+    const typed = receivesEdits(pr) ? editOf(pr.aligned, c) : undefined;
+    if (typed !== undefined) {
+      const which = pr.side === 'ours' ? 'old' : 'new';
+      const base = fromSide(which === 'old' ? row.old : row.new, which, c, 'edited');
+      return { text: typed, kind: 2, style: base?.style ?? 0, side: which, mark: 'edited' };
+    }
     if (pr.undecided) return fromSide(pr.side === 'ours' ? row.old : row.new, pr.side === 'ours' ? 'old' : 'new', c, 'undecided');
     if (!pr.mixed) return fromSide(pr.side === 'ours' ? row.old : row.new, pr.side === 'ours' ? 'old' : 'new', c, pr.side === 'theirs' && row.old !== null ? 'theirs' : '');
     if (!row.changedCols.includes(c)) return fromSide(row.old, 'old', c, '');
@@ -182,13 +221,25 @@
     }
     return Math.max(0, lo);
   }
-  function pick(e: MouseEvent): void {
-    if (canvas === null || previewRows.length === 0) return;
+  function hit(e: MouseEvent): { k: number; c: number; pr: PreviewRow } | null {
+    if (canvas === null || previewRows.length === 0) return null;
     const rect = canvas.getBoundingClientRect();
     const k = Math.min(previewRows.length - 1, indexAt(rowOffsets, e.clientY - rect.top));
     const c = Math.min(Math.max(0, layout.colCount - 1), indexAt(colOffsets, e.clientX - rect.left));
     const pr = previewRows[k];
-    if (pr !== undefined) onselect(pr.aligned, c);
+    return pr === undefined ? null : { k, c, pr };
+  }
+
+  function pick(e: MouseEvent): void {
+    const at = hit(e);
+    if (at !== null) onselect(at.pr.aligned, at.c);
+  }
+
+  function dbl(e: MouseEvent): void {
+    const at = hit(e);
+    if (at === null || ondblcell === undefined || !receivesEdits(at.pr)) return;
+    const cell = cellOf(at.pr, at.c);
+    ondblcell(at.k, at.pr.aligned, at.c, cell?.side ?? (at.pr.side === 'ours' ? 'old' : 'new'));
   }
 </script>
 
@@ -239,6 +290,7 @@
       onmousedown={(e) => {
         if (e.button === 0) pick(e);
       }}
+      ondblclick={dbl}
     >
       {#each visibleRows as k (k)}
         {@const pr = previewRows[k]}
@@ -267,6 +319,23 @@
           {/each}
         {/if}
       {/each}
+
+      {#if editing !== null && editing.index < previewRows.length}
+        <input
+          class="editor"
+          aria-label="セルの値（Enter で決定・Esc で取り消し）"
+          value={editing.value}
+          style:top={top(editing.index) + 'px'}
+          style:left={left(editing.col) + 'px'}
+          style:min-width={width(editing.col) + 'px'}
+          style:height={height(editing.index) + 'px'}
+          use:focusEditor
+          onkeydown={editorKey}
+          onmousedown={(e) => e.stopPropagation()}
+          ondblclick={(e) => e.stopPropagation()}
+          onblur={(e) => oneditcommit?.((e.currentTarget as HTMLInputElement).value)}
+        />
+      {/if}
     </div>
   </div>
 </div>
@@ -406,6 +475,18 @@
   .cell.undecided {
     outline: 2px dashed var(--app-text-conflict);
     outline-offset: -2px;
+  }
+
+  .editor {
+    position: absolute;
+    box-sizing: border-box;
+    z-index: 4;
+    padding: 0 3px;
+    border: 2px solid var(--app-accent);
+    background: var(--app-excel-paper);
+    color: var(--app-excel-ink);
+    font: inherit;
+    outline: none;
   }
 
   .cell.selected-row {

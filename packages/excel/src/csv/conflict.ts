@@ -269,11 +269,17 @@ export function composeCsv(ours: Uint8Array, theirs: Uint8Array, plans: readonly
           parts.push(edited);
           continue;
         }
-        const fromTheirs = plan.theirsCols.has(c);
+        // 自分側の行が無い（oursRow = -1。相手側の行に打った値を当てる）なら、欄はすべて相手側から
+        const fromTheirs = plan.theirsCols.has(c) || ro === undefined;
         const span = (fromTheirs ? rt : ro)?.fields[c];
         if (span !== undefined) parts.push((fromTheirs ? theirs : ours).subarray(span[0], span[1]));
       }
-      terminator = ro === undefined ? new Uint8Array(0) : ours.subarray(ro.terminator[0], ro.terminator[1]);
+      terminator =
+        ro !== undefined
+          ? ours.subarray(ro.terminator[0], ro.terminator[1])
+          : rt !== undefined
+            ? theirs.subarray(rt.terminator[0], rt.terminator[1])
+            : new Uint8Array(0);
     } else {
       const source = plan.kind === 'ours' ? ours : theirs;
       const record = (plan.kind === 'ours' ? o : t).records[plan.row];

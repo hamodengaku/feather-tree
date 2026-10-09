@@ -37,7 +37,6 @@ const MARKERS: ExcelConflictDto = {
   markers: 'split',
   blocks: 1,
   worktree: 'neither',
-  hasBase: false,
   cellResolvable: true,
   fingerprint: 'f1',
 };
@@ -409,5 +408,26 @@ describe('Excel 差分モードの採用（決定 34）', () => {
     ex.chooseBothSelection('ours-theirs');
     ex.chooseSelection('ours');
     expect(ex.conflictHunks.size).toBe(0);
+  });
+
+  it('マージをキャンセルするは確認ダイアログを経て送り直す', async () => {
+    const { app, bridge } = await boot(MARKERS);
+    bridge.requireConfirmation = 'mergeAbort';
+    await app.abortMerge();
+    expect(app.pendingConfirmation?.confirmation.action).toBe('abort-merge');
+    await app.acceptConfirmation();
+    expect(bridge.calls.filter((c) => c.name === 'mergeAbort').map((c) => c.args[1])).toEqual([undefined, true]);
+  });
+
+  it('プレビューのセルは、値の違わないセルでも編集でき、両方を採用を外さない', async () => {
+    const { app } = await boot(MARKERS);
+    const ex = app.excel;
+    ex.pointerDown('row', 1, 0, { shift: false, ctrl: false });
+    ex.chooseBothSelection('ours-theirs');
+    await ex.startPreviewEdit(0, 0, 0, 'old');
+    expect(ex.editing).toMatchObject({ row: 0, col: 0, side: 'preview', previewIndex: 0, value: '1' });
+    ex.commitEdit('見出し');
+    expect(ex.conflictEdits.get('1:0:0')).toBe('見出し');
+    expect(ex.conflictHunks.size).toBe(1);
   });
 });

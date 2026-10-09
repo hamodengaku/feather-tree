@@ -83,6 +83,8 @@ export const CHANNELS = {
   excelGetRowDiff: 'excel:getRowDiff',
   // Excel 差分モードのコンフリクトの採用（決定 34）
   excelResolveConflict: 'excel:resolveConflict',
+  // マージを取り消す（対応表 #51。決定 34）
+  mergeAbort: 'merge:abort',
 
   remoteList: 'remote:list',
   remoteFetch: 'remote:fetch',
@@ -706,8 +708,6 @@ export interface ExcelConflictDto {
   readonly blocks: number;
   /** 作業ツリーが今どちらの側と同じか（stages のとき）。markers では neither（マーカー入り）。 */
   readonly worktree: 'ours' | 'theirs' | 'neither' | 'absent' | 'unknown';
-  /** 値バーに共通祖先を出せるか（ブックの stages のときだけ読む）。 */
-  readonly hasBase: boolean;
   readonly cellResolvable: boolean;
   /** 作業ツリーの指紋。これが同じ間だけ、renderer は選んだ採り方を持ち越す。 */
   readonly fingerprint: string;
@@ -865,8 +865,6 @@ export interface ExcelCellDetailDto {
   readonly old: ExcelCellSideDto | null;
   readonly new: ExcelCellSideDto | null;
   readonly changed: boolean;
-  /** 共通祖先の同じ番地のセル（未マージのブックだけ。決定 34）。行の対応付けはしない。 */
-  readonly base?: ExcelCellSideDto | null;
 }
 
 export type ExcelRowDiffKindDto = 'same' | 'changed' | 'added' | 'removed';
@@ -1371,6 +1369,11 @@ export interface FeatherTreeBridge {
     req: ExcelResolveRequestDto,
     confirmed?: boolean,
   ): Promise<Result<ExcelResolveResultDto>>;
+  /**
+   * 対応表 #51: マージを取り消す（`merge --abort`）。確認が要る（abort-merge）。作業ツリーと index が
+   * マージ前に戻るので status を取り直して返す。取り消せるマージが無ければ git-failed。
+   */
+  mergeAbort(id: string, confirmed?: boolean): Promise<Result<ExcelResolveResultDto>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
   /** 対応表 #49: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
   logHeadMessage(id: string): Promise<Result<string | null>>;

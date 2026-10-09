@@ -56,6 +56,7 @@ export {
   deleteBranch,
   listBranches,
   mergeBranch,
+  abortMerge,
   switchBranch,
   switchToRemoteBranch,
 } from './commands/branches.js';

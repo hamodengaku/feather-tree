@@ -125,7 +125,15 @@ export class ExcelState {
   /** ドラッグ中なら、押し始めた所の種類。 */
   #drag: 'cell' | 'row' | 'col' | null = null;
   /** 編集中のセル（入力欄を出すグリッドと、今の文字）。 */
-  editing = $state<{ sheet: number; row: number; col: number; side: 'old' | 'new'; value: string } | null>(null);
+  editing = $state<{
+    sheet: number;
+    row: number;
+    col: number;
+    /** 入力欄を出す所。preview はマージ後のプレビュー（previewIndex の行）。 */
+    side: 'old' | 'new' | 'preview';
+    value: string;
+    previewIndex?: number;
+  } | null>(null);
 
   #listSeq = 0;
   #viewSeq = 0;
@@ -528,10 +536,27 @@ export class ExcelState {
     if (editing === null) return;
     this.editing = null;
     this.conflictEdits.set(cellKey(editing.sheet, editing.row, editing.col), value);
-    // 打った値を効かせるため、その行・ブロックの「両方を採用」は外す（そちらが強い）
+    // プレビューでの編集は、出力の行（両方を採用で分かれた版を含む）にそのまま当てる（docs/07 7.3）
+    if (editing.side === 'preview') return;
+    // 上のグリッドでの編集は、その行・範囲の「両方を採用」を外して打った値を効かせる（そちらが強い）
     const rowKey = lineKey(editing.sheet, editing.row);
     if (isBothOrder(this.conflictRows.get(rowKey))) this.conflictRows.delete(rowKey);
     this.#dropBlocks(editing.sheet, editing.row, editing.row + 1);
+  }
+
+  /**
+   * マージ後のプレビューのセルを編集し始める（docs/07 7.3）。値の違う所に限らず、どのセルでもよい。
+   * 始めの値は打った値、無ければそのセルに出ている側（side）の生の値（値バーと同じものを取りに行く）。
+   */
+  async startPreviewEdit(previewIndex: number, aligned: number, col: number, side: 'old' | 'new'): Promise<void> {
+    const sheet = this.sheet;
+    if (sheet === null) return;
+    await this.selectCell(aligned, col);
+    if (this.sheet !== sheet) return;
+    const cell = this.cell !== null && this.cell.row === aligned && this.cell.col === col ? this.cell : null;
+    const typed = this.editOf(aligned, col);
+    const raw = side === 'new' ? cell?.new?.raw : cell?.old?.raw;
+    this.editing = { sheet, row: aligned, col, side: 'preview', value: typed ?? raw ?? '', previewIndex };
   }
 
   cancelEdit(): void {

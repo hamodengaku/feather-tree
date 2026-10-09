@@ -214,6 +214,7 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     service.excelGetCell(id, token, sheet, row, col),
   );
   bind(CHANNELS.excelGetRowDiff, (id: string, path: string) => service.excelGetRowDiff(id, path));
+  bind(CHANNELS.mergeAbort, (id: string, confirmed?: boolean) => service.mergeAbort(id, confirmed));
   bind(
     CHANNELS.excelResolveConflict,
     (id: string, req: Parameters<Service['excelResolveConflict']>[1], confirmed?: boolean) =>

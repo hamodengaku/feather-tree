@@ -969,6 +969,10 @@ export class FakeBridge {
         if (this.excelToken === '') this.excelViewFor(path);
         return this.#later(ok(this.excelRowDiffFor(path)));
       },
+      mergeAbort: (id: string, confirmed?: boolean) => {
+        this.record('mergeAbort', id, confirmed);
+        return Promise.resolve(this.guard('mergeAbort', 'abort-merge', confirmed, { statusSeq: 1 }));
+      },
       excelResolveConflict: (id: string, req: ExcelResolveRequestDto, confirmed?: boolean) => {
         this.record('excelResolveConflict', id, req, confirmed);
         return Promise.resolve(this.guard('excelResolveConflict', 'overwrite-conflict-worktree', confirmed, { statusSeq: 1 }));

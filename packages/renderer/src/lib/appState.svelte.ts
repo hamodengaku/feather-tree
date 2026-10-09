@@ -1349,6 +1349,17 @@ export class AppState {
     );
   }
 
+  /**
+   * マージを取り消す（対応表 #51。決定 34）。main が 'needs-confirmation'（abort-merge）で断ってくるので、
+   * 確認してから送り直す。作業ツリーと index がマージ前に戻るので、status と表示中のものを読み直す。
+   */
+  abortMerge(): Promise<void> {
+    return this.#operate(
+      (confirmed) => this.#ft.mergeAbort(this.#id(), confirmed),
+      () => this.#operate(() => this.#ft.mergeAbort(this.#id(), true)),
+    );
+  }
+
   /** 差分ペインの「Excel モードで開く」。main のキャッシュに当たるので git は走らない。 */
   async openInExcelMode(path: string): Promise<void> {
     this.excel.preselect(path);

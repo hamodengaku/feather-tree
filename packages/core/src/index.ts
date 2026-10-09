@@ -72,7 +72,6 @@ export type { CloneOutcome, CloneTarget, SessionInfo } from './session/sessionMa
 
 // Excel 差分（決定 33）
 export {
-  baseCellOf,
   buildExcelComparison,
   excelToken,
   geometryOf,
