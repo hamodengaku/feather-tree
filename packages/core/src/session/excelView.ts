@@ -35,6 +35,7 @@ import {
   GitCommandError,
   GitNotFoundError,
   WorktreeFileLockedError,
+  filteredSpec,
   readBlobFiltered,
   readWorktreeBytes,
   type BlobBytes,
@@ -257,7 +258,7 @@ async function readGitSide(
   signal: AbortSignal | undefined,
 ): Promise<ReadSide> {
   try {
-    const read = await source.track(['cat-file', SPEC_LABEL[revision] + path], () =>
+    const read = await source.track(['cat-file', filteredSpec(revision) + path], () =>
       readBlobFiltered(ctx, revision, path, { maxBytes: limits.maxFileBytes }),
     );
     return { side: await openSide(path, read, limits, signal), raw: read?.kind === 'ok' ? read.bytes : null };
@@ -270,9 +271,6 @@ async function readGitSide(
     return { side: { state: 'unavailable', workbook: null, bytes: 0, detail }, raw: null };
   }
 }
-
-/** 実行ログに出すトークンの頭（#49 の引数と同じ形）。 */
-const SPEC_LABEL: Record<FilteredRevision, string> = { HEAD: 'HEAD:', base: ':1:', ours: ':2:', theirs: ':3:' };
 
 /** 作業ツリーを読んで開く（git は 0）。他のアプリが掴んでいれば locked。 */
 async function readWorktreeSide(
@@ -368,7 +366,6 @@ async function buildConflictComparison(
   const ours = await readGitSide(source, ctx, 'ours', path, limits, signal);
   throwIfAborted(signal);
   const theirs = await readGitSide(source, ctx, 'theirs', path, limits, signal);
-  throwIfAborted(signal);
   throwIfAborted(signal);
 
   let match: ExcelWorktreeMatch;

@@ -14,8 +14,6 @@
  */
 
 import {
-  FORMULA_ARRAY,
-  FORMULA_DATA_TABLE,
   ROW_CHANGED,
   ROW_SAME,
   XlsxMergeError,
@@ -23,6 +21,7 @@ import {
   composeCsv,
   decodeCsv,
   encodeCsvField,
+  isArrayFormulaCell,
   mergeXlsx,
   splitCsvConflict,
   type CellData,
@@ -39,78 +38,36 @@ import {
   writeWorktreeBytes,
   type GitContext,
 } from '@feathertree/git';
+import {
+  SheetRules,
+  blockedChoicesOf,
+  choiceMapsOf,
+  planSheet,
+  type BlockReason,
+  type BlockedTarget,
+  type BothOrder,
+  type ConflictChoices,
+  type ConflictSide,
+  type ConflictTargets,
+} from '@feathertree/conflict-plan';
 import { ConflictUnsupportedError, StaleDiffError } from './sessionErrors.js';
 import { hashOf, worktreeFingerprint, type ExcelComparison } from './excelView.js';
 import { zlibDeflater, zlibInflater } from './zlibInflater.js';
 
-export type ExcelConflictSide = 'ours' | 'theirs';
+/*
+ * 採り方の型と規則は @feathertree/conflict-plan（renderer のプレビュー・未決定の数と同じもの）。
+ * ここでは core の名前で別名にして、main・テストの参照を保つ。
+ */
+export type ExcelConflictSide = ConflictSide;
 
 /** 両方を採用するときの並び（git の ours → theirs / theirs → ours）。docs/07 7.2。 */
-export type ExcelBothOrder = 'ours-theirs' | 'theirs-ours';
-
-/** 行の指定。両側にある行なら、両方を採用して 2 行に分けられる。 */
-export type ExcelRowChoice = ExcelConflictSide | ExcelBothOrder;
+export type ExcelBothOrder = BothOrder;
 
 /**
- * セル・行・列単位の採り方。優先順位はセル > 行 > 列 > 残りすべて。
- * sheet は比較の中のシートの添字、行・列は揃えた座標。rest はブック全体に効く。
+ * セル・行・列単位の採り方。sheet は比較の中のシートの添字、行・列は揃えた座標。rest はブック全体に効く。
+ * 優先順位は 両方を採用 > 打った値 > セル > 行 > 列 > 残りすべて（conflict-plan の SheetRules）。
  */
-export interface ExcelCellChoices {
-  readonly cells: readonly { readonly sheet: number; readonly row: number; readonly col: number; readonly side: ExcelConflictSide }[];
-  readonly rows: readonly { readonly sheet: number; readonly row: number; readonly side: ExcelRowChoice }[];
-  readonly cols: readonly { readonly sheet: number; readonly col: number; readonly side: ExcelConflictSide }[];
-  readonly rest: ExcelConflictSide | null;
-  /**
-   * 利用者が打った値（docs/07 7.1）。両側にある行の値の違うセルにだけ効き、セルの指定より強い。
-   * 省略は「無し」（CSV の第 1 段階からの呼び出しの互換）。
-   */
-  readonly edits?: readonly { readonly sheet: number; readonly row: number; readonly col: number; readonly value: string }[];
-  /**
-   * 続いた行の範囲 [row, end) で両方を採用する（docs/07 7.2）。範囲はブロック（違いのある行が続く区間）の中に
-   * 収まるよう切り詰める。範囲の中のどの指定よりも強い。
-   */
-  readonly hunks?: readonly { readonly sheet: number; readonly row: number; readonly end: number; readonly order: ExcelBothOrder }[];
-}
-
-const isBoth = (c: ExcelRowChoice | undefined): c is ExcelBothOrder => c === 'ours-theirs' || c === 'theirs-ours';
-
-/**
- * 揃えた行ごとの、属するブロックの先頭（違いの無い行は -1）。ブロックは違いのある行が続く区間。
- * renderer も同じ区切り方をする（決めるべき所の行が続く区間）。
- */
-export function hunkStartsOf(sheet: SheetComparison): Int32Array {
-  const out = new Int32Array(sheet.oldRow.length).fill(-1);
-  let start = -1;
-  for (let i = 0; i < sheet.oldRow.length; i += 1) {
-    if ((sheet.rowState[i] ?? ROW_SAME) === ROW_SAME) {
-      start = -1;
-      continue;
-    }
-    if (start < 0) start = i;
-    out[i] = start;
-  }
-  return out;
-}
-
-/** 両方を採用する範囲の終わり（含まない）。i を含むブロックの中に切り詰め、少なくとも 1 行。 */
-function blockEnd(starts: Int32Array, i: number, end: number): number {
-  let e = i + 1;
-  while (e < end && e < starts.length && starts[e] === starts[i]) e += 1;
-  return e;
-}
-
-/** 両方を採用するブロック・行を、出す行の並びにする（自分側の行どうし・相手側の行どうしの順は保つ）。 */
-function bothRows(sheet: SheetComparison, from: number, to: number, order: ExcelBothOrder): { kind: 'ours' | 'theirs'; row: number; aligned: number }[] {
-  const ours: { kind: 'ours'; row: number; aligned: number }[] = [];
-  const theirs: { kind: 'theirs'; row: number; aligned: number }[] = [];
-  for (let i = from; i < to; i += 1) {
-    const o = sheet.oldRow[i] ?? -1;
-    const n = sheet.newRow[i] ?? -1;
-    if (o >= 0) ours.push({ kind: 'ours', row: o, aligned: i });
-    if (n >= 0) theirs.push({ kind: 'theirs', row: n, aligned: i });
-  }
-  return order === 'ours-theirs' ? [...ours, ...theirs] : [...theirs, ...ours];
-}
+export type ExcelCellChoices = ConflictChoices;
 
 export type ExcelResolveRequest =
   | { readonly kind: 'file'; readonly side: ExcelConflictSide }
@@ -122,92 +79,30 @@ export interface ExcelResolveSource {
   track<T>(args: readonly string[], run: () => Promise<T>): Promise<T>;
 }
 
-/** 採り方の引き。 */
-class Choices {
-  readonly #cells = new Map<string, ExcelConflictSide>();
-  readonly #rows = new Map<string, ExcelRowChoice>();
-  readonly #hunks = new Map<string, { readonly end: number; readonly order: ExcelBothOrder }>();
-  readonly #cols = new Map<string, ExcelConflictSide>();
-  readonly #rest: ExcelConflictSide | null;
-  readonly #edits = new Map<string, string>();
-  /** 行ごとの打った値（列 → 値）。値の違う所に限らず、出力のどのセルにも当てる（docs/07 7.3）。 */
-  readonly #rowEdits = new Map<string, Map<number, string>>();
-
-  constructor(choices: ExcelCellChoices) {
-    for (const e of choices.edits ?? []) {
-      this.#edits.set(`${String(e.sheet)}:${String(e.row)}:${String(e.col)}`, e.value);
-      const key = `${String(e.sheet)}:${String(e.row)}`;
-      const row = this.#rowEdits.get(key) ?? new Map<number, string>();
-      row.set(e.col, e.value);
-      this.#rowEdits.set(key, row);
-    }
-    for (const c of choices.cells) this.#cells.set(`${String(c.sheet)}:${String(c.row)}:${String(c.col)}`, c.side);
-    for (const r of choices.rows) this.#rows.set(`${String(r.sheet)}:${String(r.row)}`, r.side);
-    for (const c of choices.cols) this.#cols.set(`${String(c.sheet)}:${String(c.col)}`, c.side);
-    this.#rest = choices.rest;
-    for (const h of choices.hunks ?? []) this.#hunks.set(`${String(h.sheet)}:${String(h.row)}`, { end: h.end, order: h.order });
-  }
-
-  /** その行から始まる「両方を採用」の範囲。無ければ null。 */
-  block(sheet: number, row: number): { readonly end: number; readonly order: ExcelBothOrder } | null {
-    return this.#hunks.get(`${String(sheet)}:${String(row)}`) ?? null;
-  }
-
-  /** 行で両方を採用するなら、その並び（両側にある行だけ）。 */
-  rowBoth(sheet: number, row: number): ExcelBothOrder | null {
-    const c = this.#rows.get(`${String(sheet)}:${String(row)}`);
-    return isBoth(c) ? c : null;
-  }
-
-  /** 行の指定のうち、片側を採るもの。 */
-  #rowSide(sheet: number, row: number): ExcelConflictSide | undefined {
-    const c = this.#rows.get(`${String(sheet)}:${String(row)}`);
-    return isBoth(c) ? undefined : c;
-  }
-
-  cell(sheet: number, row: number, col: number): ExcelConflictSide | null {
-    const s = String(sheet);
-    return (
-      this.#cells.get(`${s}:${String(row)}:${String(col)}`) ??
-      this.#rowSide(sheet, row) ??
-      this.#cols.get(`${s}:${String(col)}`) ??
-      this.#rest
-    );
-  }
-
-  /** その行に打った値（列 → 値）。無ければ空。 */
-  editsInRow(sheet: number, row: number): ReadonlyMap<number, string> {
-    return this.#rowEdits.get(`${String(sheet)}:${String(row)}`) ?? new Map<number, string>();
-  }
-
-  /** そのセルに打った値。無ければ undefined。 */
-  edit(sheet: number, row: number, col: number): string | undefined {
-    return this.#edits.get(`${String(sheet)}:${String(row)}:${String(col)}`);
-  }
-
-  /**
-   * 片側にしか無い行（行 > 残りすべて）。両方を採用する指定は「その行を残す」（行がある側を採る）と同じ。
-   */
-  row(sheet: number, row: number, presentSide: ExcelConflictSide): ExcelConflictSide | null {
-    const c = this.#rows.get(`${String(sheet)}:${String(row)}`);
-    if (isBoth(c)) return presentSide;
-    return c ?? this.#rest;
-  }
-}
-
 export interface CsvPlanResult {
   readonly plans: readonly CsvRowPlan[];
   /** 決まっていない違い（セル、または片側にしか無い行）の数。 */
   readonly unresolved: number;
 }
 
+const NO_COLS: ReadonlySet<number> = new Set();
+
+/** シートごとの採り方の規則。セル単位で採れない・衝突セルが上限を超えた比較では断る。 */
+function rulesOf(view: ExcelComparison, choices: ExcelCellChoices): SheetRules[] {
+  const targets = conflictTargetsOf(view);
+  if (targets === null) {
+    throw new ConflictUnsupportedError('違いが多すぎるため、セル単位では採用できません。ファイル単位で採用してください。');
+  }
+  const maps = choiceMapsOf(choices);
+  return targets.map((t, s) => new SheetRules(s, t, maps));
+}
+
 /**
- * CSV の揃えた行ごとの採り方を決める（純関数）。シートは 1 枚（添字 0）。
+ * CSV の採り方を、出すレコードの並びにする（純関数）。シートは 1 枚（添字 0）。行の並びは planSheet（docs/07 7.2・7.3）。
  *
- *   - 両側にある行: 値の違う列ごとに「セル > 行 > 列 > 残り」で側を引く。全部が同じ側なら、その側の
- *     レコードを丸ごと使う（元のバイトのまま）。混ざれば欄を継ぎ合わせる。違いが無ければ自分側
- *   - 片側にしか無い行: 「行 > 残り」で決める（列やセルの指定は効かない。行を入れるか入れないかの話なので）。
- *     その行がある側を採れば入れ、無い側を採れば落とす
+ *   - 両側にある値の違う行: 値の違う列が全部同じ側なら、その側のレコードを丸ごと使う（元のバイトのまま）。
+ *     混ざれば欄を継ぎ合わせる。打った値はその欄を差し替える
+ *   - それ以外の行（違いの無い行・両方を採用の版・採った片側だけの行）: その側のレコード。打った値があれば欄を差し替える
  */
 export function planCsvResolution(
   view: ExcelComparison,
@@ -216,16 +111,9 @@ export function planCsvResolution(
   encodeField: (text: string) => Uint8Array | null = () => null,
 ): CsvPlanResult {
   const sheet = view.comparison.sheets[0];
-  if (sheet === undefined || view.comparison.sheets.length !== 1) return { plans: [], unresolved: 0 };
-  const pick = new Choices(choices);
-  const oldData = sheet.old?.data ?? null;
-  const newData = sheet.new?.data ?? null;
-  const sstOld = view.comparison.old?.sst ?? [];
-  const sstNew = view.comparison.new?.sst ?? [];
-
-  const plans: CsvRowPlan[] = [];
-  let unresolved = 0;
-  const starts = hunkStartsOf(sheet);
+  const rules = rulesOf(view, choices)[0];
+  if (sheet === undefined || rules === undefined || view.comparison.sheets.length !== 1) return { plans: [], unresolved: 0 };
+  const plan = planSheet(rules, sheet);
 
   const encodeAll = (values: ReadonlyMap<number, string>): Map<number, Uint8Array> => {
     const out = new Map<number, Uint8Array>();
@@ -236,116 +124,41 @@ export function planCsvResolution(
     }
     return out;
   };
-  /** 片側の行を丸ごと出す。その揃えた行に打った値があれば、その欄だけ差し替える（docs/07 7.3）。 */
-  const pushRow = (kind: 'ours' | 'theirs', row: number, aligned: number, withEdits: boolean): void => {
-    const typed = withEdits ? pick.editsInRow(0, aligned) : new Map<number, string>();
-    if (typed.size === 0) {
-      plans.push({ kind, row });
-      return;
-    }
-    const edits = encodeAll(typed);
-    plans.push(
-      kind === 'ours'
-        ? { kind: 'mixed', oursRow: row, theirsRow: -1, theirsCols: new Set(), edits }
-        : { kind: 'mixed', oursRow: -1, theirsRow: row, theirsCols: new Set(), edits },
-    );
-  };
-  /** 両方を採用: 打った値は自分側の版（無ければ相手側の版）にだけ当てる。 */
-  const pushBoth = (from: number, to: number, order: ExcelBothOrder): void => {
-    for (const r of bothRows(sheet, from, to, order)) {
-      const hasOurs = (sheet.oldRow[r.aligned] ?? -1) >= 0;
-      pushRow(r.kind, r.row, r.aligned, r.kind === 'ours' || !hasOurs);
-    }
-  };
 
-  for (let i = 0; i < sheet.oldRow.length; i += 1) {
-    const o = sheet.oldRow[i] ?? -1;
-    const n = sheet.newRow[i] ?? -1;
-    // 両方を採用する範囲: 先頭の行で範囲（ブロックの中に切り詰め）を出して、末尾まで飛ばす
-    const blk = (starts[i] ?? -1) >= 0 ? pick.block(0, i) : null;
-    if (blk !== null) {
-      const end = blockEnd(starts, i, blk.end);
-      pushBoth(i, end, blk.order);
-      i = end - 1;
+  const plans: CsvRowPlan[] = [];
+  for (const r of plan.rows) {
+    if (r.kind === 'undecided') continue;
+    if (r.kind === 'cells') {
+      if (r.undecidedCols.size > 0) continue;
+      const edits = encodeAll(r.edits);
+      if (edits.size > 0) plans.push({ kind: 'mixed', oursRow: r.row, theirsRow: r.theirsRow, theirsCols: r.theirsCols, edits });
+      else if (r.theirsCols.size === 0) plans.push({ kind: 'ours', row: r.row });
+      else if (r.wholeTheirs) plans.push({ kind: 'theirs', row: r.theirsRow });
+      else plans.push({ kind: 'mixed', oursRow: r.row, theirsRow: r.theirsRow, theirsCols: r.theirsCols });
       continue;
     }
-    if (o < 0 || n < 0) {
-      const side = pick.row(0, i, o >= 0 ? 'ours' : 'theirs');
-      if (side === null) {
-        unresolved += 1;
-        continue;
-      }
-      if (side === 'ours' && o >= 0) pushRow('ours', o, i, true);
-      if (side === 'theirs' && n >= 0) pushRow('theirs', n, i, true);
+    if (r.edits.size === 0) {
+      plans.push({ kind: r.side, row: r.row });
       continue;
     }
-    if ((sheet.rowState[i] ?? ROW_SAME) === ROW_SAME) {
-      pushRow('ours', o, i, true);
-      continue;
-    }
-    const rowOrder = pick.rowBoth(0, i);
-    if (rowOrder !== null) {
-      pushBoth(i, i + 1, rowOrder);
-      continue;
-    }
-    const changed = changedColumns(oldData?.rows[o]?.cells, sstOld, newData?.rows[n]?.cells, sstNew);
-    const theirsCols = new Set<number>();
-    const edits = new Map<number, Uint8Array>();
-    let fromOurs = 0;
-    let missing = 0;
-    for (const col of changed) {
-      const typed = pick.edit(0, i, col);
-      if (typed !== undefined) {
-        const field = encodeField(typed);
-        if (field === null) throw new ConflictUnsupportedError('打った値に、このファイルの文字コードで書けない文字があります。');
-        edits.set(col, field);
-        continue;
-      }
-      const side = pick.cell(0, i, col);
-      if (side === null) missing += 1;
-      else if (side === 'theirs') theirsCols.add(col);
-      else fromOurs += 1;
-    }
-    if (missing > 0) {
-      unresolved += missing;
-      continue;
-    }
-    // 値の違わない欄に打った値も書く（プレビューでの編集）
-    for (const [col, field] of encodeAll(pick.editsInRow(0, i))) if (!edits.has(col)) edits.set(col, field);
-    if (edits.size > 0) plans.push({ kind: 'mixed', oursRow: o, theirsRow: n, theirsCols, edits });
-    else if (theirsCols.size === 0) plans.push({ kind: 'ours', row: o });
-    else if (fromOurs === 0) plans.push({ kind: 'theirs', row: n });
-    else plans.push({ kind: 'mixed', oursRow: o, theirsRow: n, theirsCols });
+    const edits = encodeAll(r.edits);
+    plans.push(
+      r.side === 'ours'
+        ? { kind: 'mixed', oursRow: r.row, theirsRow: -1, theirsCols: NO_COLS, edits }
+        : { kind: 'mixed', oursRow: -1, theirsRow: r.row, theirsCols: NO_COLS, edits },
+    );
   }
-  return { plans, unresolved };
+  return { plans, unresolved: plan.unresolved };
 }
 
 /** 画面に一覧で送る衝突セルの上限（ブック全体）。超えたら送らず、ファイル単位で採ってもらう。 */
 export const MAX_CONFLICT_CELLS = 200_000;
 
-/**
- * 相手側を採れない理由（docs/07 3.2）。
- *  - sheet-structure … 片側にしか無いシート
- *  - array-formula   … 配列数式・データテーブルのセル、その範囲の内側への行の挿入・削除
- *  - table-header    … テーブルの見出しのセル・見出しの行の削除
- *  - unsafe-part     … 行のずらし方が分からない部品（ピボット等）を持つシートの行の挿入・削除
- */
-export type ExcelBlockReason = 'sheet-structure' | 'array-formula' | 'table-header' | 'unsafe-part';
+export type ExcelBlockReason = BlockReason;
+export type ExcelBlockedTarget = BlockedTarget;
 
-export interface ExcelBlockedTarget {
-  readonly row: number;
-  /** -1 なら行全体（片側にしか無い行）。 */
-  readonly col: number;
-  readonly reason: ExcelBlockReason;
-}
-
-export interface ExcelConflictTargets {
-  /** 両側にある行で値が違うセル（揃えた行, 列 の組の平らな並び）。 */
-  readonly cells: readonly number[];
-  /** 片側にしか無い揃えた行（行全体で決める）。 */
-  readonly rows: readonly number[];
-  readonly blocked: readonly ExcelBlockedTarget[];
-}
+/** 1 シートの「決めるべき所」と「相手側を採れない所」（conflict-plan の ConflictTargets）。 */
+export type ExcelConflictTargets = ConflictTargets & { readonly bothBlocked: BlockReason | null };
 
 const BLOCK_MESSAGE: Record<ExcelBlockReason, string> = {
   'sheet-structure': 'シートの追加・削除は相手側を採れません。ファイル単位で採用してください。',
@@ -353,9 +166,6 @@ const BLOCK_MESSAGE: Record<ExcelBlockReason, string> = {
   'table-header': 'テーブルの見出しは相手側を採れません。ファイル単位で採用してください。',
   'unsafe-part': 'このシートは行のずらし方が分からない部品（ピボット等）を持つため、行の挿入・削除はできません。ファイル単位で採用してください。',
 };
-
-const isArrayCell = (cell: CellData | undefined): boolean =>
-  cell?.formulaKind === FORMULA_ARRAY || cell?.formulaKind === FORMULA_DATA_TABLE;
 
 function cellOf(sheet: SheetComparison, side: 'old' | 'new', row: number, col: number): CellData | undefined {
   if (row < 0) return undefined;
@@ -375,6 +185,7 @@ function targetsOfSheet(view: ExcelComparison, sheet: SheetComparison, isBook: b
     isBook && sheet.old !== null ? view.conflict?.inspection?.get(sheet.old.name.toLowerCase()) : undefined;
   const arrays = insp?.arrayRanges ?? [];
   const headers = insp?.tableHeaders ?? [];
+  const unsafe = (insp?.unsafeRelations.length ?? 0) > 0;
 
   // 揃えた行ごとの直前・直後の自分側の行（挿入点が配列数式の内側かを見る）
   let lastOurs = -1;
@@ -397,7 +208,7 @@ function targetsOfSheet(view: ExcelComparison, sheet: SheetComparison, isBook: b
       for (const col of changedColumns(sheet.old?.data?.rows[o]?.cells, sstOld, sheet.new?.data?.rows[n]?.cells, sstNew)) {
         cells.push(i, col);
         if (!isBook) continue;
-        if (isArrayCell(cellOf(sheet, 'old', o, col)) || isArrayCell(cellOf(sheet, 'new', n, col)) ||
+        if (isArrayFormulaCell(cellOf(sheet, 'old', o, col)) || isArrayFormulaCell(cellOf(sheet, 'new', n, col)) ||
             arrays.some((a) => o >= a.r1 && o <= a.r2 && col >= a.c1 && col <= a.c2)) {
           blocked.push({ row: i, col, reason: 'array-formula' });
         } else if (headers.some((h) => h.row === o && col >= h.c1 && col <= h.c2)) {
@@ -415,7 +226,7 @@ function targetsOfSheet(view: ExcelComparison, sheet: SheetComparison, isBook: b
     }
     if (!paired) {
       blocked.push({ row: i, col: -1, reason: 'sheet-structure' });
-    } else if ((insp?.unsafeRelations.length ?? 0) > 0) {
+    } else if (unsafe) {
       blocked.push({ row: i, col: -1, reason: 'unsafe-part' });
     } else if (o >= 0 && headers.some((h) => h.row === o)) {
       blocked.push({ row: i, col: -1, reason: 'table-header' });
@@ -424,14 +235,25 @@ function targetsOfSheet(view: ExcelComparison, sheet: SheetComparison, isBook: b
     }
     if (o >= 0) lastOurs = o;
   }
-  return { cells, rows, blocked };
+  // 両方を採用は相手側の行の挿入になる。シートの追加・削除、行のずらし方が分からないシートでは採れない
+  const bothBlocked: BlockReason | null = !isBook ? null : !paired ? 'sheet-structure' : unsafe ? 'unsafe-part' : null;
+  return { cells, rows, blocked, bothBlocked };
 }
+
+const targetsCache = new WeakMap<ExcelComparison, ExcelConflictTargets[] | null>();
 
 /**
  * シートごとの「決めるべき所」と「相手側を採れない所」（決定 34）。セル単位で採れない比較・
- * 衝突セルが上限を超えたときは null。renderer が未決定の数・次の未決定・採れない理由を出すのに使う。
+ * 衝突セルが上限を超えたときは null。renderer が未決定の数・採れない理由を出すのにも使う。比較ごとに 1 回だけ作る。
  */
 export function conflictTargetsOf(view: ExcelComparison): ExcelConflictTargets[] | null {
+  if (targetsCache.has(view)) return targetsCache.get(view) ?? null;
+  const out = buildTargets(view);
+  targetsCache.set(view, out);
+  return out;
+}
+
+function buildTargets(view: ExcelComparison): ExcelConflictTargets[] | null {
   const conflict = view.conflict;
   if (conflict?.cellResolvable !== true) return null;
   const isBook = conflict.source === 'stages';
@@ -449,158 +271,69 @@ export function conflictTargetsOf(view: ExcelComparison): ExcelConflictTargets[]
 export interface XlsxPlanResult {
   readonly sheets: readonly XlsxSheetMerge[];
   readonly unresolved: number;
-  /** 相手側を採れない所で相手側が選ばれていれば、その理由。 */
+  /** 相手側を採れない所で相手側（打った値・両方を採用）が選ばれていれば、その理由。 */
   readonly blocked: string | null;
 }
 
 /**
- * ブックの採り方を、シートごとの行の並びと行の対応にする（docs/07 5.1）。
+ * ブックの採り方を、シートごとの行の並びと行の対応にする（docs/07 5.1）。行の並びは planSheet。
  *
  * 両側にある行は必ず出す（違う列のうち相手側を採ったものを差し替える）。片側にしか無い行は、
  * その行がある側を採れば出し、無い側を採れば出さない（自分側の行なら削除、相手側の行なら挿入しない）。
  */
 export function planXlsxResolution(view: ExcelComparison, choices: ExcelCellChoices): XlsxPlanResult {
-  const pick = new Choices(choices);
-  const targets = conflictTargetsOf(view);
+  const rules = rulesOf(view, choices);
+  const first = blockedChoicesOf(rules).first;
   const sheets: XlsxSheetMerge[] = [];
   let unresolved = 0;
-  let blocked: string | null = null;
-  const sstOld = view.comparison.old?.sst ?? [];
-  const sstNew = view.comparison.new?.sst ?? [];
 
   view.comparison.sheets.forEach((sheet, s) => {
-    const blockedAt = new Map<string, ExcelBlockReason>();
-    for (const b of targets?.[s]?.blocked ?? []) blockedAt.set(`${String(b.row)}:${String(b.col)}`, b.reason);
-    const block = (row: number, col: number): void => {
-      const reason = blockedAt.get(`${String(row)}:${String(col)}`);
-      if (reason !== undefined) blocked ??= BLOCK_MESSAGE[reason];
-    };
-
+    const sheetRules = rules[s];
+    if (sheetRules === undefined) return;
     if (sheet.old === null || sheet.new === null) {
-      for (let i = 0; i < sheet.oldRow.length; i += 1) {
-        const side = pick.row(s, i, sheet.old !== null ? 'ours' : 'theirs');
-        // 両方を採用するのも、シートを足す・消すことになる
-        if (pick.block(s, i) !== null) blocked ??= BLOCK_MESSAGE['sheet-structure'];
-        if (side === null) unresolved += 1;
-        else if (side === 'theirs') blocked ??= BLOCK_MESSAGE['sheet-structure'];
-      }
+      // 片側にしか無いシートは自分側のまま（相手側・両方を採用は採れない所として上で断る）
+      unresolved += sheetRules.unresolved();
       return;
     }
+    const plan = planSheet(sheetRules, sheet);
+    unresolved += plan.unresolved;
 
     const oursCount = maxOf(sheet.oldRow) + 1;
     const theirsCount = maxOf(sheet.newRow) + 1;
     const oursNewIndex = new Int32Array(oursCount).fill(-1);
     const theirsNewIndex = new Int32Array(theirsCount).fill(-1);
     const rows: OutRow[] = [];
-    let changed = false;
-    const starts = hunkStartsOf(sheet);
-    const insp = view.conflict?.inspection?.get(sheet.old.name.toLowerCase());
-    const unsafe = (insp?.unsafeRelations.length ?? 0) > 0;
-
-    /** 両方を採用して出す行（相手側の行は挿入になる）。採れない所を含めば断る。 */
-    const emitBoth = (from: number, to: number, order: ExcelBothOrder): void => {
-      for (let i = from; i < to; i += 1) {
-        if (unsafe) blocked ??= BLOCK_MESSAGE['unsafe-part'];
-        for (const key of blockedAt.keys()) if (key.startsWith(`${String(i)}:`)) block(i, Number(key.split(':')[1]));
-      }
-      for (const r of bothRows(sheet, from, to, order)) {
-        // 打った値は自分側の版（無ければ相手側の版）にだけ当てる（docs/07 7.3）
-        const hasOurs = (sheet.oldRow[r.aligned] ?? -1) >= 0;
-        const typed = r.kind === 'ours' || !hasOurs ? pick.editsInRow(s, r.aligned) : new Map<number, string>();
-        if (r.kind === 'ours') {
-          oursNewIndex[r.row] = rows.length;
-          rows.push({ kind: 'ours', row: r.row, theirsRow: -1, theirsCols: new Set(), edits: typed });
-        } else {
-          theirsNewIndex[r.row] = rows.length;
-          rows.push({ kind: 'theirs', row: r.row, edits: typed });
-        }
-      }
-      changed = true;
-    };
-
-    for (let i = 0; i < sheet.oldRow.length; i += 1) {
-      const o = sheet.oldRow[i] ?? -1;
-      const n = sheet.newRow[i] ?? -1;
-      const blk = (starts[i] ?? -1) >= 0 ? pick.block(s, i) : null;
-      if (blk !== null) {
-        const end = blockEnd(starts, i, blk.end);
-        emitBoth(i, end, blk.order);
-        i = end - 1;
-        continue;
-      }
-      if (o >= 0 && n >= 0 && (sheet.rowState[i] ?? ROW_SAME) !== ROW_SAME) {
-        const rowOrder = pick.rowBoth(s, i);
-        if (rowOrder !== null) {
-          emitBoth(i, i + 1, rowOrder);
-          continue;
-        }
-      }
-      if (o >= 0 && n >= 0) {
-        const theirsCols = new Set<number>();
-        const edits = new Map<number, string>();
-        if ((sheet.rowState[i] ?? ROW_SAME) !== ROW_SAME) {
-          for (const col of changedColumns(sheet.old.data?.rows[o]?.cells, sstOld, sheet.new.data?.rows[n]?.cells, sstNew)) {
-            const typed = pick.edit(s, i, col);
-            if (typed !== undefined) {
-              // 打った値も、配列数式・テーブルの見出しには書けない（相手側を採るのと同じ扱い）
-              block(i, col);
-              edits.set(col, typed);
-              continue;
-            }
-            const side = pick.cell(s, i, col);
-            if (side === null) unresolved += 1;
-            else if (side === 'theirs') {
-              block(i, col);
-              theirsCols.add(col);
-            }
-          }
-        }
-        // 値の違わないセルに打った値も書く（プレビューでの編集）
-        for (const [col, value] of pick.editsInRow(s, i)) if (!edits.has(col)) edits.set(col, value);
-        if (theirsCols.size > 0 || edits.size > 0) changed = true;
-        oursNewIndex[o] = rows.length;
-        theirsNewIndex[n] = rows.length;
-        rows.push({ kind: 'ours', row: o, theirsRow: n, theirsCols, edits });
-        continue;
-      }
-      const side = pick.row(s, i, o >= 0 ? 'ours' : 'theirs');
-      if (side === null) {
-        unresolved += 1;
+    for (const p of plan.rows) {
+      const at = rows.length;
+      if (p.kind === 'undecided') {
         // 決まっていない間は自分側のまま並べておく（行の対応を作るため。書き込みは unresolved で止まる）
-        if (o >= 0) {
-          oursNewIndex[o] = rows.length;
-          rows.push({ kind: 'ours', row: o, theirsRow: -1, theirsCols: new Set() });
+        if (p.side === 'ours') {
+          oursNewIndex[p.row] = at;
+          rows.push({ kind: 'ours', row: p.row, theirsRow: -1, theirsCols: NO_COLS });
         }
         continue;
       }
-      if (side === 'theirs') block(i, -1);
-      if (o >= 0) {
-        if (side === 'ours') {
-          const typed = pick.editsInRow(s, i);
-          if (typed.size > 0) changed = true;
-          oursNewIndex[o] = rows.length;
-          rows.push({ kind: 'ours', row: o, theirsRow: -1, theirsCols: new Set(), edits: typed });
-        } else {
-          changed = true;
-        }
-      } else if (side === 'theirs') {
-        theirsNewIndex[n] = rows.length;
-        rows.push({ kind: 'theirs', row: n, edits: pick.editsInRow(s, i) });
-        changed = true;
+      if (p.side === 'theirs') {
+        theirsNewIndex[p.row] = at;
+        rows.push({ kind: 'theirs', row: p.row, edits: p.edits });
+        continue;
       }
+      oursNewIndex[p.row] = at;
+      if (p.theirsRow >= 0) theirsNewIndex[p.theirsRow] = at;
+      rows.push({ kind: 'ours', row: p.row, theirsRow: p.theirsRow, theirsCols: p.theirsCols, edits: p.edits });
     }
 
     sheets.push({
       oursName: sheet.old.name,
       theirsName: sheet.new.name,
-      rows: changed ? rows : null,
+      rows: plan.touched ? rows : null,
       oursNewIndex,
       oursTailShift: rows.length - oursCount,
       theirsNewIndex,
       theirsTailShift: rows.length - theirsCount,
     });
   });
-  return { sheets, unresolved, blocked };
+  return { sheets, unresolved, blocked: first === null ? null : BLOCK_MESSAGE[first.reason] };
 }
 
 /**

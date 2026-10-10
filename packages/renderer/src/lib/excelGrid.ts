@@ -116,6 +116,21 @@ export function mergeRects(flat: readonly number[]): MergeRect[] {
   return out;
 }
 
+/** 画素の箱（キャンバスの左上から）。 */
+export interface Box {
+  readonly top: number;
+  readonly left: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** 累積和の上で、行 [r1, r2]・列 [c1, c2]（両端を含む）を覆う箱。範囲・結合・選択・入力欄に使う。 */
+export function rectOf(rowOffsets: Float64Array, colOffsets: Float64Array, r: { r1: number; c1: number; r2: number; c2: number }): Box {
+  const top = rowOffsets[r.r1] ?? 0;
+  const left = colOffsets[r.c1] ?? 0;
+  return { top, left, width: (colOffsets[r.c2 + 1] ?? left) - left, height: (rowOffsets[r.r2 + 1] ?? top) - top };
+}
+
 /** 見えている範囲 [rowStart, rowEnd) × [colStart, colEnd) と交わる結合。 */
 export function visibleMerges(
   rects: readonly MergeRect[],

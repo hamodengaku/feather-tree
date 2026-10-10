@@ -2,16 +2,17 @@
   /*
    * Excel 差分モードのコンフリクトの帯（決定 34。配置は docs/07 7.0）。値バーの上に出す。
    *
-   * 置くもの: 「コンフリクト」の印、マージをキャンセルする（対応表 #51。確認あり）、未決定の数、次の未決定へ、
-   * 指定をすべて外す、書き込む。セル・行・列の採り方は選択と右クリックで、残りすべては右クリックで決める。
+   * 置くもの: 「コンフリクト」の印と、右端にマージをキャンセルする（対応表 #51。確認あり）・適用。
+   * セル・行・列の採り方は選択と右クリックで、残りすべては右クリックで決める。未決定の数はシートタブに出る。
    * ファイル単位の採用は左右のペインの見出しの右端（ExcelPane）。
    *
-   * 相手側を採れない所（docs/07 3.2）に相手側が指定されている間は書き込めない（その所へ移るボタンを出す）。
-   * 書き込むのは作業ツリーだけで、解決済みにするのは差分モードでのステージ（決定 30 と同じ）。
+   * 相手側を採れない所（docs/07 3.2）に相手側が指定されている間は適用できない（その所へ移るボタンを出す）。
+   * 適用で書き換えるのは作業ツリーだけで、解決済みにするのは差分モードでのステージ（決定 30 と同じ）。
    */
   import type { ExcelConflictDto, ExcelViewDto } from '@feathertree/ipc';
   import { app } from '../lib/appState.svelte.js';
-  import { blockedChoices, toChoicesDto, unresolvedCount } from '../lib/excelConflict.js';
+  import { blockedChoicesOf, unresolvedCount } from '@feathertree/conflict-plan';
+  import { bookRules } from '../lib/excelConflict.js';
 
   interface Props {
     view: ExcelViewDto;
@@ -22,11 +23,13 @@
   const ex = app.excel;
 
   const cellMode = $derived(conflict.cellResolvable && view.sheets.length > 0 && view.sheets.every((s) => s.conflict != null));
-  const unresolved = $derived(unresolvedCount(view.sheets, ex.choices));
-  const blocked = $derived(blockedChoices(view.sheets, ex.choices));
+  /** ブック全体の採り方の規則（書き込みと同じ）。どれかのシートがセル単位で採れなければ null。 */
+  const rules = $derived(bookRules(view.sheets, ex.choices));
+  const unresolved = $derived(rules === null ? null : unresolvedCount(rules));
+  const blocked = $derived(rules === null ? { count: 0, first: null } : blockedChoicesOf(rules));
 
   function writeCells(): void {
-    void app.resolveExcelConflict({ kind: 'cells', choices: toChoicesDto(ex.choices) });
+    void app.resolveExcelConflict({ kind: 'cells', choices: ex.choices.toDto() });
   }
 
   /** 相手側を採れない所に相手側が指定されている最初の所へ。 */
@@ -34,14 +37,15 @@
     const first = blocked.first;
     if (first === null) return;
     if (first.sheet !== ex.sheet) await ex.selectSheet(first.sheet);
-    await ex.selectCell(first.row, first.col);
+    // 行全体の所（col -1）は先頭の列
+    await ex.selectCell(first.row, Math.max(0, first.col));
   }
 
   const writeTitle = $derived(
     unresolved !== 0
-      ? 'すべての違いを決めると書き込めます'
+      ? `未決定が ${String(unresolved ?? 0)} 件あります。すべての違いを決めると適用できます`
       : blocked.count > 0
-        ? 'theirs を採れない所に theirs が指定されています'
+        ? '相手側を採れない所に相手側（または打った値・両方を採用）が指定されています'
         : '決めた内容で作業ツリーのファイルを書き換えます（解決済みにするには、差分モードでステージしてください）',
   );
 </script>
@@ -51,22 +55,19 @@
     class="badge"
     title={cellMode ? undefined : 'このファイルはファイル全体でのみ採用できます（左右のペインの右上のボタン）'}>コンフリクト</span
   >
+  <span class="spacer"></span>
+  {#if cellMode && blocked.count > 0}
+    <button class="blocked-button" onclick={() => void showBlocked()}>相手側を採れない所 {blocked.count} 件</button>
+  {/if}
   <button
     class="abort"
     disabled={app.busy}
     title="作業ツリーと index をマージを始める前に戻します（確認があります）"
     onclick={() => void app.abortMerge()}>マージをキャンセルする</button
   >
-  <span class="spacer"></span>
   {#if cellMode}
-    <span class="count" class:done={unresolved === 0}>未決定 {unresolved ?? 0} 件</span>
-    {#if blocked.count > 0}
-      <button class="blocked-button" onclick={() => void showBlocked()}>theirs を採れない所 {blocked.count} 件</button>
-    {/if}
-    <button onclick={() => void ex.moveToUnresolved()} disabled={unresolved === 0}>次の未決定へ</button>
-    <button onclick={() => ex.clearChoices()}>指定をすべて外す</button>
     <button class="primary" disabled={app.busy || unresolved !== 0 || blocked.count > 0} title={writeTitle} onclick={writeCells}>
-      書き込む
+      適用
     </button>
   {/if}
 </div>
@@ -105,15 +106,6 @@
 
   .spacer {
     flex: 1 1 auto;
-  }
-
-  .count {
-    color: var(--app-text-conflict);
-    font-weight: 700;
-  }
-
-  .count.done {
-    color: var(--app-text-added);
   }
 
   .blocked-button {

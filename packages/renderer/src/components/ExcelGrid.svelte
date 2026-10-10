@@ -9,23 +9,25 @@
    * 見えている行・列だけを描く（可変サイズの仮想化。base-ui の rangeAtOffset）。空のセルも枠線の
    * ために箱を置くが、1080p の画面で 1 枚あたり数百個に収まる。
    *
-   * 列見出し・行見出しは本体のスクロールに合わせて transform で動かす（sticky の入れ子を避ける）。
+   * 枠（見出し・本体・スクロール）は ExcelGridFrame、入力欄は CellEditor（マージ後のプレビューと共有）。
    * 文字はすべてテキスト補間で出す（{@html} は使わない。ファイルの中身は信頼できない入力）。
    */
   import type { ExcelRowDto, ExcelRowSideDto, ExcelSheetLayoutDto } from '@feathertree/ipc';
   import { untrack } from 'svelte';
-  import { rangeAtOffset } from '@feathertree/base-ui';
+  import { indexAtOffset, rangeAtOffset } from '@feathertree/base-ui';
+  import CellEditor from './CellEditor.svelte';
+  import ExcelGridFrame from './ExcelGridFrame.svelte';
   import {
-    HEADER_HEIGHT,
     ROW_ADDED,
     ROW_REMOVED,
     cellIndex,
     columnLabel,
     coveredCells,
     mergeRects,
+    rectOf,
     rowHiddenSomewhere,
     visibleMerges,
-    type MergeRect,
+    type Box,
   } from '../lib/excelGrid.js';
   import type { CellRange } from '../lib/excelConflict.js';
   import type { ExcelSelection } from '../lib/excelState.svelte.js';
@@ -107,24 +109,12 @@
   let canvas = $state<HTMLDivElement | null>(null);
   let lastHover = { row: -1, col: -1 };
 
-  /** 累積和の中で pos を含む添字（幅・高さ 0 の非表示は飛ばして手前を返す）。 */
-  function indexAt(offsets: Float64Array, pos: number): number {
-    let lo = 0;
-    let hi = offsets.length - 2;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if ((offsets[mid] ?? 0) <= pos) lo = mid;
-      else hi = mid - 1;
-    }
-    return Math.max(0, lo);
-  }
-
   /** マウスの位置の揃えた行・列。結合セルの中なら左上のセル。 */
   function hit(e: MouseEvent): { row: number; col: number } | null {
     if (canvas === null || layout.rowCount === 0) return null;
     const rect = canvas.getBoundingClientRect();
-    const row = Math.min(layout.rowCount - 1, indexAt(rowOffsets, e.clientY - rect.top));
-    const col = Math.min(Math.max(0, layout.colCount - 1), indexAt(colOffsets, e.clientX - rect.left));
+    const row = Math.min(layout.rowCount - 1, indexAtOffset(rowOffsets, e.clientY - rect.top));
+    const col = Math.min(Math.max(0, layout.colCount - 1), indexAtOffset(colOffsets, e.clientX - rect.left));
     const m = merges.find((x) => row >= x.r1 && row <= x.r2 && col >= x.c1 && col <= x.c2);
     return m !== undefined ? { row: m.r1, col: m.c1 } : { row, col };
   }
@@ -137,34 +127,14 @@
     return ranges.some((x) => c >= x.c1 && c <= x.c2);
   }
 
-  /** 範囲の箱（揃えた座標 → 画素）。 */
-  function rangeBox(r: CellRange): { top: number; left: number; width: number; height: number } {
-    const r2 = Math.min(r.r2, layout.rowCount - 1);
-    const c2 = Math.min(r.c2, Math.max(0, layout.colCount - 1));
-    return {
-      top: top(r.r1),
-      left: left(r.c1),
-      width: (colOffsets[c2 + 1] ?? 0) - left(r.c1),
-      height: (rowOffsets[r2 + 1] ?? 0) - top(r.r1),
-    };
-  }
-
-  /** 入力欄が出たら焦点を移し、中身を選ぶ（打てばそのまま置き換わる）。 */
-  function focusEditor(el: HTMLInputElement): void {
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  }
-
-  function editorKey(e: KeyboardEvent): void {
-    const target = e.currentTarget as HTMLInputElement;
-    e.stopPropagation();
-    if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault();
-      oneditcommit?.(target.value);
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      oneditcancel?.();
-    }
+  /** 範囲の箱（揃えた座標 → 画素）。シートの外は切り詰める。 */
+  function rangeBox(r: CellRange): Box {
+    return rectOf(rowOffsets, colOffsets, {
+      r1: r.r1,
+      c1: r.c1,
+      r2: Math.min(r.r2, layout.rowCount - 1),
+      c2: Math.min(r.c2, Math.max(0, layout.colCount - 1)),
+    });
   }
 
   /** このグリッドが表す側（未マージでは old = 自分側、new = 相手側）。 */
@@ -218,13 +188,6 @@
     const end = rowRange.end;
     untrack(() => onneed(start, end));
   });
-
-  function handleScroll(event: Event): void {
-    const target = event.currentTarget as HTMLDivElement;
-    scrollTop = target.scrollTop;
-    scrollLeft = target.scrollLeft;
-    onscroll(scrollTop, scrollLeft);
-  }
 
   function sideOf(r: number): ExcelRowSideDto | null {
     const row = rows.get(r);
@@ -280,283 +243,175 @@
   function width(c: number): number {
     return (colOffsets[c + 1] ?? 0) - (colOffsets[c] ?? 0);
   }
-  function mergeBox(m: MergeRect): { top: number; left: number; width: number; height: number } {
-    return {
-      top: top(m.r1),
-      left: left(m.c1),
-      width: (colOffsets[m.c2 + 1] ?? 0) - left(m.c1),
-      height: (rowOffsets[m.r2 + 1] ?? 0) - top(m.r1),
-    };
-  }
 
   const selectionBox = $derived.by(() => {
     if (selection === null || selection.row >= layout.rowCount || selection.col >= layout.colCount) return null;
     const m = merges.find(
       (x) => selection.row >= x.r1 && selection.row <= x.r2 && selection.col >= x.c1 && selection.col <= x.c2,
     );
-    if (m !== undefined) return mergeBox(m);
-    return { top: top(selection.row), left: left(selection.col), width: width(selection.col), height: height(selection.row) };
+    return rectOf(rowOffsets, colOffsets, m ?? { r1: selection.row, c1: selection.col, r2: selection.row, c2: selection.col });
   });
 </script>
 
-<div
-  class="grid"
-  style:--row-header={rowHeaderWidth + 'px'}
-  style:--col-header={HEADER_HEIGHT + 'px'}
-  style:--cell-font={Math.min(24, Math.max(6, defaultPt)) + 'pt'}
+<ExcelGridFrame
+  {rowHeaderWidth}
+  fontPt={defaultPt}
+  {totalWidth}
+  {totalHeight}
+  label={side === 'old' ? '旧版のシート' : '新版のシート'}
+  bind:viewport
+  bind:canvas
+  bind:scrollTop
+  bind:scrollLeft
+  bind:viewportWidth
+  bind:viewportHeight
+  {onscroll}
+  onmousedown={(e) => {
+    const at = hit(e);
+    if (at !== null) down(e, 'cell', at.row, at.col);
+  }}
+  onmousemove={(e) => {
+    if ((e.buttons & 1) === 0) return;
+    const at = hit(e);
+    if (at !== null && (at.row !== lastHover.row || at.col !== lastHover.col)) {
+      lastHover = at;
+      onpointerenter('cell', at.row, at.col);
+    }
+  }}
+  oncontextmenu={(e) => {
+    const at = hit(e);
+    if (at !== null) context(e, at.row, at.col);
+  }}
+  ondblclick={(e) => {
+    const at = hit(e);
+    if (at !== null) ondblcell?.(at.row, at.col);
+  }}
 >
-  <div class="corner" aria-hidden="true"></div>
+  {#snippet colHeaders()}
+    {#each visibleCols as c (c)}
+      <div
+        class="ch"
+        role="columnheader"
+        tabindex="-1"
+        class:hidden-col={(layout.colHidden[c] ?? 0) !== 0}
+        class:in-range={colSelected(c)}
+        style:left={left(c) + 'px'}
+        style:width={width(c) + 'px'}
+        onmousedown={(e) => down(e, 'col', 0, c)}
+        onmouseenter={() => onpointerenter('col', 0, c)}
+      >
+        {columnLabel(c)}
+      </div>
+    {/each}
+  {/snippet}
 
-  <div class="col-header" aria-hidden="true">
-    <div class="col-header-inner" style:width={totalWidth + 'px'} style:transform={'translateX(' + -scrollLeft + 'px)'}>
+  {#snippet rowHeaders()}
+    {#each visibleRows as r (r)}
+      {@const n = sideRow(r)}
+      <div
+        class="rh {rowTone(r)}"
+        role="rowheader"
+        tabindex="-1"
+        class:changed={(layout.rowState[r] ?? 0) === 1}
+        class:hidden-row={rowHiddenSomewhere(layout, r)}
+        class:in-range={rowSelected(r)}
+        style:top={top(r) + 'px'}
+        style:height={height(r) + 'px'}
+        title={rowHiddenSomewhere(layout, r) ? '非表示の行' : undefined}
+        onmousedown={(e) => down(e, 'row', r, 0)}
+        onmouseenter={() => onpointerenter('row', r, 0)}
+      >
+        {n >= 0 ? n + 1 : ''}
+      </div>
+    {/each}
+  {/snippet}
+
+  {#each visibleRows as r (r)}
+    {@const tone = rowTone(r)}
+    {#if tone !== ''}
+      <div class="row-tone {tone} {pickClass(r, 0, true)}" style:top={top(r) + 'px'} style:height={height(r) + 'px'}></div>
+    {/if}
+    {#if tone !== 'filler'}
       {#each visibleCols as c (c)}
-        <div
-          class="ch"
-          role="columnheader"
-          tabindex="-1"
-          class:hidden-col={(layout.colHidden[c] ?? 0) !== 0}
-          class:in-range={colSelected(c)}
-          style:left={left(c) + 'px'}
-          style:width={width(c) + 'px'}
-          onmousedown={(e) => down(e, 'col', 0, c)}
-          onmouseenter={() => onpointerenter('col', 0, c)}
-        >
-          {columnLabel(c)}
-        </div>
-      {/each}
-    </div>
-  </div>
-
-  <div class="row-header" aria-hidden="true">
-    <div class="row-header-inner" style:height={totalHeight + 'px'} style:transform={'translateY(' + -scrollTop + 'px)'}>
-      {#each visibleRows as r (r)}
-        {@const n = sideRow(r)}
-        <div
-          class="rh {rowTone(r)}"
-          role="rowheader"
-          tabindex="-1"
-          class:changed={(layout.rowState[r] ?? 0) === 1}
-          class:hidden-row={rowHiddenSomewhere(layout, r)}
-          class:in-range={rowSelected(r)}
-          style:top={top(r) + 'px'}
-          style:height={height(r) + 'px'}
-          title={rowHiddenSomewhere(layout, r) ? '非表示の行' : undefined}
-          onmousedown={(e) => down(e, 'row', r, 0)}
-          onmouseenter={() => onpointerenter('row', r, 0)}
-        >
-          {n >= 0 ? n + 1 : ''}
-        </div>
-      {/each}
-    </div>
-  </div>
-
-  <div
-    class="viewport"
-    role="grid"
-    tabindex="-1"
-    aria-label={side === 'old' ? '旧版のシート' : '新版のシート'}
-    bind:this={viewport}
-    bind:clientWidth={viewportWidth}
-    bind:clientHeight={viewportHeight}
-    onscroll={handleScroll}
-  >
-    <!-- 押した・動かした・右クリックした位置から行と列を引く（埋め行・結合セルでも同じに扱う） -->
-    <div
-      class="canvas"
-      role="presentation"
-      style:width={totalWidth + 'px'}
-      style:height={totalHeight + 'px'}
-      bind:this={canvas}
-      onmousedown={(e) => {
-        const at = hit(e);
-        if (at !== null) down(e, 'cell', at.row, at.col);
-      }}
-      onmousemove={(e) => {
-        if ((e.buttons & 1) === 0) return;
-        const at = hit(e);
-        if (at !== null && (at.row !== lastHover.row || at.col !== lastHover.col)) {
-          lastHover = at;
-          onpointerenter('cell', at.row, at.col);
-        }
-      }}
-      oncontextmenu={(e) => {
-        const at = hit(e);
-        if (at !== null) context(e, at.row, at.col);
-      }}
-      ondblclick={(e) => {
-        const at = hit(e);
-        if (at !== null) ondblcell?.(at.row, at.col);
-      }}
-    >
-      {#each visibleRows as r (r)}
-        {@const tone = rowTone(r)}
-        {#if tone !== ''}
-          <div class="row-tone {tone} {pickClass(r, 0, true)}" style:top={top(r) + 'px'} style:height={height(r) + 'px'}></div>
-        {/if}
-        {#if tone !== 'filler'}
-          {#each visibleCols as c (c)}
-            {#if !covered.has(r + ':' + c)}
-              {@const cell = cellText(r, c)}
-              {@const css = cssFor(r, c, cell)}
-              <div
-                class="cell {pickClass(r, c, isChanged(r, c))}"
-                class:changed={isChanged(r, c)}
-                class:filled={css.filled}
-                role="gridcell"
-                tabindex="-1"
-                style={css.text}
-                style:top={top(r) + 'px'}
-                style:left={left(c) + 'px'}
-                style:width={width(c) + 'px'}
-                style:height={height(r) + 'px'}
-                title={cell !== null && cell.text.length > 0 ? cell.text : undefined}
-              >
-                {cell?.text ?? ''}
-              </div>
-            {/if}
-          {/each}
-        {/if}
-      {/each}
-
-      {#each shownMerges as m (m.r1 + ':' + m.c1)}
-        {#if sideRow(m.r1) >= 0}
-          {@const box = mergeBox(m)}
-          {@const cell = cellText(m.r1, m.c1)}
-          {@const css = cssFor(m.r1, m.c1, cell)}
+        {#if !covered.has(r + ':' + c)}
+          {@const cell = cellText(r, c)}
+          {@const css = cssFor(r, c, cell)}
           <div
-            class="cell merged"
-            class:changed={isChanged(m.r1, m.c1)}
+            class="cell {pickClass(r, c, isChanged(r, c))}"
+            class:changed={isChanged(r, c)}
             class:filled={css.filled}
             role="gridcell"
             tabindex="-1"
             style={css.text}
-            style:top={box.top + 'px'}
-            style:left={box.left + 'px'}
-            style:width={box.width + 'px'}
-            style:height={box.height + 'px'}
+            style:top={top(r) + 'px'}
+            style:left={left(c) + 'px'}
+            style:width={width(c) + 'px'}
+            style:height={height(r) + 'px'}
+            title={cell !== null && cell.text.length > 0 ? cell.text : undefined}
           >
             {cell?.text ?? ''}
           </div>
         {/if}
       {/each}
+    {/if}
+  {/each}
 
-      {#each ranges as range, i (i)}
-        {@const box = rangeBox(range)}
-        <div
-          class="range"
-          aria-hidden="true"
-          style:top={box.top + 'px'}
-          style:left={box.left + 'px'}
-          style:width={box.width + 'px'}
-          style:height={box.height + 'px'}
-        ></div>
-      {/each}
+  {#each shownMerges as m (m.r1 + ':' + m.c1)}
+    {#if sideRow(m.r1) >= 0}
+      {@const box = rectOf(rowOffsets, colOffsets, m)}
+      {@const cell = cellText(m.r1, m.c1)}
+      {@const css = cssFor(m.r1, m.c1, cell)}
+      <div
+        class="cell merged"
+        class:changed={isChanged(m.r1, m.c1)}
+        class:filled={css.filled}
+        role="gridcell"
+        tabindex="-1"
+        style={css.text}
+        style:top={box.top + 'px'}
+        style:left={box.left + 'px'}
+        style:width={box.width + 'px'}
+        style:height={box.height + 'px'}
+      >
+        {cell?.text ?? ''}
+      </div>
+    {/if}
+  {/each}
 
-      {#if editing !== null && editing.row < layout.rowCount}
-        {@const box = rangeBox({ r1: editing.row, c1: editing.col, r2: editing.row, c2: editing.col })}
-        <input
-          class="editor"
-          aria-label="セルの値（Enter で決定・Esc で取り消し）"
-          value={editing.value}
-          style:top={box.top + 'px'}
-          style:left={box.left + 'px'}
-          style:min-width={box.width + 'px'}
-          style:height={box.height + 'px'}
-          use:focusEditor
-          onkeydown={editorKey}
-          onmousedown={(e) => e.stopPropagation()}
-          onblur={(e) => oneditcommit?.((e.currentTarget as HTMLInputElement).value)}
-        />
-      {/if}
+  {#each ranges as range, i (i)}
+    {@const box = rangeBox(range)}
+    <div
+      class="range"
+      aria-hidden="true"
+      style:top={box.top + 'px'}
+      style:left={box.left + 'px'}
+      style:width={box.width + 'px'}
+      style:height={box.height + 'px'}
+    ></div>
+  {/each}
 
-      {#if selectionBox !== null}
-        <div
-          class="selection"
-          aria-hidden="true"
-          style:top={selectionBox.top + 'px'}
-          style:left={selectionBox.left + 'px'}
-          style:width={selectionBox.width + 'px'}
-          style:height={selectionBox.height + 'px'}
-        ></div>
-      {/if}
-    </div>
-  </div>
-</div>
+  {#if editing !== null && editing.row < layout.rowCount}
+    <CellEditor
+      value={editing.value}
+      box={rangeBox({ r1: editing.row, c1: editing.col, r2: editing.row, c2: editing.col })}
+      oncommit={oneditcommit}
+      oncancel={oneditcancel}
+    />
+  {/if}
+
+  {#if selectionBox !== null}
+    <div
+      class="selection"
+      aria-hidden="true"
+      style:top={selectionBox.top + 'px'}
+      style:left={selectionBox.left + 'px'}
+      style:width={selectionBox.width + 'px'}
+      style:height={selectionBox.height + 'px'}
+    ></div>
+  {/if}
+</ExcelGridFrame>
 
 <style>
-  .grid {
-    display: grid;
-    grid-template-columns: var(--row-header) minmax(0, 1fr);
-    grid-template-rows: var(--col-header) minmax(0, 1fr);
-    min-width: 0;
-    min-height: 0;
-    background: var(--app-excel-paper);
-    color: var(--app-excel-ink);
-    font-family: var(--app-font-ui);
-    font-size: 12px;
-  }
-
-  .corner {
-    background: var(--app-bg-raised);
-    border-right: 1px solid var(--app-border-strong);
-    border-bottom: 1px solid var(--app-border-strong);
-  }
-
-  .col-header,
-  .row-header {
-    position: relative;
-    overflow: hidden;
-    background: var(--app-bg-raised);
-    color: var(--app-text-secondary);
-  }
-
-  .col-header {
-    border-bottom: 1px solid var(--app-border-strong);
-  }
-
-  .row-header {
-    border-right: 1px solid var(--app-border-strong);
-  }
-
-  .col-header-inner,
-  .row-header-inner {
-    position: absolute;
-    inset: 0 auto auto 0;
-    will-change: transform;
-  }
-
-  .row-header-inner {
-    width: 100%;
-  }
-
-  .col-header-inner {
-    height: 100%;
-  }
-
-  .ch,
-  .rh {
-    position: absolute;
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    white-space: nowrap;
-    font-size: 11px;
-  }
-
-  .ch {
-    top: 0;
-    height: 100%;
-    border-right: 1px solid var(--app-border-subtle);
-  }
-
-  .rh {
-    left: 0;
-    width: 100%;
-    border-bottom: 1px solid var(--app-border-subtle);
-  }
-
   .rh.changed {
     color: var(--app-text-modified);
     font-weight: 700;
@@ -579,23 +434,7 @@
     text-decoration: underline dotted;
   }
 
-  .viewport {
-    position: relative;
-    overflow: auto;
-    min-width: 0;
-    min-height: 0;
-    outline: none;
-  }
-
-  .canvas {
-    position: relative;
-  }
-
   .row-tone {
-    position: absolute;
-    left: 0;
-    right: 0;
-    box-sizing: border-box;
     border-bottom: 1px solid var(--app-excel-grid-line);
   }
 
@@ -616,28 +455,6 @@
       var(--app-excel-filler-stripe) 6px,
       var(--app-excel-filler-stripe) 12px
     );
-  }
-
-  /*
-   * セルは縦向きの flex の箱にして、縦の配置（Excel の既定は下寄せ）を justify-content で表す。
-   * 横の配置・色・罫線などの書式は、検証済みの値だけで組んだ style 属性で上書きする（lib/excelStyle.ts）。
-   */
-  .cell {
-    position: absolute;
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    padding: 0 3px;
-    border-right: 1px solid var(--app-excel-grid-line);
-    border-bottom: 1px solid var(--app-excel-grid-line);
-    overflow: hidden;
-    white-space: pre;
-    text-overflow: clip;
-    font-size: var(--cell-font);
-    line-height: 1.25;
-    cursor: cell;
-    user-select: none;
   }
 
   .cell.merged {
@@ -718,19 +535,6 @@
   /* 打った値で決めたセル（docs/07 7.1） */
   .cell.edited {
     box-shadow: inset 0 0 0 3px var(--app-accent);
-  }
-
-  .editor {
-    position: absolute;
-    box-sizing: border-box;
-    z-index: 4;
-    padding: 0 3px;
-    border: 2px solid var(--app-accent);
-    background: var(--app-excel-paper);
-    color: var(--app-excel-ink);
-    font: inherit;
-    font-size: var(--cell-font);
-    outline: none;
   }
 
   .selection {

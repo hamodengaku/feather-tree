@@ -71,6 +71,7 @@ export type { IdentityField, IdentityKey, IdentityScope, UserIdentity } from './
 export { getCommitFileDiff, getCommitFiles, getHeadMessage, getLog } from './commands/history.js';
 export type { LogOptions } from './commands/history.js';
 export {
+  filteredSpec,
   readBlobFiltered,
   readBlobText,
   readHeadBlobFiltered,

@@ -2,30 +2,30 @@
   /*
    * マージ後のプレビュー（docs/07-xlsx-cell-merge.md 7.3）。左右のグリッドの下に出す、読むだけのグリッド。
    *
-   * 行の並びは lib/excelPreview.ts が今の採り方から作る（書き込みと同じ規則）。セルの値・書式は左右のグリッドが
+   * 行の並びは @feathertree/conflict-plan の planSheet（書き込みと同じもの）。セルの値・書式は左右のグリッドが
    * 読んだ行（揃えた行のページ）から、その行・セルで採った側を引く。行番号は書き込み後のもの。
    *
    * 列の幅は上と同じ累積和を使い、横のスクロールは親が上と同期させる。縦は行の並びが違うので同期しない
-   * （上でセルを選ぶと、親が focusRow でこちらを対応する行へ動かす）。結合セルは描かない。
+   * （上でセルを選ぶと、親が focusRow でこちらを対応する行へ動かす）。行の高さは上と同じ（非表示の行は高さ 0 で
+   * 描かない）。結合セルは描かない。枠は ExcelGridFrame、入力欄は CellEditor（上のグリッドと共有）。
    */
-  import type { ExcelRowDto, ExcelRowSideDto, ExcelSheetLayoutDto, ExcelSheetSummaryDto } from '@feathertree/ipc';
+  import type { PlanRow } from '@feathertree/conflict-plan';
+  import type { ExcelRowDto, ExcelRowSideDto, ExcelSheetLayoutDto } from '@feathertree/ipc';
   import { untrack } from 'svelte';
-  import { buildOffsets, rangeAtOffset } from '@feathertree/base-ui';
-  import { HEADER_HEIGHT, cellIndex, columnLabel } from '../lib/excelGrid.js';
-  import { choiceForCell, type ConflictChoiceState } from '../lib/excelConflict.js';
-  import type { PreviewRow } from '../lib/excelPreview.js';
+  import { buildOffsets, indexAtOffset, rangeAtOffset } from '@feathertree/base-ui';
+  import CellEditor from './CellEditor.svelte';
+  import ExcelGridFrame from './ExcelGridFrame.svelte';
+  import { cellIndex, columnLabel, rectOf } from '../lib/excelGrid.js';
   import { cellCss, styleIndexFor, type CellCss } from '../lib/excelStyle.js';
 
   interface Props {
     layout: ExcelSheetLayoutDto;
-    summary: ExcelSheetSummaryDto | undefined;
-    sheet: number;
-    previewRows: readonly PreviewRow[];
+    previewRows: readonly PlanRow[];
     rows: ReadonlyMap<number, ExcelRowDto>;
+    /** 揃えた行ごとの高さ（上のグリッドと同じ。非表示の行は 0）。 */
+    rowHeights: Float64Array;
     colOffsets: Float64Array;
     rowHeaderWidth: number;
-    choices: ConflictChoiceState;
-    editOf: (row: number, col: number) => string | undefined;
     /** 選んでいる揃えた行（強調する）。 */
     selectedAligned: number | null;
     /** この位置（プレビューの添字）が見えるように動かす。seq が変わるたびに 1 回だけ効く。 */
@@ -45,14 +45,11 @@
 
   let {
     layout,
-    summary,
-    sheet,
     previewRows,
     rows,
+    rowHeights,
     colOffsets,
     rowHeaderWidth,
-    choices,
-    editOf,
     selectedAligned,
     focusRow,
     viewport = $bindable(null),
@@ -65,42 +62,24 @@
     oneditcancel,
   }: Props = $props();
 
-  /** 打った値を受け取る版か（自分側の版。自分側に行が無ければ相手側の版）。docs/07 7.3。 */
-  function receivesEdits(pr: PreviewRow): boolean {
-    return pr.side === 'ours' || (layout.oldRow[pr.aligned] ?? -1) < 0;
-  }
-
-  function focusEditor(el: HTMLInputElement): void {
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  }
-
-  function editorKey(e: KeyboardEvent): void {
-    const target = e.currentTarget as HTMLInputElement;
-    e.stopPropagation();
-    if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault();
-      oneditcommit?.(target.value);
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      oneditcancel?.();
-    }
-  }
-
+  let canvas = $state<HTMLDivElement | null>(null);
   let scrollTop = $state(0);
   let scrollLeft = $state(0);
   let viewportWidth = $state(0);
   let viewportHeight = $state(0);
 
-  const rowOffsets = $derived(buildOffsets(previewRows.map((r) => layout.rowHeight[r.aligned] ?? 20)));
+  const rowOffsets = $derived(buildOffsets(previewRows.map((r) => rowHeights[r.aligned] ?? 20)));
   const totalHeight = $derived(rowOffsets[rowOffsets.length - 1] ?? 0);
   const totalWidth = $derived(colOffsets[colOffsets.length - 1] ?? 0);
   const rowRange = $derived(rangeAtOffset(rowOffsets, scrollTop, viewportHeight, 3));
   const colRange = $derived(rangeAtOffset(colOffsets, scrollLeft, viewportWidth, 2));
 
+  /** 見えている行・列（高さ・幅 0 の非表示は除く）。 */
   const visibleRows = $derived.by(() => {
     const out: number[] = [];
-    for (let k = rowRange.start; k < rowRange.end; k += 1) out.push(k);
+    for (let k = rowRange.start; k < rowRange.end; k += 1) {
+      if ((rowOffsets[k + 1] ?? 0) > (rowOffsets[k] ?? 0)) out.push(k);
+    }
     return out;
   });
   const visibleCols = $derived.by(() => {
@@ -142,21 +121,16 @@
     });
   });
 
-  function handleScroll(event: Event): void {
-    const target = event.currentTarget as HTMLDivElement;
-    scrollTop = target.scrollTop;
-    scrollLeft = target.scrollLeft;
-    onscroll(scrollLeft);
-  }
-
   interface PreviewCell {
     readonly text: string;
     readonly kind: number;
     readonly style: number;
     readonly side: 'old' | 'new';
-    /** '' / theirs（相手側から採った）/ edited / undecided / both（両方を採用で足した相手側の行） */
+    /** '' / theirs（相手側から採った）/ edited / undecided */
     readonly mark: string;
   }
+
+  const sideName = (pr: PlanRow): 'old' | 'new' => (pr.side === 'ours' ? 'old' : 'new');
 
   function fromSide(side: ExcelRowSideDto | null | undefined, which: 'old' | 'new', c: number, mark: string): PreviewCell | null {
     const i = cellIndex(side, c);
@@ -164,31 +138,31 @@
     return { text: side.text[i] ?? '', kind: side.kind[i] ?? 0, style: side.style[i] ?? 0, side: which, mark };
   }
 
-  function cellOf(pr: PreviewRow, c: number): PreviewCell | null {
+  function cellOf(pr: PlanRow, c: number): PreviewCell | null {
     const row = rows.get(pr.aligned);
     if (row === undefined) return null;
-    // 打った値（値の違わないセルも含む）。受け取る版にだけ出す
-    const typed = receivesEdits(pr) ? editOf(pr.aligned, c) : undefined;
+    const which = sideName(pr);
+    const own = which === 'old' ? row.old : row.new;
+    // 打った値（値の違わないセルも含む）。受け取る版にだけ載っている
+    const typed = pr.edits.get(c);
     if (typed !== undefined) {
-      const which = pr.side === 'ours' ? 'old' : 'new';
-      const base = fromSide(which === 'old' ? row.old : row.new, which, c, 'edited');
+      const base = fromSide(own, which, c, 'edited');
       return { text: typed, kind: 2, style: base?.style ?? 0, side: which, mark: 'edited' };
     }
-    if (pr.undecided) return fromSide(pr.side === 'ours' ? row.old : row.new, pr.side === 'ours' ? 'old' : 'new', c, 'undecided');
-    if (!pr.mixed) return fromSide(pr.side === 'ours' ? row.old : row.new, pr.side === 'ours' ? 'old' : 'new', c, pr.side === 'theirs' && row.old !== null ? 'theirs' : '');
-    if (!row.changedCols.includes(c)) return fromSide(row.old, 'old', c, '');
-    const choice = choiceForCell(choices, sheet, pr.aligned, c, summary);
-    if (choice === 'edit') {
-      const base = fromSide(row.old, 'old', c, 'edited');
-      return { text: editOf(pr.aligned, c) ?? '', kind: 2, style: base?.style ?? 0, side: 'old', mark: 'edited' };
+    switch (pr.kind) {
+      case 'undecided':
+        return fromSide(own, which, c, 'undecided');
+      case 'cells':
+        if (pr.theirsCols.has(c)) return fromSide(row.new, 'new', c, 'theirs');
+        return fromSide(row.old, 'old', c, pr.undecidedCols.has(c) ? 'undecided' : '');
+      default:
+        // 両方を採用で足した相手側の版には印を付ける（相手側にしか無い行は、行そのものが相手側から）
+        return fromSide(own, which, c, pr.side === 'theirs' && row.old !== null ? 'theirs' : '');
     }
-    if (choice === 'theirs') return fromSide(row.new, 'new', c, 'theirs');
-    if (choice === null) return fromSide(row.old, 'old', c, 'undecided');
-    return fromSide(row.old, 'old', c, '');
   }
 
-  function cssFor(pr: PreviewRow, c: number, cell: PreviewCell | null): CellCss {
-    const old = (cell?.side ?? (pr.side === 'ours' ? 'old' : 'new')) === 'old';
+  function cssFor(pr: PlanRow, c: number, cell: PreviewCell | null): CellCss {
+    const old = (cell?.side ?? sideName(pr)) === 'old';
     const rowStyle = (old ? layout.oldRowStyle : layout.newRowStyle)[pr.aligned] ?? -1;
     const colStyle = (old ? layout.oldColStyle : layout.newColStyle)[c] ?? -1;
     const styles = old ? layout.oldStyles : layout.newStyles;
@@ -210,210 +184,105 @@
   }
 
   /** 押した位置のプレビューの行・列。 */
-  let canvas = $state<HTMLDivElement | null>(null);
-  function indexAt(offsets: Float64Array, pos: number): number {
-    let lo = 0;
-    let hi = offsets.length - 2;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if ((offsets[mid] ?? 0) <= pos) lo = mid;
-      else hi = mid - 1;
-    }
-    return Math.max(0, lo);
-  }
-  function hit(e: MouseEvent): { k: number; c: number; pr: PreviewRow } | null {
+  function hit(e: MouseEvent): { k: number; c: number; pr: PlanRow } | null {
     if (canvas === null || previewRows.length === 0) return null;
     const rect = canvas.getBoundingClientRect();
-    const k = Math.min(previewRows.length - 1, indexAt(rowOffsets, e.clientY - rect.top));
-    const c = Math.min(Math.max(0, layout.colCount - 1), indexAt(colOffsets, e.clientX - rect.left));
+    const k = Math.min(previewRows.length - 1, indexAtOffset(rowOffsets, e.clientY - rect.top));
+    const c = Math.min(Math.max(0, layout.colCount - 1), indexAtOffset(colOffsets, e.clientX - rect.left));
     const pr = previewRows[k];
     return pr === undefined ? null : { k, c, pr };
   }
 
   function pick(e: MouseEvent): void {
+    if (e.button !== 0) return;
     const at = hit(e);
     if (at !== null) onselect(at.pr.aligned, at.c);
   }
 
   function dbl(e: MouseEvent): void {
     const at = hit(e);
-    if (at === null || ondblcell === undefined || !receivesEdits(at.pr)) return;
+    if (at === null || ondblcell === undefined || !at.pr.receivesEdits) return;
     const cell = cellOf(at.pr, at.c);
-    ondblcell(at.k, at.pr.aligned, at.c, cell?.side ?? (at.pr.side === 'ours' ? 'old' : 'new'));
+    ondblcell(at.k, at.pr.aligned, at.c, cell?.side ?? sideName(at.pr));
   }
 </script>
 
-<div class="grid" style:--row-header={rowHeaderWidth + 'px'} style:--col-header={HEADER_HEIGHT + 'px'}>
-  <div class="corner" aria-hidden="true"></div>
+<ExcelGridFrame
+  {rowHeaderWidth}
+  fontPt={layout.oldDefaultFontPt}
+  {totalWidth}
+  {totalHeight}
+  label="マージ後のプレビュー"
+  bind:viewport
+  bind:canvas
+  bind:scrollTop
+  bind:scrollLeft
+  bind:viewportWidth
+  bind:viewportHeight
+  onscroll={(_top, left) => onscroll(left)}
+  onmousedown={pick}
+  ondblclick={dbl}
+>
+  {#snippet colHeaders()}
+    {#each visibleCols as c (c)}
+      <div class="ch" style:left={left(c) + 'px'} style:width={width(c) + 'px'}>{columnLabel(c)}</div>
+    {/each}
+  {/snippet}
 
-  <div class="col-header" aria-hidden="true">
-    <div class="col-header-inner" style:width={totalWidth + 'px'} style:transform={'translateX(' + -scrollLeft + 'px)'}>
+  {#snippet rowHeaders()}
+    {#each visibleRows as k (k)}
+      {@const pr = previewRows[k]}
+      <div
+        class="rh"
+        class:undecided={pr?.kind === 'undecided'}
+        class:selected={pr !== undefined && pr.aligned === selectedAligned}
+        style:top={top(k) + 'px'}
+        style:height={height(k) + 'px'}
+      >
+        {k + 1}
+      </div>
+    {/each}
+  {/snippet}
+
+  {#each visibleRows as k (k)}
+    {@const pr = previewRows[k]}
+    {#if pr !== undefined}
+      {#if pr.kind === 'undecided'}
+        <div class="row-tone undecided" style:top={top(k) + 'px'} style:height={height(k) + 'px'}></div>
+      {/if}
       {#each visibleCols as c (c)}
-        <div class="ch" style:left={left(c) + 'px'} style:width={width(c) + 'px'}>{columnLabel(c)}</div>
-      {/each}
-    </div>
-  </div>
-
-  <div class="row-header" aria-hidden="true">
-    <div class="row-header-inner" style:height={totalHeight + 'px'} style:transform={'translateY(' + -scrollTop + 'px)'}>
-      {#each visibleRows as k (k)}
-        {@const pr = previewRows[k]}
+        {@const cell = cellOf(pr, c)}
+        {@const css = cssFor(pr, c, cell)}
         <div
-          class="rh"
-          class:undecided={pr?.undecided === true}
-          class:selected={pr !== undefined && pr.aligned === selectedAligned}
+          class="cell {cell?.mark ?? ''}"
+          class:filled={css.filled}
+          class:selected-row={pr.aligned === selectedAligned}
+          role="gridcell"
+          tabindex="-1"
+          style={css.text}
           style:top={top(k) + 'px'}
+          style:left={left(c) + 'px'}
+          style:width={width(c) + 'px'}
           style:height={height(k) + 'px'}
+          title={cell !== null && cell.text.length > 0 ? cell.text : undefined}
         >
-          {k + 1}
+          {cell?.text ?? ''}
         </div>
       {/each}
-    </div>
-  </div>
+    {/if}
+  {/each}
 
-  <div
-    class="viewport"
-    role="grid"
-    tabindex="-1"
-    aria-label="マージ後のプレビュー"
-    bind:this={viewport}
-    bind:clientWidth={viewportWidth}
-    bind:clientHeight={viewportHeight}
-    onscroll={handleScroll}
-  >
-    <div
-      class="canvas"
-      role="presentation"
-      style:width={totalWidth + 'px'}
-      style:height={totalHeight + 'px'}
-      bind:this={canvas}
-      onmousedown={(e) => {
-        if (e.button === 0) pick(e);
-      }}
-      ondblclick={dbl}
-    >
-      {#each visibleRows as k (k)}
-        {@const pr = previewRows[k]}
-        {#if pr !== undefined}
-          {#if pr.undecided}
-            <div class="row-tone undecided" style:top={top(k) + 'px'} style:height={height(k) + 'px'}></div>
-          {/if}
-          {#each visibleCols as c (c)}
-            {@const cell = cellOf(pr, c)}
-            {@const css = cssFor(pr, c, cell)}
-            <div
-              class="cell {cell?.mark ?? ''}"
-              class:filled={css.filled}
-              class:selected-row={pr.aligned === selectedAligned}
-              role="gridcell"
-              tabindex="-1"
-              style={css.text}
-              style:top={top(k) + 'px'}
-              style:left={left(c) + 'px'}
-              style:width={width(c) + 'px'}
-              style:height={height(k) + 'px'}
-              title={cell !== null && cell.text.length > 0 ? cell.text : undefined}
-            >
-              {cell?.text ?? ''}
-            </div>
-          {/each}
-        {/if}
-      {/each}
-
-      {#if editing !== null && editing.index < previewRows.length}
-        <input
-          class="editor"
-          aria-label="セルの値（Enter で決定・Esc で取り消し）"
-          value={editing.value}
-          style:top={top(editing.index) + 'px'}
-          style:left={left(editing.col) + 'px'}
-          style:min-width={width(editing.col) + 'px'}
-          style:height={height(editing.index) + 'px'}
-          use:focusEditor
-          onkeydown={editorKey}
-          onmousedown={(e) => e.stopPropagation()}
-          ondblclick={(e) => e.stopPropagation()}
-          onblur={(e) => oneditcommit?.((e.currentTarget as HTMLInputElement).value)}
-        />
-      {/if}
-    </div>
-  </div>
-</div>
+  {#if editing !== null && editing.index < previewRows.length}
+    <CellEditor
+      value={editing.value}
+      box={rectOf(rowOffsets, colOffsets, { r1: editing.index, c1: editing.col, r2: editing.index, c2: editing.col })}
+      oncommit={oneditcommit}
+      oncancel={oneditcancel}
+    />
+  {/if}
+</ExcelGridFrame>
 
 <style>
-  .grid {
-    display: grid;
-    grid-template-columns: var(--row-header) minmax(0, 1fr);
-    grid-template-rows: var(--col-header) minmax(0, 1fr);
-    min-width: 0;
-    min-height: 0;
-    background: var(--app-excel-paper);
-    color: var(--app-excel-ink);
-    font-family: var(--app-font-ui);
-    font-size: 12px;
-  }
-
-  .corner {
-    background: var(--app-bg-raised);
-    border-right: 1px solid var(--app-border-strong);
-    border-bottom: 1px solid var(--app-border-strong);
-  }
-
-  .col-header,
-  .row-header {
-    position: relative;
-    overflow: hidden;
-    background: var(--app-bg-raised);
-    color: var(--app-text-secondary);
-  }
-
-  .col-header {
-    border-bottom: 1px solid var(--app-border-strong);
-  }
-
-  .row-header {
-    border-right: 1px solid var(--app-border-strong);
-  }
-
-  .col-header-inner,
-  .row-header-inner {
-    position: absolute;
-    inset: 0 auto auto 0;
-    will-change: transform;
-  }
-
-  .row-header-inner {
-    width: 100%;
-  }
-
-  .col-header-inner {
-    height: 100%;
-  }
-
-  .ch,
-  .rh {
-    position: absolute;
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    white-space: nowrap;
-    font-size: 11px;
-  }
-
-  .ch {
-    top: 0;
-    height: 100%;
-    border-right: 1px solid var(--app-border-subtle);
-  }
-
-  .rh {
-    left: 0;
-    width: 100%;
-    border-bottom: 1px solid var(--app-border-subtle);
-  }
-
   .rh.undecided {
     color: var(--app-text-conflict);
     font-weight: 700;
@@ -423,44 +292,8 @@
     background: color-mix(in srgb, var(--app-excel-selection) 22%, transparent);
   }
 
-  .viewport {
-    position: relative;
-    overflow: auto;
-    min-width: 0;
-    min-height: 0;
-    outline: none;
-  }
-
-  .canvas {
-    position: relative;
-  }
-
-  .row-tone {
-    position: absolute;
-    left: 0;
-    right: 0;
-    box-sizing: border-box;
-  }
-
   .row-tone.undecided {
     box-shadow: inset 4px 0 0 var(--app-text-conflict);
-  }
-
-  .cell {
-    position: absolute;
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    padding: 0 3px;
-    border-right: 1px solid var(--app-excel-grid-line);
-    border-bottom: 1px solid var(--app-excel-grid-line);
-    overflow: hidden;
-    white-space: pre;
-    text-overflow: clip;
-    line-height: 1.25;
-    cursor: cell;
-    user-select: none;
   }
 
   /* 相手側から採ったセル・行（自分側から採った所は印なし） */
@@ -477,19 +310,10 @@
     outline-offset: -2px;
   }
 
-  .editor {
-    position: absolute;
-    box-sizing: border-box;
-    z-index: 4;
-    padding: 0 3px;
-    border: 2px solid var(--app-accent);
-    background: var(--app-excel-paper);
-    color: var(--app-excel-ink);
-    font: inherit;
-    outline: none;
-  }
-
   .cell.selected-row {
-    background-image: linear-gradient(color-mix(in srgb, var(--app-excel-selection) 10%, transparent), color-mix(in srgb, var(--app-excel-selection) 10%, transparent));
+    background-image: linear-gradient(
+      color-mix(in srgb, var(--app-excel-selection) 10%, transparent),
+      color-mix(in srgb, var(--app-excel-selection) 10%, transparent)
+    );
   }
 </style>

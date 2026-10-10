@@ -7,7 +7,7 @@
  *      → 土台は FeatherTree を一切知らない。これが流用可能性の担保
  *   2. 層の境界（git -> core -> main / renderer は View から git に到達できない）
  */
-const APP_PACKAGES = '^packages/(git|unity|excel|core|ipc|main|preload|renderer)/';
+const APP_PACKAGES = '^packages/(git|unity|excel|conflict-plan|core|ipc|main|preload|renderer)/';
 
 module.exports = {
   forbidden: [
@@ -88,6 +88,21 @@ module.exports = {
       to: { dependencyTypes: ['core'] },
     },
     {
+      name: 'conflict-plan-has-no-deps',
+      comment:
+        'conflict-plan は Excel のコンフリクトの採り方の規則だけを持つ純関数。core と renderer の両方から使うので、どのパッケージにも依存しない（決定 34）',
+      severity: 'error',
+      from: { path: '^packages/conflict-plan/' },
+      to: { path: '^packages/(?!conflict-plan/)' },
+    },
+    {
+      name: 'no-node-in-conflict-plan',
+      comment: 'conflict-plan は renderer からも使うので Node 組み込みを使わない',
+      severity: 'error',
+      from: { path: '^packages/conflict-plan/' },
+      to: { dependencyTypes: ['core'] },
+    },
+    {
       name: 'no-node-in-renderer',
       comment: 'View 層は Node API に到達してはならない（sandbox: true の前提）',
       severity: 'error',
@@ -103,7 +118,7 @@ module.exports = {
     },
     {
       name: 'renderer-only-ipc-and-base-ui',
-      comment: 'View 層が参照できるのは @feathertree/ipc と土台の base-ui / base-contract だけ',
+      comment: 'View 層が参照できるのは @feathertree/ipc・@feathertree/conflict-plan と土台の base-ui / base-contract だけ',
       severity: 'error',
       from: { path: '^packages/renderer/' },
       to: { path: '^packages/(git|unity|excel|core|main|preload|base-core|base-electron)/' },
@@ -113,7 +128,7 @@ module.exports = {
       comment: 'git 層は上位層を参照しない',
       severity: 'error',
       from: { path: '^packages/git/' },
-      to: { path: '^packages/(unity|excel|core|ipc|main|preload|renderer)/' },
+      to: { path: '^packages/(unity|excel|conflict-plan|core|ipc|main|preload|renderer)/' },
     },
     {
       name: 'no-upward-from-core',
@@ -127,7 +142,7 @@ module.exports = {
       comment: 'ipc は契約のみ。実装を持つパッケージを参照しない（土台の base-contract は可）',
       severity: 'error',
       from: { path: '^packages/ipc/' },
-      to: { path: '^packages/(git|unity|excel|core|main|preload|renderer|base-core|base-electron|base-ui)/' },
+      to: { path: '^packages/(git|unity|excel|conflict-plan|core|main|preload|renderer|base-core|base-electron|base-ui)/' },
     },
     {
       name: 'no-circular',

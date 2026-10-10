@@ -1,54 +1,34 @@
-import { randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { deflateRawSync } from 'node:zlib';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  CommandLog,
   ConflictUnsupportedError,
   DEFAULT_SETTINGS,
-  SessionManager,
   StaleDiffError,
   conflictTargetsOf,
+  planXlsxResolution,
   excelToken,
   zlibInflater,
   type ExcelCellChoices,
   type RepositorySession,
+  type SessionManager,
 } from '../src/index.js';
+import { TargetIndex } from '@feathertree/conflict-plan';
 import { openWorkbook } from '@feathertree/excel';
-import { buildXlsx, type BookSpec } from '../../excel/test/xlsxBuilder.js';
+import type { BookSpec } from '../../excel/test/xlsxBuilder.js';
+import { createExcelRepo, xlsx, type ExcelRepo } from './excelFixture.js';
 
 /*
  * Excel 差分モードのコンフリクト（決定 34）。実 git でマージを衝突させて確かめる。
  *
  * 見るもの:
  *   - CSV は作業ツリーのマーカーから両側を作る（git 0）。違いは衝突した所だけ
- *   - ブックは index の段を #49 で 3 回（自分側・相手側・共通祖先）。作業ツリーがどちらと同じか
+ *   - ブックは index の段を #49 で 2 回（自分側・相手側。共通祖先は読まない）。作業ツリーがどちらと同じか
  *   - ファイル単位の採用（ブックは採る側の段を読み直して書く）・セル単位の採用（CSV）
  *   - 書いた後はキャッシュを捨てる。作業ツリーが変わっていれば書かない（diff-stale）
  *   - index には触れない（未マージのまま）
  */
 
-const TEST_ROOT = resolve(import.meta.dirname, '../../../.tmp/core-excel-conflict-tests');
-const GIT_PATH = process.env['FT_TEST_GIT'] ?? 'git';
-
-function git(cwd: string, args: readonly string[]): Promise<string> {
-  return new Promise((res, rej) => {
-    const child = spawn(GIT_PATH, [...args], { cwd, shell: false, windowsHide: true });
-    let out = '';
-    let err = '';
-    child.stdout?.on('data', (c: Buffer) => (out += c.toString('utf8')));
-    child.stderr?.on('data', (c: Buffer) => (err += c.toString('utf8')));
-    child.on('error', rej);
-    child.on('close', (code) =>
-      code === 0 ? res(out) : rej(new Error('git failed: ' + String(code) + ' ' + args.join(' ') + ' ' + err)),
-    );
-  });
-}
-
-const deflate = (d: Uint8Array): Uint8Array => deflateRawSync(d);
-const xlsx = (spec: BookSpec): Uint8Array => buildXlsx(spec, { deflate });
 const book = (price: number, note: string): BookSpec => ({
   sheets: [{ name: '売上', rows: [['品名', '単価', '備考'], ['剣', price, note], ['盾', 800, '']] }],
 });
@@ -56,58 +36,24 @@ const book = (price: number, note: string): BookSpec => ({
 const NO_CHOICES: ExcelCellChoices = { cells: [], rows: [], cols: [], rest: null };
 
 describe('Excel のコンフリクト（決定 34）', () => {
+  let repo: ExcelRepo;
   let dir: string;
-  let log: CommandLog;
   let manager: SessionManager;
 
   beforeEach(async () => {
-    dir = join(TEST_ROOT, randomBytes(8).toString('hex'));
-    await mkdir(dir, { recursive: true });
-    await git(dir, ['init', '--initial-branch=main']);
-    await git(dir, ['config', 'user.name', 'T']);
-    await git(dir, ['config', 'user.email', 't@example.invalid']);
-    await git(dir, ['config', 'core.autocrlf', 'false']);
-    await git(dir, ['config', 'commit.gpgsign', 'false']);
-    log = new CommandLog();
-    manager = new SessionManager({
-      gitPath: GIT_PATH,
-      tempDir: join(dir, '.ft-tmp'),
-      commandLog: log,
-      settings: () => DEFAULT_SETTINGS,
-    });
+    repo = await createExcelRepo();
+    dir = repo.dir;
+    manager = repo.sessions(() => DEFAULT_SETTINGS);
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined);
+    await repo.cleanup();
   });
 
-  async function write(rel: string, content: Uint8Array | string): Promise<void> {
-    const target = join(dir, rel);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, content);
-  }
-
-  /** base → topic（相手側）と main（自分側）で書き換えて、マージで衝突させる。 */
-  async function conflict(rel: string, base: Uint8Array | string, theirs: Uint8Array | string, ours: Uint8Array | string): Promise<void> {
-    await write(rel, base);
-    await git(dir, ['add', '-A']);
-    await git(dir, ['commit', '-m', 'base']);
-    await git(dir, ['switch', '-c', 'topic']);
-    await write(rel, theirs);
-    await git(dir, ['commit', '-am', 'topic']);
-    await git(dir, ['switch', 'main']);
-    await write(rel, ours);
-    await git(dir, ['commit', '-am', 'main']);
-    await git(dir, ['merge', 'topic']).catch(() => undefined);
-  }
-
-  async function logged<T>(f: () => Promise<T>): Promise<{ value: T; args: string[] }> {
-    const before = log.size;
-    const value = await f();
-    const count = log.size - before;
-    const added = count === 0 ? [] : log.recent(count).reverse();
-    return { value, args: added.map((e) => e.args[0] ?? '') };
-  }
+  const write = (rel: string, content: Uint8Array | string): Promise<void> => repo.write(rel, content);
+  const conflict = (rel: string, base: Uint8Array | string, theirs: Uint8Array | string, ours: Uint8Array | string): Promise<void> =>
+    repo.conflict(rel, base, theirs, ours);
+  const logged = <T>(f: () => Promise<T>): Promise<{ value: T; args: string[] }> => repo.logged(f);
 
   async function unmerged(session: RepositorySession, path: string): Promise<boolean> {
     await session.refreshStatus();
@@ -396,5 +342,42 @@ describe('Excel のコンフリクト（決定 34）', () => {
     await expect(session.resolveExcelConflict(view, { kind: 'cells', choices: NO_CHOICES })).rejects.toBeInstanceOf(
       ConflictUnsupportedError,
     );
+  });
+
+  it('決めるべき所のある行は、比較の違いのある行と同じ（ブロックの区切りが書き込みとプレビューで揃う）', async () => {
+    const base: BookSpec = { sheets: [{ name: 'S', rows: [['h', 'v'], ['a', 1], ['b', 2], ['c', 3], ['z', 9]] }] };
+    const theirsBook: BookSpec = { sheets: [{ name: 'S', rows: [['h', 'v'], ['a', 10], ['T', 20], ['b', 2], ['c', 3], ['z', 90]] }] };
+    const oursBook: BookSpec = { sheets: [{ name: 'S', rows: [['h', 'v'], ['a', 11], ['b', 2], ['z', 99]] }] };
+    await conflict('s.xlsx', xlsx(base), xlsx(theirsBook), xlsx(oursBook));
+    const session = await manager.open(dir);
+    const view = await session.getExcelComparison('s.xlsx');
+    const sheet = view.comparison.sheets[0];
+    const targets = conflictTargetsOf(view)?.[0];
+    if (sheet === undefined || targets === undefined) throw new Error('no sheet');
+    const changed = Array.from(sheet.rowState).flatMap((s, i) => (s === 0 ? [] : [i]));
+    expect(changed.length).toBeGreaterThan(2);
+    expect(TargetIndex.of(targets).rows).toEqual(changed);
+    // 同じ比較からは同じものを返す（作り直さない）
+    expect(conflictTargetsOf(view)?.[0]).toBe(targets);
+  });
+
+  it('行のずらし方が分からないシートでは、両方を採用を断る', async () => {
+    const base: BookSpec = { sheets: [{ name: 'S', rows: [['a', 1], ['z', 9]] }] };
+    const theirsBook: BookSpec = { sheets: [{ name: 'S', rows: [['a', 1], ['T', 20], ['z', 9]] }] };
+    const oursBook: BookSpec = { sheets: [{ name: 'S', rows: [['a', 1], ['O', 10], ['z', 9]] }] };
+    await conflict('s.xlsx', xlsx(base), xlsx(theirsBook), xlsx(oursBook));
+    const session = await manager.open(dir);
+    const real = await session.getExcelComparison('s.xlsx');
+    const conflictInfo = real.conflict;
+    const inspection = conflictInfo?.inspection;
+    if (conflictInfo == null || inspection == null) throw new Error('no inspection');
+    // ピボット等を持つシートの代わりに、行のずらし方が分からない部品があることにする
+    const unsafe = new Map([...inspection].map(([k, v]) => [k, { ...v, unsafeRelations: ['pivotTable'] }]));
+    const view = { ...real, conflict: { ...conflictInfo, inspection: unsafe } } as typeof real;
+    expect(conflictTargetsOf(view)?.[0]?.bothBlocked).toBe('unsafe-part');
+    const start = Array.from(real.comparison.sheets[0]?.rowState ?? []).findIndex((s) => s !== 0);
+    const plan = planXlsxResolution(view, { ...NO_CHOICES, rest: 'ours', hunks: [{ sheet: 0, row: start, end: start + 2, order: 'ours-theirs' }] });
+    expect(plan.blocked).toContain('行のずらし方が分からない');
+    expect(planXlsxResolution(view, { ...NO_CHOICES, rest: 'ours' }).blocked).toBeNull();
   });
 });

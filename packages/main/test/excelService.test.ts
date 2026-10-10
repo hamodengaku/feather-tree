@@ -1,12 +1,11 @@
-import { randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CommandLog, DEFAULT_SETTINGS, SessionManager, type AppSettings } from '@feathertree/core';
+import { DEFAULT_SETTINGS, type AppSettings, type CommandLog } from '@feathertree/core';
 import { createService, type Service } from '../src/handlers/service.js';
 import { buildXlsx, type BookSpec } from '../../excel/test/xlsxBuilder.js';
+import { GIT_PATH, createExcelRepo, xlsx, type ExcelRepo } from '../../core/test/excelFixture.js';
 
 /*
  * Excel 差分の IPC ハンドラ（決定 33 / 対応表 #49）。
@@ -16,18 +15,6 @@ import { buildXlsx, type BookSpec } from '../../excel/test/xlsxBuilder.js';
  * 最新の要求だけを生かすこと。中身の正しさは excel 層と core の excelView.test.ts で見てある。
  */
 
-const TEST_ROOT = resolve(import.meta.dirname, '../../../.tmp/main-excel-tests');
-const GIT_PATH = process.env['FT_TEST_GIT'] ?? 'git';
-
-function git(cwd: string, args: readonly string[]): Promise<void> {
-  return new Promise((res, rej) => {
-    const child = spawn(GIT_PATH, [...args], { cwd, shell: false, windowsHide: true, stdio: 'ignore' });
-    child.on('error', rej);
-    child.on('close', (code) => (code === 0 ? res() : rej(new Error('git failed: ' + String(code)))));
-  });
-}
-
-const xlsx = (spec: BookSpec): Uint8Array => buildXlsx(spec, { deflate: (d) => deflateRawSync(d) });
 const book = (price: number, extra: (string | number)[][] = []): BookSpec => ({
   sheets: [
     { name: '売上', rows: [['品名', '単価'], ['剣', price], ['盾', 800], ...extra] },
@@ -40,23 +27,14 @@ describe('Excel 差分の IPC ハンドラ', () => {
   let service: Service;
   let settings: AppSettings;
   let commandLog: CommandLog;
+  let repo: ExcelRepo;
 
   beforeEach(async () => {
-    dir = join(TEST_ROOT, randomBytes(8).toString('hex'));
-    await mkdir(dir, { recursive: true });
-    await git(dir, ['init', '--initial-branch=main']);
-    await git(dir, ['config', 'user.name', 'T']);
-    await git(dir, ['config', 'user.email', 't@example.invalid']);
-    await git(dir, ['config', 'core.autocrlf', 'false']);
-
+    repo = await createExcelRepo();
+    dir = repo.dir;
     settings = { ...DEFAULT_SETTINGS, viewMode: 'excel' };
-    commandLog = new CommandLog();
-    const sessions = new SessionManager({
-      gitPath: GIT_PATH,
-      tempDir: join(dir, '.ft-tmp'),
-      commandLog,
-      settings: () => settings,
-    });
+    commandLog = repo.log;
+    const sessions = repo.sessions(() => settings);
     service = createService({
       appInfo: () => ({
         appVersion: '0',
@@ -88,20 +66,16 @@ describe('Excel 差分の IPC ハンドラ', () => {
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined);
+    await repo.cleanup();
   });
 
-  async function write(rel: string, content: Uint8Array | string): Promise<void> {
-    const target = join(dir, rel);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, content);
-  }
+  const write = (rel: string, content: Uint8Array | string): Promise<void> => repo.write(rel, content);
 
   async function openWithEdit(): Promise<string> {
     await write('data/item.xlsx', xlsx(book(1000)));
     await write('readme.txt', 'r');
-    await git(dir, ['add', '-A']);
-    await git(dir, ['commit', '-m', 'init']);
+    await repo.git('add', '-A');
+    await repo.git('commit', '-m', 'init');
     await write('data/item.xlsx', xlsx(book(1200, [['弓', 600]])));
     const id = (await service.sessionOpen(dir)).id;
     await service.sessionLoad(id);
@@ -109,13 +83,7 @@ describe('Excel 差分の IPC ハンドラ', () => {
   }
 
   /** f の間に載った実行ログの先頭語（古い順）。 */
-  async function logged<T>(f: () => Promise<T>): Promise<{ value: T; args: string[] }> {
-    const before = commandLog.size;
-    const value = await f();
-    const count = commandLog.size - before;
-    const added = count === 0 ? [] : commandLog.recent(count).reverse();
-    return { value, args: added.map((e) => e.args[0] ?? '') };
-  }
+  const logged = <T>(f: () => Promise<T>): Promise<{ value: T; args: string[] }> => repo.logged(f);
 
   it('シートの幾何に書式の表（M2）が載る', async () => {
     const styles =
@@ -133,8 +101,8 @@ describe('Excel 差分の IPC ハンドラ', () => {
         { deflate: (d) => deflateRawSync(d) },
       );
     await write('s.xlsx', styled(1));
-    await git(dir, ['add', '-A']);
-    await git(dir, ['commit', '-m', 'init']);
+    await repo.git('add', '-A');
+    await repo.git('commit', '-m', 'init');
     await write('s.xlsx', styled(2));
     const id = (await service.sessionOpen(dir)).id;
     await service.sessionLoad(id);
@@ -160,8 +128,8 @@ describe('Excel 差分の IPC ハンドラ', () => {
         { deflate: (d) => deflateRawSync(d) },
       );
     await write('d.xlsx', dated(45366));
-    await git(dir, ['add', '-A']);
-    await git(dir, ['commit', '-m', 'init']);
+    await repo.git('add', '-A');
+    await repo.git('commit', '-m', 'init');
     await write('d.xlsx', dated(45367.5));
     const id = (await service.sessionOpen(dir)).id;
     await service.sessionLoad(id);
@@ -276,8 +244,8 @@ describe('Excel 差分の IPC ハンドラ', () => {
   it('別のファイルを選び直したら、前の要求は止めて最新だけを返す', async () => {
     await write('a.xlsx', xlsx(book(1)));
     await write('b.xlsx', xlsx(book(1)));
-    await git(dir, ['add', '-A']);
-    await git(dir, ['commit', '-m', 'init']);
+    await repo.git('add', '-A');
+    await repo.git('commit', '-m', 'init');
     await write('a.xlsx', xlsx(book(2)));
     await write('b.xlsx', xlsx(book(3)));
     const id = (await service.sessionOpen(dir)).id;
@@ -295,16 +263,7 @@ describe('Excel 差分の IPC ハンドラ', () => {
   });
   /** base → topic（相手側）と main（自分側）で書き換えて、マージで衝突させる。 */
   async function openWithConflict(rel: string, base: Uint8Array | string, theirs: Uint8Array | string, ours: Uint8Array | string): Promise<string> {
-    await write(rel, base);
-    await git(dir, ['add', '-A']);
-    await git(dir, ['commit', '-m', 'base']);
-    await git(dir, ['switch', '-c', 'topic']);
-    await write(rel, theirs);
-    await git(dir, ['commit', '-am', 'topic']);
-    await git(dir, ['switch', 'main']);
-    await write(rel, ours);
-    await git(dir, ['commit', '-am', 'main']);
-    await git(dir, ['merge', 'topic']).catch(() => undefined);
+    await repo.conflict(rel, base, theirs, ours);
     const id = (await service.sessionOpen(dir)).id;
     await service.sessionLoad(id);
     return id;
@@ -315,11 +274,10 @@ describe('Excel 差分の IPC ハンドラ', () => {
       const id = await openWithConflict('b.xlsx', xlsx(book(1000)), xlsx(book(1200)), xlsx(book(900)));
       const view = await service.excelGetView(id, 'b.xlsx');
       expect(view.conflict?.source).toBe('stages');
-      expect(view.conflict?.worktree).toBe('ours');
       // ブックもセル単位で採れる（docs/07）。売上シートの B2 だけが違う。メモシートは同じ
       expect(view.conflict?.cellResolvable).toBe(true);
-      expect(view.sheets[0]?.conflict).toEqual({ cells: [1, 1], rows: [], blocked: [] });
-      expect(view.sheets[1]?.conflict).toEqual({ cells: [], rows: [], blocked: [] });
+      expect(view.sheets[0]?.conflict).toEqual({ cells: [1, 1], rows: [], blocked: [], bothBlocked: null });
+      expect(view.sheets[1]?.conflict).toEqual({ cells: [], rows: [], blocked: [], bothBlocked: null });
       const cell = await service.excelGetCell(id, view.token, 0, 1, 1);
       expect(cell.old?.raw).toBe('900');
       expect(cell.new?.raw).toBe('1200');
@@ -359,7 +317,8 @@ describe('Excel 差分の IPC ハンドラ', () => {
       expect(await readFile(join(dir, 'd.csv'), 'utf8')).toBe('h,v\n1,b\n');
       await expect(service.excelGetSheet(id, view.token, 0)).rejects.toMatchObject({ dto: { kind: 'diff-stale' } });
       const after = await service.excelGetView(id, 'd.csv');
-      expect(after.conflict?.markers).toBe('none');
+      // マーカーが無くなったので index の段の比較に替わる
+      expect(after.conflict?.source).toBe('stages');
     });
 
     it('マージをキャンセルする（#51）は確認を求め、確認後はマージ前に戻る', async () => {
@@ -381,7 +340,6 @@ describe('Excel 差分の IPC ハンドラ', () => {
       const id = await openWithConflict('b.xlsx', xlsx(book(1000)), xlsx(book(1200)), xlsx(book(900)));
       await write('b.xlsx', xlsx(book(5)));
       const view = await service.excelGetView(id, 'b.xlsx');
-      expect(view.conflict?.worktree).toBe('neither');
       const req = { path: 'b.xlsx', token: view.token, resolution: { kind: 'file', side: 'theirs' } } as const;
       await expect(service.excelResolveConflict(id, req)).rejects.toMatchObject({
         dto: { kind: 'needs-confirmation', confirmation: { action: 'overwrite-conflict-worktree' } },

@@ -159,18 +159,22 @@ export function readHeadBlobFiltered(
 
 /**
  * #49 が読む版。`HEAD` か、未マージのときの index の段（決定 34）。
- *   - `base`   … `:1:` 共通祖先
  *   - `ours`   … `:2:` 自分側
  *   - `theirs` … `:3:` 相手側
+ * 共通祖先（`:1:`）は読まない（2026-10-09 に値バーの表示をやめた）。
  */
-export type FilteredRevision = 'HEAD' | 'base' | 'ours' | 'theirs';
+export type FilteredRevision = 'HEAD' | 'ours' | 'theirs';
 
 const FILTERED_SPEC: Record<FilteredRevision, string> = {
   HEAD: 'HEAD:',
-  base: ':1:',
   ours: ':2:',
   theirs: ':3:',
 };
+
+/** 実行ログに出すトークンの頭（#49 の引数と同じ形）。 */
+export function filteredSpec(revision: FilteredRevision): string {
+  return FILTERED_SPEC[revision];
+}
 
 /**
  * 対応表 #49 の本体。版ごとの違いはトークンの頭と「無い」の文面だけ。

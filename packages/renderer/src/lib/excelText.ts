@@ -5,7 +5,7 @@
  * 白い画面に落とさない。
  */
 
-import type { ExcelBlockReasonDto, ExcelConflictDto, ExcelSheetSummaryDto, ExcelSideDto, ExcelSideStateDto } from '@feathertree/ipc';
+import type { ExcelBlockReasonDto, ExcelSheetSummaryDto, ExcelSideDto, ExcelSideStateDto } from '@feathertree/ipc';
 
 export type ExcelSideName = 'old' | 'new';
 
@@ -52,44 +52,6 @@ export function sideLabel(side: ExcelSideName, conflict = false): string {
 export function conflictSideNotice(side: ExcelSideName, state: ExcelSideStateDto): string | null {
   if (state !== 'absent') return null;
   return side === 'old' ? '自分側ではこのファイルは削除されています。' : '相手側ではこのファイルは削除されています。';
-}
-
-/** コンフリクトの帯の 1 行目（決定 34）。何が起きていて、次に何をすればよいか。 */
-export function conflictSummary(conflict: ExcelConflictDto): string {
-  if (conflict.source === 'markers') {
-    return `コンフリクト ${String(conflict.blocks)} 件（作業ツリーのマーカーから）。違いとして出ているのは衝突した所だけです。`;
-  }
-  const parts: string[] = [];
-  switch (conflict.markers) {
-    case 'none':
-      parts.push('作業ツリーにマーカーがありません（解消済み、またはマーカーを書かない形式です）。');
-      break;
-    case 'malformed':
-      parts.push('マーカーの対応が取れていないため、index の自分側・相手側を比べています。');
-      break;
-    case 'unsupported':
-      parts.push('UTF-16 の CSV はマーカーを読めないため、index の自分側・相手側を比べています。');
-      break;
-    default:
-      parts.push('コンフリクト中です（index の自分側・相手側を比べています）。');
-  }
-  parts.push(worktreeMatchText(conflict.worktree));
-  return parts.join('');
-}
-
-function worktreeMatchText(match: ExcelConflictDto['worktree']): string {
-  switch (match) {
-    case 'ours':
-      return '作業ツリーは自分側と同じ内容です。';
-    case 'theirs':
-      return '作業ツリーは相手側と同じ内容です。';
-    case 'absent':
-      return '作業ツリーにはファイルがありません。';
-    case 'unknown':
-      return '作業ツリーのファイルを読めませんでした。';
-    default:
-      return '作業ツリーはどちらの側とも違います（手で編集されています）。';
-  }
 }
 
 /**

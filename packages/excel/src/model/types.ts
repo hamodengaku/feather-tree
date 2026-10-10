@@ -28,6 +28,10 @@ export const FORMULA_DATA_TABLE = 4;
 
 export type FormulaKind = 0 | 1 | 2 | 3 | 4;
 
+/** 配列数式・データテーブルのセルか（範囲で 1 つの数式なので、セル単位では書き換えられない）。 */
+export const isArrayFormulaCell = (cell: { readonly formulaKind: FormulaKind } | undefined): boolean =>
+  cell?.formulaKind === FORMULA_ARRAY || cell?.formulaKind === FORMULA_DATA_TABLE;
+
 export interface CellData {
   readonly col: number;
   readonly kind: CellKind;

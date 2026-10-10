@@ -30,7 +30,6 @@ import {
   EXCEL_LIMITS,
   geometryOf,
   rowDiffOf,
-  type ExcelCellChoices,
   type ExcelComparison,
   type ExcelResolveRequest,
   type SheetComparison,
@@ -85,8 +84,6 @@ import type {
   ExcelRowPageDto,
   ExcelSheetLayoutDto,
   ExcelViewDto,
-  ExcelCellChoicesDto,
-  ExcelConflictSideDto,
   ExcelResolveRequestDto,
   ExcelResolveResultDto,
 } from '@feathertree/ipc';
@@ -104,10 +101,8 @@ import {
   toRowPageDto,
   toSheetLayoutDto,
 } from './excelDto.js';
+import { validResolution } from './excelValidation.js';
 import { createProgressThrottle } from './progressThrottle.js';
-
-/** 打った値の長さの上限（Excel の 1 セルの上限）。docs/07 7.1。 */
-const MAX_EDIT_LENGTH = 32767;
 
 /** ページで一度に返す最大件数。renderer が巨大な要求を投げても抑える。 */
 const MAX_PAGE_LIMIT = 1000;
@@ -712,7 +707,7 @@ export function createService(deps: ServiceDeps): Service {
    * Excel のコンフリクトの採用（excelResolveConflict）の入力検証（決定 34）。
    *
    * 決定 30 の採用と同じく**作業ツリーのファイルを直接書く**ので、パス（文字列と実体）・未マージであること・
-   * 表示中の比較（トークン）を確かめ、座標は整数で範囲内、側は 2 種のどちらかだけを通す。
+   * 表示中の比較（トークン）を確かめる。座標・側の検証は excelValidation.ts（純関数）。
    * 渡すのは座標と側だけで、本文は core が読み直したものから作る。
    */
   const guardExcelResolve = async (
@@ -734,61 +729,7 @@ export function createService(deps: ServiceDeps): Service {
       });
     }
 
-    const resolution = req.resolution;
-    if (resolution?.kind === 'file') return [view, { kind: 'file', side: validSide(resolution.side) }];
-    if (resolution?.kind !== 'cells') throw new HandlerError({ kind: 'internal', message: '採用の指定が不正です。' });
-
-    return [view, { kind: 'cells', choices: validChoices(resolution.choices, view.comparison.sheets) }];
-  };
-
-  const validSide = (side: unknown): ExcelConflictSideDto => {
-    if (side === 'ours' || side === 'theirs') return side;
-    throw new HandlerError({ kind: 'internal', message: '採用する側の指定が不正です。' });
-  };
-
-  /** シート・揃えた座標の検証。数は「シートのセル数」を上限にする（巨大な配列で main を止めさせない）。 */
-  const validChoices = (choices: ExcelCellChoicesDto, sheets: readonly SheetComparison[]): ExcelCellChoices => {
-    const bad = (): never => {
-      throw new HandlerError({ kind: 'internal', message: '採用するセルの指定が不正です。' });
-    };
-    const inRange = (n: unknown, max: number): n is number => Number.isInteger(n) && (n as number) >= 0 && (n as number) < max;
-    if (choices === null || typeof choices !== 'object') return bad();
-    const { cells, rows, cols, rest } = choices;
-    const edits = choices.edits ?? [];
-    if (!Array.isArray(edits) || edits.length > EXCEL_LIMITS.maxCellsPerBook) return bad();
-    const hunks = choices.hunks ?? [];
-    if (!Array.isArray(hunks) || hunks.length > EXCEL_LIMITS.maxRowsPerSheet * sheets.length) return bad();
-    const validOrder = (o: unknown): 'ours-theirs' | 'theirs-ours' => (o === 'ours-theirs' || o === 'theirs-ours' ? o : bad());
-    const validRowChoice = (c: unknown): 'ours' | 'theirs' | 'ours-theirs' | 'theirs-ours' =>
-      c === 'ours-theirs' || c === 'theirs-ours' ? c : validSide(c);
-    if (!Array.isArray(cells) || !Array.isArray(rows) || !Array.isArray(cols)) return bad();
-    if (cells.length > EXCEL_LIMITS.maxCellsPerBook || rows.length > EXCEL_LIMITS.maxRowsPerSheet * sheets.length || cols.length > EXCEL_LIMITS.maxColumns * sheets.length) {
-      return bad();
-    }
-    const sheetOf = (n: unknown): SheetComparison => (inRange(n, sheets.length) ? (sheets[n] as SheetComparison) : bad());
-    const rowIn = (s: SheetComparison, r: unknown): number => (inRange(r, s.oldRow.length) ? r : bad());
-    const colIn = (s: SheetComparison, c: unknown): number => (inRange(c, s.colCount) ? c : bad());
-    return {
-      cells: cells.map((c) => {
-        const s = sheetOf(c?.sheet);
-        return { sheet: c.sheet, row: rowIn(s, c.row), col: colIn(s, c.col), side: validSide(c.side) };
-      }),
-      rows: rows.map((r) => ({ sheet: r?.sheet, row: rowIn(sheetOf(r?.sheet), r.row), side: validRowChoice(r.side) })),
-      cols: cols.map((c) => ({ sheet: c?.sheet, col: colIn(sheetOf(c?.sheet), c.col), side: validSide(c.side) })),
-      rest: rest === null ? null : validSide(rest),
-      edits: edits.map((e) => {
-        const s = sheetOf(e?.sheet);
-        // Excel の 1 セルの上限（32,767 文字）。NUL は XML に書けない
-        if (typeof e.value !== 'string' || e.value.length > MAX_EDIT_LENGTH || e.value.includes(String.fromCharCode(0))) return bad();
-        return { sheet: e.sheet, row: rowIn(s, e.row), col: colIn(s, e.col), value: e.value };
-      }),
-      hunks: hunks.map((h) => {
-        const s = sheetOf(h?.sheet);
-        const row = rowIn(s, h.row);
-        const end = Number.isInteger(h.end) && h.end > row && h.end <= s.oldRow.length ? h.end : bad();
-        return { sheet: h.sheet, row, end, order: validOrder(h.order) };
-      }),
-    };
+    return [view, validResolution(req.resolution, view.comparison.sheets)];
   };
 
   /** 整数に丸めて範囲に収める。数値でなければ min。 */
@@ -1329,6 +1270,13 @@ export function createService(deps: ServiceDeps): Service {
       return toRowDiffDto(view, rowDiffOf(view, deps.settings().diffContextLines));
     },
 
+    /* 対応表 #51: マージを取り消す（決定 34）。不可逆なので確認必須（決定 16） */
+    mergeAbort: async (id, confirmed) => {
+      const ops = opsFor(id);
+      requireConfirmed('abort-merge', confirmed);
+      return withSignal(id, (signal) => ops.abortMerge(signal));
+    },
+
     /*
      * Excel のコンフリクトの採用（決定 34）。作業ツリーへ書き戻すだけで index には触れないので、
      * status は取り直さない（決定 30 と同じ）。
@@ -1337,13 +1285,6 @@ export function createService(deps: ServiceDeps): Service {
      * 同じものが index の段に残っていて取り戻せる。比較を作ってから作業ツリーが変わっていれば、
      * core が書く直前の照合で diff-stale にする（ここで見た worktree が古いまま上書きすることは無い）。
      */
-    /* 対応表 #51: マージを取り消す（決定 34）。不可逆なので確認必須（決定 16） */
-    mergeAbort: async (id, confirmed) => {
-      const ops = opsFor(id);
-      requireConfirmed('abort-merge', confirmed);
-      return withSignal(id, (signal) => ops.abortMerge(signal));
-    },
-
     excelResolveConflict: async (id, req, confirmed) => {
       const session = requireSession(id);
       const [view, request] = await guardExcelResolve(id, req);

@@ -129,13 +129,12 @@ describe('index の段の実体取得（対応表 #49 の :<n>:、決定 34）',
     await fx.run('merge', 'topic').catch(() => undefined);
   }
 
-  it('共通祖先・自分側・相手側をそれぞれ返す', async () => {
+  it('自分側・相手側をそれぞれ返す', async () => {
     await conflict('book.csv', 'a,1\n', 'a,T\n', 'a,M\n');
-    const read = async (rev: 'base' | 'ours' | 'theirs'): Promise<string | null> => {
+    const read = async (rev: 'ours' | 'theirs'): Promise<string | null> => {
       const r = await readBlobFiltered(fx.ctx, rev, 'book.csv', { maxBytes: MAX });
       return r?.kind === 'ok' ? text(r.bytes) : null;
     };
-    expect(await read('base')).toBe('a,1\n');
     expect(await read('ours')).toBe('a,M\n');
     expect(await read('theirs')).toBe('a,T\n');
   });

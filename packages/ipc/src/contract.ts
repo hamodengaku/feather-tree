@@ -676,6 +676,11 @@ export interface ExcelSheetConflictDto {
   readonly rows: readonly number[];
   /** 相手側を採れない所。col が -1 なら行全体。 */
   readonly blocked: readonly { readonly row: number; readonly col: number; readonly reason: ExcelBlockReasonDto }[];
+  /**
+   * 両方を採用（相手側の行の挿入になる）を採れないシートなら、その理由（docs/07 7.2）。省略・null は採れる。
+   * 形は @feathertree/conflict-plan の ConflictTargets と同じ（renderer はそのまま渡す）。
+   */
+  readonly bothBlocked?: ExcelBlockReasonDto | null;
 }
 
 export interface ExcelViewDto {
@@ -702,14 +707,11 @@ export interface ExcelViewDto {
  */
 export interface ExcelConflictDto {
   readonly source: 'markers' | 'stages';
-  /** CSV のマーカーの読め方（ブックは not-csv）。markers に入れなかった理由の案内に使う。 */
-  readonly markers: 'split' | 'none' | 'malformed' | 'unsupported' | 'not-csv';
-  /** markers のときの衝突ブロックの数。 */
-  readonly blocks: number;
-  /** 作業ツリーが今どちらの側と同じか（stages のとき）。markers では neither（マーカー入り）。 */
-  readonly worktree: 'ours' | 'theirs' | 'neither' | 'absent' | 'unknown';
   readonly cellResolvable: boolean;
-  /** 作業ツリーの指紋。これが同じ間だけ、renderer は選んだ採り方を持ち越す。 */
+  /**
+   * 比較の出どころの指紋（markers は作業ツリー、stages は作業ツリーと両側の段）。
+   * パス・source とこれが同じ間だけ、renderer は選んだ採り方を持ち越す。
+   */
   readonly fingerprint: string;
 }
 
@@ -724,8 +726,8 @@ export type ExcelBothOrderDto = 'ours-theirs' | 'theirs-ours';
  */
 export interface ExcelCellChoicesDto {
   readonly cells: readonly { readonly sheet: number; readonly row: number; readonly col: number; readonly side: ExcelConflictSideDto }[];
-  /** 行の指定。両側にある行なら、両方を採用して 2 行に分けられる（並びを選ぶ）。 */
-  readonly rows: readonly { readonly sheet: number; readonly row: number; readonly side: ExcelConflictSideDto | ExcelBothOrderDto }[];
+  /** 行の指定（片側にしか無い行を入れるか、両側にある行のどちらを採るか）。両方の採用は hunks で。 */
+  readonly rows: readonly { readonly sheet: number; readonly row: number; readonly side: ExcelConflictSideDto }[];
   readonly cols: readonly { readonly sheet: number; readonly col: number; readonly side: ExcelConflictSideDto }[];
   readonly rest: ExcelConflictSideDto | null;
   /**

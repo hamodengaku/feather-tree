@@ -9,10 +9,14 @@
    * スクロールの同期もここが持つ: 片方がスクロールしたら、相手の値が**違うときだけ**代入する
    * （mirrorScroll）。同じ値を代入しても scroll イベントは出ないので、往復で揺れない。
    *
+   * コンフリクトの採り方の規則（印・プレビュー・未決定の数）は @feathertree/conflict-plan の SheetRules を
+   * $derived で 1 回だけ作り、セルごとに使い回す（書き込みと同じ規則）。
+   *
    * どの状態でも必ず何か出す（白い画面にしない。要件 E7）。
    */
   import { untrack } from 'svelte';
   import { buildOffsets } from '@feathertree/base-ui';
+  import { hasAnyChoice, planIndexOf, planSheet, type EffectiveChoice } from '@feathertree/conflict-plan';
   import ExcelConflictBar from '../components/ExcelConflictBar.svelte';
   import ExcelGrid from '../components/ExcelGrid.svelte';
   import ExcelSheetTabs from '../components/ExcelSheetTabs.svelte';
@@ -21,10 +25,9 @@
   import FileContextMenu from '../components/FileContextMenu.svelte';
   import { app } from '../lib/appState.svelte.js';
   import { effectiveColWidths, effectiveRowHeights, mirrorScroll, rowHeaderWidth } from '../lib/excelGrid.js';
-  import { buildPreviewRows, hasAnyChoice, previewIndexOf } from '../lib/excelPreview.js';
-  import { blockReasonAt, choiceAt, inRanges, unresolvedInSheet, type ConflictChoice } from '../lib/excelConflict.js';
+  import { inRanges, rulesFor } from '../lib/excelConflict.js';
+  import { buildConflictMenu, type ConflictMenuCommand } from '../lib/excelMenu.js';
   import {
-    blockReasonText,
     conflictSideNotice,
     conflictWorkbookSummary,
     sheetNotice,
@@ -54,9 +57,13 @@
   /** 未マージなら左 = 自分側、右 = 相手側（決定 34）。 */
   const conflict = $derived(view?.conflict ?? null);
 
-  const rowOffsets = $derived(layout === null ? new Float64Array(1) : buildOffsets(effectiveRowHeights(layout, ex.showHidden)));
+  const rowHeights = $derived(layout === null ? new Float64Array(0) : effectiveRowHeights(layout, ex.showHidden));
+  const rowOffsets = $derived(layout === null ? new Float64Array(1) : buildOffsets(rowHeights));
   const colOffsets = $derived(layout === null ? new Float64Array(1) : buildOffsets(effectiveColWidths(layout, ex.showHidden)));
   const headerWidth = $derived(rowHeaderWidth(layout));
+
+  /** 今のシートの採り方の規則。セル単位で採れるコンフリクトのときだけ。 */
+  const rules = $derived(conflict?.cellResolvable === true ? rulesFor(sheet, ex.choices) : null);
 
   /** 側ごとの案内。ブックが読めない → シートがその側に無い、の順に見る。 */
   function noticeFor(side: 'old' | 'new'): string | null {
@@ -64,7 +71,7 @@
     const state = side === 'old' ? view.old.state : view.new.state;
     const conflictNotice = conflict === null ? null : conflictSideNotice(side, state);
     if (conflictNotice !== null) return conflictNotice;
-    const bookNotice = sideNotice(side, side === 'old' ? view.old.state : view.new.state);
+    const bookNotice = sideNotice(side, state);
     if (bookNotice !== null) return bookNotice;
     return sheet === null ? null : sheetNotice(side, sheet);
   }
@@ -91,13 +98,10 @@
   let previewViewport = $state<HTMLDivElement | null>(null);
 
   /** 採り方を 1 つでも決めたら、3 つ目のペインとして出す。 */
-  const previewOn = $derived(
-    conflict?.cellResolvable === true && sheet?.conflict != null && layout !== null && hasAnyChoice(ex.choices),
-  );
-  const previewRows = $derived(
-    previewOn && layout !== null && ex.sheet !== null ? buildPreviewRows(layout, sheet ?? undefined, ex.choices, ex.sheet) : [],
-  );
-  const previewIndex = $derived(previewIndexOf(previewRows));
+  const previewOn = $derived(rules !== null && layout !== null && hasAnyChoice(ex.choices));
+  /** 書き込み後の行の並び（書き込みと同じ planSheet）。 */
+  const previewRows = $derived(previewOn && rules !== null && layout !== null ? planSheet(rules, layout).rows : []);
+  const previewIndex = $derived(planIndexOf(previewRows));
 
   /** 上のグリッドで選んだ行へ、プレビューを動かす。 */
   let previewFocusSeq = 0;
@@ -171,23 +175,12 @@
 
   let menu = $state<{ x: number; y: number; side: 'old' | 'new' } | null>(null);
 
-  /** セル単位で採れるコンフリクトのときだけ右クリックを受ける。 */
-  const conflictMenu = $derived(conflict?.cellResolvable === true && sheet?.conflict != null);
-
   function openMenu(side: 'old' | 'new', row: number, col: number, x: number, y: number): void {
     activeSide = side;
     // 範囲の外を右クリックしたら、そのセルを選び直す（Excel と同じ）
     if (!inRanges(ex.ranges, row, col)) ex.pointerDown('cell', row, col, { shift: false, ctrl: false });
     ex.pointerUp();
     menu = { x, y, side };
-  }
-
-  /** メニューに添える値（長ければ切る。改行は空白に）。 */
-  function clip(text: string): string {
-    let flat = '';
-    for (const ch of text) flat += ch === '\n' || ch === '\r' ? ' ' : ch;
-    if (flat === '') return '（空）';
-    return flat.length > 24 ? flat.slice(0, 24) + '…' : flat;
   }
 
   function displayAt(row: number, col: number, side: 'old' | 'new'): string {
@@ -197,85 +190,75 @@
     return i < 0 ? '' : (r.text[i] ?? '');
   }
 
-  interface MenuAction {
-    readonly label: string;
-    readonly disabled?: boolean;
-    readonly onclick: () => void;
+  function run(command: ConflictMenuCommand, side: 'old' | 'new'): void {
+    switch (command.kind) {
+      case 'side':
+        ex.chooseSelection(command.side);
+        break;
+      case 'both':
+        ex.chooseBothSelection(command.order);
+        break;
+      case 'clear':
+        ex.chooseSelection(null);
+        break;
+      case 'rest':
+        ex.choices.rest = command.side;
+        break;
+      case 'edit':
+        ex.startEdit(side);
+        break;
+    }
   }
 
-  const menuActions = $derived.by((): MenuAction[] => {
-    if (menu === null || layout === null) return [];
+  const menuActions = $derived.by(() => {
+    const m = menu;
+    if (m === null || layout === null || rules === null) return [];
     const { cells, rows } = ex.selectionTargets;
-    const count = cells.length + rows.length;
-    if (count === 0) return [{ label: 'この範囲にコンフリクトはありません', disabled: true, onclick: () => undefined }];
-    const summary = sheet ?? undefined;
-    const reasons = [
-      ...cells.map((c) => blockReasonAt(summary, c.row, c.col)),
-      ...rows.map((r) => blockReasonAt(summary, r, -1)),
-    ];
-    const blocked = reasons.find((r) => r !== null) ?? null;
-
-    let ours: string;
-    let theirs: string;
-    const oneCell = count === 1 ? cells[0] : undefined;
-    const oneRow = count === 1 ? rows[0] : undefined;
-    if (oneCell !== undefined) {
-      ours = 'ours を採用「' + clip(displayAt(oneCell.row, oneCell.col, 'old')) + '」';
-      theirs = 'theirs を採用「' + clip(displayAt(oneCell.row, oneCell.col, 'new')) + '」';
-    } else if (oneRow !== undefined) {
-      const inOurs = (layout.oldRow[oneRow] ?? -1) >= 0;
-      ours = inOurs ? 'ours を採用（この行を残す）' : 'ours を採用（この行を入れない）';
-      theirs = inOurs ? 'theirs を採用（この行を削除する）' : 'theirs を採用（この行を挿入する）';
-    } else {
-      ours = 'ours を採用（' + String(count) + ' か所）';
-      theirs = 'theirs を採用（' + String(count) + ' か所）';
-    }
-    const actions: MenuAction[] = [
-      { label: ours, onclick: () => ex.chooseSelection('ours') },
-      {
-        label: blocked === null ? theirs : theirs + ' — ' + blockReasonText(blocked),
-        disabled: blocked !== null,
-        onclick: () => ex.chooseSelection('theirs'),
-      },
-    ];
-    // 両方を採用（docs/07 7.2）。相手側の行を挿入することになるので、相手側を採れない所を含めば押せない
-    const both = (label: string): string => (blocked === null ? label : label + ' — ' + blockReasonText(blocked));
-    if (ex.selectionBlocks.length > 0) {
-      actions.push(
-        {
-          label: both('選んだ行で両方を採用（ours → theirs）'),
-          disabled: blocked !== null,
-          onclick: () => ex.chooseBothSelection('ours-theirs'),
+    const index = rules.index;
+    const oneCell = cells.length === 1 && rows.length === 0 ? cells[0] : undefined;
+    const oneRow = rows.length === 1 && cells.length === 0 ? rows[0] : undefined;
+    const reasons = [...cells.map((c) => index.blockReasonAt(c.row, c.col)), ...rows.map((r) => index.blockReasonAt(r, -1))];
+    const items = buildConflictMenu({
+      cells,
+      rows,
+      bothSpans: ex.selectionBlocks.length,
+      blocked: reasons.find((r) => r !== null) ?? null,
+      bothBlocked: index.bothBlocked,
+      cellText:
+        oneCell === undefined
+          ? null
+          : { ours: displayAt(oneCell.row, oneCell.col, 'old'), theirs: displayAt(oneCell.row, oneCell.col, 'new') },
+      rowInOurs: oneRow === undefined ? null : (layout.oldRow[oneRow] ?? -1) >= 0,
+      editable: ex.editableCell !== null,
+    });
+    return items.map((item) => {
+      const command = item.command;
+      return {
+        label: item.label,
+        disabled: item.disabled,
+        onclick: () => {
+          if (command !== null) run(command, m.side);
         },
-        {
-          label: both('選んだ行で両方を採用（theirs → ours）'),
-          disabled: blocked !== null,
-          onclick: () => ex.chooseBothSelection('theirs-ours'),
-        },
-      );
-    }
-    actions.push({ label: '個別の指定を外す', onclick: () => ex.chooseSelection(null) });
-    // 残りすべて（帯から移した。docs/07 7.0）。ブック全体で、個別に決めていない所に効く
-    actions.push(
-      { label: '未決定の残りをすべて ours を採用', onclick: () => (ex.conflictRest = 'ours') },
-      { label: '未決定の残りをすべて theirs を採用', onclick: () => (ex.conflictRest = 'theirs') },
-    );
-    if (ex.editableCell !== null) {
-      const side = menu.side;
-      actions.push({
-        label: blocked === null ? 'セルを編集…' : 'セルを編集… — ' + blockReasonText(blocked),
-        disabled: blocked !== null,
-        onclick: () => ex.startEdit(side),
-      });
-    }
-    return actions;
+      };
+    });
   });
+
+  // ---------------------------------------------------------------- セルの編集（docs/07 7.1）
+
+  /**
+   * そのセルで編集を始められるか: 1 セルだけ選んでいて、それが値の違うセルで、相手側を採れない所でない。
+   * row・col を渡せば、そのセルを選んでいることも確かめる（ダブルクリック）。
+   */
+  function canStartEdit(at?: { row: number; col: number }): boolean {
+    const target = ex.editableCell;
+    if (rules === null || ex.editing !== null || target === null) return false;
+    if (at !== undefined && (target.row !== at.row || target.col !== at.col)) return false;
+    return rules.index.blockReasonAt(target.row, target.col) === null;
+  }
 
   /** グリッドに焦点があるときの打鍵。1 セルだけ選んでいれば、F2・Enter・文字で編集を始める。 */
   function gridKey(e: KeyboardEvent): void {
-    const target = ex.editableCell;
-    if (!conflictMenu || ex.editing !== null || target === null) return;
-    if (blockReasonAt(sheet ?? undefined, target.row, target.col) !== null) return;
+    if (!canStartEdit()) return;
     if (e.key === 'F2' || e.key === 'Enter') {
       e.preventDefault();
       ex.startEdit(activeSide);
@@ -287,10 +270,7 @@
 
   function startEditAt(side: 'old' | 'new', row: number, col: number): void {
     activeSide = side;
-    const target = ex.editableCell;
-    if (!conflictMenu || target === null || target.row !== row || target.col !== col) return;
-    if (blockReasonAt(sheet ?? undefined, row, col) !== null) return;
-    ex.startEdit(side);
+    if (canStartEdit({ row, col })) ex.startEdit(side);
   }
 
   /** そのグリッドで編集中のセル。 */
@@ -301,11 +281,8 @@
 
   /** グリッドに出す採り方の印（セル単位で採れるときだけ）。 */
   const choiceOf = $derived.by(() => {
-    const index = ex.sheet;
-    if (conflict?.cellResolvable !== true || layout === null || index === null || sheet?.conflict == null) return null;
-    const summary = sheet;
-    const choices = ex.choices;
-    return (row: number, col: number): ConflictChoice | null => choiceAt(summary, choices, index, row, col);
+    const r = rules;
+    return r === null ? null : (row: number, col: number): EffectiveChoice | null => r.choiceAt(row, col);
   });
 </script>
 
@@ -369,10 +346,10 @@
               disabled={app.busy || absent}
               title={absent
                 ? 'この側ではファイルが削除されています（削除は差分モードで行ってください）'
-                : 'ファイル全体を' + (which === 'old' ? '自分側（ours）' : '相手側（theirs）') + 'の内容にして作業ツリーへ書き込みます'}
+                : 'ファイル全体を' + (which === 'old' ? '自分側' : '相手側') + 'の内容にして作業ツリーへ書き込みます'}
               onclick={() => void app.resolveExcelConflict({ kind: 'file', side: which === 'old' ? 'ours' : 'theirs' })}
             >
-              {which === 'old' ? 'ours を採用' : 'theirs を採用'}
+              {which === 'old' ? '自分側を採用' : '相手側を採用'}
             </button>
           {/if}
         </div>
@@ -386,6 +363,36 @@
       {#if layout === null}
         <p class="empty span">{sheet === null ? 'シートがありません。' : '読み込み中…'}</p>
       {:else}
+        <!-- 左右のグリッドは側だけが違う（old = 自分側、new = 相手側） -->
+        {#snippet grid(which: 'old' | 'new')}
+          <ExcelGrid
+            side={which}
+            {layout}
+            {rowOffsets}
+            {colOffsets}
+            rowHeaderWidth={headerWidth}
+            rows={ex.rows}
+            selection={ex.selection}
+            {choiceOf}
+            bind:viewport={
+              () => (which === 'old' ? oldViewport : newViewport),
+              (v) => {
+                if (which === 'old') oldViewport = v ?? null;
+                else newViewport = v ?? null;
+              }
+            }
+            onscroll={(top, left) => sync(which, top, left)}
+            onneed={handleNeed}
+            ranges={ex.ranges}
+            onpointer={(kind, row, col, m) => handlePointer(which, kind, row, col, m)}
+            onpointerenter={(kind, row, col) => ex.pointerEnter(kind, row, col)}
+            oncontext={rules !== null ? (row, col, x, y) => openMenu(which, row, col, x, y) : undefined}
+            ondblcell={(row, col) => startEditAt(which, row, col)}
+            editing={editingOn(which)}
+            oneditcommit={(value) => ex.commitEdit(value)}
+            oneditcancel={() => ex.cancelEdit()}
+          />
+        {/snippet}
         <div class="side">
           {#if oldNotice !== null}
             <div class="side-notice">
@@ -393,27 +400,7 @@
               {#if oldDetail !== null}<pre class="detail">{oldDetail}</pre>{/if}
             </div>
           {:else}
-            <ExcelGrid
-              side="old"
-              {layout}
-              {rowOffsets}
-              {colOffsets}
-              rowHeaderWidth={headerWidth}
-              rows={ex.rows}
-              selection={ex.selection}
-              {choiceOf}
-              bind:viewport={oldViewport}
-              onscroll={(top, left) => sync('old', top, left)}
-              onneed={handleNeed}
-              ranges={ex.ranges}
-              onpointer={(kind, row, col, m) => handlePointer('old', kind, row, col, m)}
-              onpointerenter={(kind, row, col) => ex.pointerEnter(kind, row, col)}
-              oncontext={conflictMenu ? (row, col, x, y) => openMenu('old', row, col, x, y) : undefined}
-              ondblcell={(row, col) => startEditAt('old', row, col)}
-              editing={editingOn('old')}
-              oneditcommit={(value) => ex.commitEdit(value)}
-              oneditcancel={() => ex.cancelEdit()}
-            />
+            {@render grid('old')}
           {/if}
         </div>
         <div class="divider" aria-hidden="true"></div>
@@ -421,53 +408,30 @@
           {#if newNotice !== null}
             <div class="side-notice"><p>{newNotice}</p></div>
           {:else}
-            <ExcelGrid
-              side="new"
-              {layout}
-              {rowOffsets}
-              {colOffsets}
-              rowHeaderWidth={headerWidth}
-              rows={ex.rows}
-              selection={ex.selection}
-              {choiceOf}
-              bind:viewport={newViewport}
-              onscroll={(top, left) => sync('new', top, left)}
-              onneed={handleNeed}
-              ranges={ex.ranges}
-              onpointer={(kind, row, col, m) => handlePointer('new', kind, row, col, m)}
-              onpointerenter={(kind, row, col) => ex.pointerEnter(kind, row, col)}
-              oncontext={conflictMenu ? (row, col, x, y) => openMenu('new', row, col, x, y) : undefined}
-              ondblcell={(row, col) => startEditAt('new', row, col)}
-              editing={editingOn('new')}
-              oneditcommit={(value) => ex.commitEdit(value)}
-              oneditcancel={() => ex.cancelEdit()}
-            />
+            {@render grid('new')}
           {/if}
         </div>
       {/if}
     </div>
 
-    {#if previewOn && layout !== null && ex.sheet !== null}
+    {#if previewOn && layout !== null}
       <!-- 3 つ目のペイン: マージ後のプレビュー（docs/07 7.3） -->
       <div class="preview-label">
         <span class="preview-title">マージ後のプレビュー</span>
         <span class="legend">
-          <span class="mark theirs">theirs から</span>
+          <span class="mark theirs">相手側から</span>
           <span class="mark edited">手入力</span>
-          <span class="mark undecided">未決定（ours のまま表示）</span>
+          <span class="mark undecided">未決定（自分側のまま表示）</span>
         </span>
       </div>
       <div class="preview">
         <ExcelPreviewGrid
           {layout}
-          summary={sheet ?? undefined}
-          sheet={ex.sheet}
           {previewRows}
           rows={ex.rows}
+          {rowHeights}
           {colOffsets}
           rowHeaderWidth={headerWidth}
-          choices={ex.choices}
-          editOf={(row, col) => ex.editOf(row, col)}
           selectedAligned={ex.selection?.row ?? null}
           focusRow={previewFocus}
           bind:viewport={previewViewport}
@@ -495,7 +459,7 @@
       onselect={(i) => void ex.selectSheet(i)}
       onmove={(d) => void ex.moveToChange(d)}
       ontogglehidden={() => ex.toggleShowHidden()}
-      unresolvedOf={conflict?.cellResolvable === true ? (sh) => unresolvedInSheet(sh, ex.choices) : null}
+      unresolvedOf={conflict?.cellResolvable === true ? (sh) => (rulesFor(sh, ex.choices)?.unresolved() ?? 0) : null}
     />
   {/if}
 </section>

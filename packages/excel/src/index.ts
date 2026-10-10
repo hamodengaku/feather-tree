@@ -33,6 +33,7 @@ export {
   FORMULA_NONE,
   FORMULA_NORMAL,
   FORMULA_SHARED,
+  isArrayFormulaCell,
   type CellData,
   type CellKind,
   type ColumnSpec,

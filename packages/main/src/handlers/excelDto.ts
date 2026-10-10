@@ -74,13 +74,13 @@ function toSheetSummary(sheet: SheetComparison): ExcelSheetSummaryDto {
 
 function toConflictDto(conflict: ExcelConflict | null): ExcelConflictDto | null {
   if (conflict === null) return null;
+  const { ours, theirs } = conflict.stageHashes;
   return {
     source: conflict.source,
-    markers: conflict.markers,
-    blocks: conflict.blocks,
-    worktree: conflict.worktree,
     cellResolvable: conflict.cellResolvable,
-    fingerprint: conflict.fingerprint,
+    // 段の方式は、作業ツリーが同じでも段が変われば（マージをやり直した等）別の比較
+    fingerprint:
+      conflict.source === 'stages' ? `${conflict.fingerprint}|${ours ?? '-'}|${theirs ?? '-'}` : conflict.fingerprint,
   };
 }
 
@@ -90,7 +90,13 @@ function withConflictTargets(view: ExcelComparison, sheets: ExcelSheetSummaryDto
   const targets = conflictTargetsOf(view);
   return sheets.map((summary, i) => {
     const t = targets?.[i];
-    return { ...summary, conflict: t === undefined ? null : { cells: [...t.cells], rows: [...t.rows], blocked: t.blocked.map((b) => ({ ...b })) } };
+    return {
+      ...summary,
+      conflict:
+        t === undefined
+          ? null
+          : { cells: [...t.cells], rows: [...t.rows], blocked: t.blocked.map((b) => ({ ...b })), bothBlocked: t.bothBlocked },
+    };
   });
 }
 

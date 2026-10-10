@@ -17,9 +17,8 @@ import {
   CELL_BLANK,
   CELL_INLINE,
   CELL_NUMBER,
-  FORMULA_ARRAY,
-  FORMULA_DATA_TABLE,
   FORMULA_NONE,
+  isArrayFormulaCell,
   type CellData,
   type RowData,
   type SheetData,
@@ -358,7 +357,7 @@ export function editedCell(value: string, style: number, col: number): CellData 
 
 /** 相手側のセルを書く形にする。 */
 function theirsWrite(theirs: TheirsSide, cell: CellData): CellWrite {
-  if (cell.formulaKind === FORMULA_ARRAY || cell.formulaKind === FORMULA_DATA_TABLE) {
+  if (isArrayFormulaCell(cell)) {
     throw new SheetRewriteError('配列数式・データテーブルのセルは相手側から写せません。');
   }
   return {
@@ -368,6 +367,14 @@ function theirsWrite(theirs: TheirsSide, cell: CellData): CellWrite {
     sharedInner: cell.kind === 2 /* CELL_SHARED */ ? (theirs.sstRaw[cell.num] ?? null) : null,
     sharedText: cell.kind === 2 ? (theirs.sst[cell.num] ?? '') : '',
   };
+}
+
+/** 打った値の無い行の既定。 */
+const NO_EDITS: ReadonlyMap<number, string> = new Map();
+
+/** 2 つの列の集まりを重複なしの昇順に。 */
+function sortedCols(a: Iterable<number>, b: Iterable<number>): number[] {
+  return [...new Set([...a, ...b])].sort((x, y) => x - y);
 }
 
 function theirsRowTag(theirs: TheirsSide, row: RowData | undefined, rowNumber: number): string {
@@ -392,73 +399,69 @@ function rebuildSheetData(
   if (outRows.length > MAX_ROWS) throw new SheetRewriteError('行が多すぎて書き換えられません。');
   let out = '';
 
-  const writeTheirs = (rowNumber: number, theirsRow: RowData | undefined, col: number): string => {
+  const requireTheirs = (): TheirsSide => {
     if (theirs === null) throw new SheetRewriteError('相手側のシートがありません。');
+    return theirs;
+  };
+
+  const writeTheirs = (rowNumber: number, theirsRow: RowData | undefined, col: number): string => {
+    const t = requireTheirs();
     const cell = cellAt(theirsRow, col);
     if (cell === undefined) return '';
-    const w = theirsWrite(theirs, cell);
+    const w = theirsWrite(t, cell);
     const xml = cellXml(cellAddress(rowNumber, col), w);
     if (xml !== '') notify?.({ row: rowNumber, col, side: 'theirs', source: cell, formula: w.formula });
     return xml;
   };
 
+  /**
+   * 利用者が打った値を書く（docs/07 7.1）。書式は元にした側のセルのもの。自分側の版は土台の書式のまま、
+   * 相手側の版は土台の styles.xml へ足し込んで付け替える。
+   */
+  const writeEdited = (rowNumber: number, col: number, value: string, base: CellData | undefined, side: 'ours' | 'theirs'): string => {
+    if (isArrayFormulaCell(base)) throw new SheetRewriteError('配列数式・データテーブルのセルには、打った値を書けません。');
+    const cell = editedCell(value, base?.style ?? 0, col);
+    const style = side === 'theirs' ? requireTheirs().styles.importXf(cell.style) : cell.style;
+    const xml = cellXml(cellAddress(rowNumber, col), { cell, style, formula: null, sharedInner: null, sharedText: '' });
+    if (xml !== '') notify?.({ row: rowNumber, col, side, source: cell, formula: null });
+    return xml;
+  };
+
   outRows.forEach((o, rowNumber) => {
     if (o.kind === 'theirs') {
-      if (theirs === null) throw new SheetRewriteError('相手側のシートがありません。');
-      const theirsRow = theirs.data.rows[o.row];
-      const typed = o.edits ?? new Map<number, string>();
+      const t = requireTheirs();
+      const theirsRow = t.data.rows[o.row];
+      const typed = o.edits ?? NO_EDITS;
       if (theirsRow === undefined && typed.size === 0) return;
-      const cols = [...new Set([...(theirsRow?.cells ?? []).map((c) => c.col), ...typed.keys()])].sort((a, b) => a - b);
-      let cells = '';
-      for (const col of cols) {
-        const value = typed.get(col);
-        if (value === undefined) {
-          cells += writeTheirs(rowNumber, theirsRow, col);
-          continue;
-        }
-        // 打った値。書式は相手側のセルのもの（土台の styles.xml へ足し込んで付け替える）
-        const base = cellAt(theirsRow, col);
-        if (base !== undefined && (base.formulaKind === FORMULA_ARRAY || base.formulaKind === FORMULA_DATA_TABLE)) {
-          throw new SheetRewriteError('配列数式・データテーブルのセルには、打った値を書けません。');
-        }
-        const source = editedCell(value, base?.style ?? 0, col);
-        const xml = cellXml(cellAddress(rowNumber, col), {
-          cell: source,
-          style: theirs.styles.importXf(source.style),
-          formula: null,
-          sharedInner: null,
-          sharedText: '',
-        });
-        if (xml !== '') notify?.({ row: rowNumber, col, side: 'theirs', source, formula: null });
-        cells += xml;
-      }
-      out += theirsRowTag(theirs, theirsRow, rowNumber) + cells + '</row>';
+      const cols = sortedCols((theirsRow?.cells ?? []).map((c) => c.col), typed.keys());
+      const cells = cols
+        .map((col) => {
+          const value = typed.get(col);
+          return value === undefined
+            ? writeTheirs(rowNumber, theirsRow, col)
+            : writeEdited(rowNumber, col, value, cellAt(theirsRow, col), 'theirs');
+        })
+        .join('');
+      out += theirsRowTag(t, theirsRow, rowNumber) + cells + '</row>';
       return;
     }
 
     const el = rows.get(o.row);
     const rowData = input.data.rows[o.row];
-    const edits = o.edits ?? new Map<number, string>();
-    const picks = [...new Set([...o.theirsCols, ...edits.keys()])].sort((a, b) => a - b);
+    const edits = o.edits ?? NO_EDITS;
+    const picks = sortedCols(o.theirsCols, edits.keys());
     const theirsRow = o.theirsCols.size > 0 && theirs !== null ? theirs.data.rows[o.theirsRow] : undefined;
     /** 差し替える列を書く（打った値 > 相手側）。 */
     const writePick = (col: number): string => {
       const value = edits.get(col);
-      if (value === undefined) return writeTheirs(rowNumber, theirsRow, col);
-      const current = cellAt(rowData, col);
-      if (current !== undefined && (current.formulaKind === FORMULA_ARRAY || current.formulaKind === FORMULA_DATA_TABLE)) {
-        throw new SheetRewriteError('配列数式・データテーブルのセルには、打った値を書けません。');
-      }
-      const cell = editedCell(value, current?.style ?? 0, col);
-      const xml = cellXml(cellAddress(rowNumber, col), { cell, style: cell.style, formula: null, sharedInner: null, sharedText: '' });
-      if (xml !== '') notify?.({ row: rowNumber, col, side: 'ours', source: cell, formula: null });
-      return xml;
+      return value === undefined
+        ? writeTheirs(rowNumber, theirsRow, col)
+        : writeEdited(rowNumber, col, value, cellAt(rowData, col), 'ours');
     };
 
     if (el === undefined) {
       if (picks.length === 0) return;
-      let cells = '';
-      for (const col of picks) cells += writePick(col);
+      const cells = picks.map(writePick).join('');
       if (cells !== '') out += `<row r="${String(rowNumber + 1)}">${cells}</row>`;
       return;
     }
@@ -496,9 +499,7 @@ function rebuildSheetData(
         return;
       }
       tag = tag.replace(/\s*\/>$/, '>');
-      let cells = '';
-      for (const col of picks) cells += writePick(col);
-      out += tag + cells + '</row>';
+      out += tag + picks.map(writePick).join('') + '</row>';
       return;
     }
 
