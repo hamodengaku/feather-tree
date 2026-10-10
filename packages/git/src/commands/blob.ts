@@ -10,16 +10,26 @@ import type { GitContext } from './context.js';
 /**
  * 対応表 #48: blob の全文取得（Unity 展開用。決定 32）。
  *
- * どの版を読むかは 2 通りしかない。
+ * どの版を読むか。
  *   - `'HEAD'` … HEAD のその時点の内容（ステージ済みを見ているときの「変更前」）
  *   - `'index'`… インデックスの内容（未ステージの「変更前」／ステージ済みの「変更後」）
+ *   - `'base'` / `'ours'` / `'theirs'` … 未マージのときの index の段 `:1:` / `:2:` / `:3:`
+ *     （コンフリクト中の比較用。段が欠けていれば「その版に無い」で null）
  *
  * **`--` を置けない**（`<rev>:<path>` は 1 トークンで、`show -- HEAD:x` はパス扱いになる）。
  * 代わりに**このトークンは必ず `HEAD:` か `:` で始まる**——`<rev>` はここにある固定文字列で
  * renderer からは渡らないので、先頭が `-` になる余地が構造的に無い
  * （docs/02-git-command-map.md「名前渡しの規則」の注記）。
  */
-export type BlobRevision = 'HEAD' | 'index';
+export type BlobRevision = 'HEAD' | 'index' | 'base' | 'ours' | 'theirs';
+
+const BLOB_SPEC: Record<BlobRevision, string> = {
+  HEAD: 'HEAD:',
+  index: ':',
+  base: ':1:',
+  ours: ':2:',
+  theirs: ':3:',
+};
 
 export interface BlobText {
   /** バイナリ（先頭に NUL がある）なら null。LFS のポインタは「テキスト」として返る。 */
@@ -39,7 +49,7 @@ export async function readBlobText(
   revision: BlobRevision,
   path: string,
 ): Promise<BlobText | null> {
-  const spec = (revision === 'HEAD' ? 'HEAD:' : ':') + path;
+  const spec = BLOB_SPEC[revision] + path;
   const chunks: Buffer[] = [];
 
   const { exit, result } = await runGitStream(

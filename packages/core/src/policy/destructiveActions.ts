@@ -13,7 +13,8 @@ export type DestructiveAction =
   | 'stash-drop'
   | 'amend-pushed-commit'
   | 'merge-branch'
-  | 'overwrite-conflict-worktree';
+  | 'overwrite-conflict-worktree'
+  | 'abort-merge';
 
 export interface ConfirmationSpec {
   readonly title: string;
@@ -77,6 +78,17 @@ const SPECS: Record<DestructiveAction, ConfirmationSpec> = {
     message:
       '作業ツリーのファイルは自分側・相手側のどちらとも違います（衝突の解消中に編集した可能性があります）。採用すると、その編集は失われます（git には残っていないため復元できません）。',
     confirmLabel: '上書きして採用',
+    recoverable: false,
+  },
+  /*
+   * Unity モードの「マージをキャンセル」（対応表 #51。2026-10-10）。
+   * マージ前の状態へ戻るが、解消の途中で作業ツリーに書いたもの（「適用」で書いたもの・手での編集）は失われる。
+   */
+  'abort-merge': {
+    title: 'マージをキャンセルしますか？',
+    message:
+      '試行中のマージを取り消し、マージ前の状態に戻します。衝突の解消のために適用した内容や編集は失われます（復元できません）。',
+    confirmLabel: 'マージをキャンセル',
     recoverable: false,
   },
   'amend-pushed-commit': {

@@ -16,6 +16,7 @@ import {
   type CommandStartEvent,
   type ConflictResolveRequest,
   type ExcelResolveRequestDto,
+  type UnityResolveRequestDto,
   type HunkStageRequest,
   type CommitRequest,
   type FeatherTreeBridge,
@@ -90,6 +91,9 @@ const bridge: FeatherTreeBridge = {
   unityGetNode: (id: string, path: string, staged: boolean, nodeId: string) =>
     ipcRenderer.invoke(CHANNELS.unityGetNode, id, path, staged, nodeId),
   unityIndexScripts: (id: string) => ipcRenderer.invoke(CHANNELS.unityIndexScripts, id),
+  unityResolveConflict: (id: string, req: UnityResolveRequestDto, confirmed?: boolean) =>
+    ipcRenderer.invoke(CHANNELS.unityResolveConflict, id, req, confirmed),
+  mergeAbort: (id: string, confirmed?: boolean) => ipcRenderer.invoke(CHANNELS.mergeAbort, id, confirmed),
   excelListFiles: (id: string) => ipcRenderer.invoke(CHANNELS.excelListFiles, id),
   excelGetView: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.excelGetView, id, path),
   excelGetSheet: (id: string, token: string, sheet: number) =>

@@ -60,8 +60,10 @@ export {
   isUnityPath,
   rowsFor,
   selectionForNode,
+  unityConflictToken,
 } from './session/unityView.js';
 export type {
+  UnityConflict,
   UnityFormat,
   UnityRefusal,
   UnityRow,

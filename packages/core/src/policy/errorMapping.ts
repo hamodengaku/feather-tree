@@ -74,6 +74,11 @@ const RULES: readonly Rule[] = [
     message: '他の git プロセスが実行中です。少し待ってからやり直してください。',
   },
   {
+    // #51。CONFLICT の行より前に置く（stderr に "merge" を含むため、下の行に吸われないように）
+    test: /There is no merge to abort|MERGE_HEAD missing/i,
+    message: 'マージ中ではありません。リベースや stash の適用で起きた衝突は、ここからは取り消せません。',
+  },
+  {
     test: /CONFLICT|Automatic merge failed|needs merge/i,
     message: 'コンフリクトが発生しました。競合を解決してください。',
   },

@@ -27,6 +27,8 @@ import {
   type TerminalLaunch,
   rowsFor,
   selectionForNode,
+  unityConflictToken,
+  type UnityView,
   EXCEL_LIMITS,
   geometryOf,
   rowDiffOf,
@@ -76,7 +78,10 @@ import type {
   StatusPageDto,
   StatusPageRequest,
   StatusSummaryDto,
+  UnityConflictDto,
   UnityNodeDetailDto,
+  UnityResolveRequestDto,
+  UnityResolveResultDto,
   UnityScriptIndexDto,
   UnityViewDto,
   ExcelCellDetailDto,
@@ -237,6 +242,8 @@ export interface Service {
     nodeId: string,
   ): Promise<UnityNodeDetailDto | null>;
   unityIndexScripts(id: string): Promise<UnityScriptIndexDto>;
+  unityResolveConflict(id: string, req: UnityResolveRequestDto, confirmed?: boolean): Promise<UnityResolveResultDto>;
+  mergeAbort(id: string, confirmed?: boolean): Promise<BranchMergeResultDto>;
   excelListFiles(id: string): Promise<ExcelFileListDto>;
   excelGetView(id: string, path: string): Promise<ExcelViewDto>;
   excelGetSheet(id: string, token: string, sheet: number): Promise<ExcelSheetLayoutDto>;
@@ -714,6 +721,32 @@ export function createService(deps: ServiceDeps): Service {
    * 表示中の比較（トークン）を確かめ、座標は整数で範囲内、側は 2 種のどちらかだけを通す。
    * 渡すのは座標と側だけで、本文は core が読み直したものから作る。
    */
+  /** 未マージビューの付帯情報を DTO にする。計画は単位と「違うノード」だけに絞る（全ノードは送らない）。 */
+  const toUnityConflictDto = (view: UnityView): UnityConflictDto | null => {
+    const conflict = view.conflict;
+    if (conflict === null) return null;
+    const plan = conflict.plan;
+    const entries: UnityConflictDto['entries'][number][] = [];
+    if (plan !== null) {
+      for (const [anchor, resolution] of plan.docs) {
+        entries.push({
+          id: anchor,
+          unit: plan.unitOf.get(anchor) ?? anchor,
+          auto: resolution === 'conflict' ? null : resolution,
+        });
+      }
+    }
+    return {
+      ours: conflict.ours,
+      theirs: conflict.theirs,
+      worktreeHasMarkers: conflict.worktreeHasMarkers,
+      resolvable: plan !== null,
+      token: unityConflictToken(view),
+      units: plan?.conflictUnits ?? [],
+      entries,
+    };
+  };
+
   const guardExcelResolve = async (
     id: string,
     req: ExcelResolveRequestDto,
@@ -1233,6 +1266,7 @@ export function createService(deps: ServiceDeps): Service {
         stageable: view.stageable,
         refusal: view.refusal,
         changedNodeCount: view.nodes.reduce((n, node) => (node.mark === 'same' ? n : n + 1), 0),
+        conflict: toUnityConflictDto(view),
       };
     },
 
@@ -1273,6 +1307,52 @@ export function createService(deps: ServiceDeps): Service {
       const session = requireSession(id);
       const index = await withSignal(id, (signal) => session.indexUnityScripts(signal));
       return { resolved: index.names.size };
+    },
+
+    /*
+     * GameObject 単位の解消の書き出し（画面の「適用」。2026-10-10）。**git は 0 プロセス。index には触れない。**
+     *
+     * 門は Excel の採用と同じ 3 つ（パス文字列・実体パス・スナップショットで未マージ）に加えて、
+     * 合言葉で「画面が見ているビュー＝今のキャッシュ」を確かめる。本文は受け取らず、
+     * 受け取るのは単位の id と側だけ（単位は計画に載っているものしか受け付けない）。
+     */
+    unityResolveConflict: async (id, req, confirmed) => {
+      const session = requireSession(id);
+      if (typeof req?.path !== 'string' || typeof req.token !== 'string' || !Array.isArray(req.choices)) {
+        throw new HandlerError({ kind: 'internal', message: '適用の指定が不正です。' });
+      }
+      assertInsideRoot(session.root, req.path);
+      await assertRealPathInsideRoot(session.root, join(session.root, req.path));
+      requireUnmerged(id, req.path);
+      const view = session.unityConflictByToken(req.path, req.token);
+      const plan = view?.conflict?.plan ?? null;
+      if (view === null || plan === null) {
+        throw new HandlerError({
+          kind: 'diff-stale',
+          message: '表示中の Prefab の比較が古くなっています。取り直してください。',
+        });
+      }
+      const choices = new Map<string, 'ours' | 'theirs'>();
+      for (const choice of req.choices as readonly unknown[]) {
+        const unit = (choice as { unit?: unknown } | null)?.unit;
+        const side = (choice as { side?: unknown } | null)?.side;
+        if (typeof unit !== 'string' || !plan.conflictSet.has(unit) || (side !== 'ours' && side !== 'theirs')) {
+          throw new HandlerError({ kind: 'internal', message: '適用の指定が不正です。' });
+        }
+        choices.set(unit, side);
+      }
+      // 手で編集した（自分側・相手側・前回の書き出しのどれとも違う）なら、黙って消さない
+      if (view.conflict?.worktree === 'neither' && !session.isOwnUnityWrite(view)) {
+        requireConfirmed('overwrite-conflict-worktree', confirmed);
+      }
+      await withSignal(id, (signal) => session.resolveUnityConflict(view, choices, signal));
+      return { statusSeq: session.statusSeq };
+    },
+
+    mergeAbort: async (id, confirmed) => {
+      const ops = opsFor(id);
+      requireConfirmed(SessionOperations.confirmationFor('abortMerge'), confirmed);
+      return ops.abortMerge();
     },
 
     /*

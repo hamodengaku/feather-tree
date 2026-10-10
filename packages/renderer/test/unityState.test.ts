@@ -401,3 +401,90 @@ describe('展開できないファイル', () => {
     expect(bridge.calls.some((c) => c.name === 'unityGetNode')).toBe(false);
   });
 });
+
+/*
+ * 未マージの GameObject 単位の解消（2026-10-10）。
+ *   - 選択は書き出し後の取り直しでも消えない／別のファイルへ移ったら捨てる
+ *   - 書き出しは選んだ単位と合言葉だけを送る。上書きの確認は main が求めたときだけ
+ *   - マージをキャンセルは確認を挟む
+ */
+describe('GameObject 単位の解消', () => {
+  const conflictOf = (token: string) => ({
+    ours: 'present' as const,
+    theirs: 'present' as const,
+    worktreeHasMarkers: true,
+    resolvable: true,
+    token,
+    units: ['100'],
+    entries: [{ id: '101', unit: '100', auto: null }],
+  });
+
+  it('選んだ単位と合言葉を送り、書き出し後の取り直しでも選択が残る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.unityConflict = conflictOf('t1');
+      b.unityNodeDetails.set('101', detail());
+    });
+    await app.enterUnityMode();
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+
+    app.chooseUnityUnit('100', 'theirs');
+    await app.writeUnityResolution();
+    const call = bridge.calls.find((c) => c.name === 'unityResolveConflict');
+    expect(call?.args[1]).toEqual({
+      path: 'Assets/Player.prefab',
+      token: 't1',
+      choices: [{ unit: '100', side: 'theirs' }],
+    });
+    expect(app.unityChoices.get('100')).toBe('theirs');
+  });
+
+  it('同じ側をもう一度押すと選択が外れる', async () => {
+    const { app } = await boot((b) => {
+      b.unityConflict = conflictOf('t1');
+    });
+    await app.enterUnityMode();
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+    app.chooseUnityUnit('100', 'ours');
+    app.chooseUnityUnit('100', 'ours');
+    expect(app.unityChoices.has('100')).toBe(false);
+  });
+
+  it('別のファイルへ移ったら選択を捨てる', async () => {
+    const { app } = await boot((b) => {
+      b.unityConflict = conflictOf('t1');
+    });
+    await app.enterUnityMode();
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+    app.chooseUnityUnit('100', 'ours');
+    await app.select({ path: 'Assets/Other.prefab', staged: false });
+    expect(app.unityChoices.size).toBe(0);
+  });
+
+  it('手で編集した作業ツリーを上書きするときは確認してから送り直す', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.unityConflict = conflictOf('t1');
+      b.requireConfirmation = 'unityResolveConflict';
+    });
+    await app.enterUnityMode();
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+    app.chooseUnityUnit('100', 'ours');
+    await app.writeUnityResolution();
+    expect(app.pendingConfirmation?.confirmation.action).toBe('overwrite-conflict-worktree');
+    await app.acceptConfirmation();
+    const calls = bridge.calls.filter((c) => c.name === 'unityResolveConflict');
+    expect(calls.map((c) => c.args[2])).toEqual([undefined, true]);
+  });
+
+  it('マージをキャンセルは確認を挟む', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.unityConflict = conflictOf('t1');
+      b.requireConfirmation = 'mergeAbort';
+    });
+    await app.enterUnityMode();
+    await app.select({ path: 'Assets/Player.prefab', staged: false });
+    await app.abortMerge();
+    expect(app.pendingConfirmation?.confirmation.action).toBe('abort-merge');
+    await app.acceptConfirmation();
+    expect(bridge.calls.filter((c) => c.name === 'mergeAbort').map((c) => c.args[1])).toEqual([undefined, true]);
+  });
+});

@@ -73,6 +73,9 @@ export const CHANNELS = {
   unityGetView: 'unity:getView',
   unityGetNode: 'unity:getNode',
   unityIndexScripts: 'unity:indexScripts',
+  unityResolveConflict: 'unity:resolveConflict',
+  // 試行中のマージの取り消し（対応表 #51。Unity モードの「マージをキャンセル」）
+  mergeAbort: 'merge:abort',
 
   // Excel 差分モード（決定 33）
   excelListFiles: 'excel:listFiles',
@@ -546,10 +549,55 @@ export interface UnityViewDto {
   /**
    * ステージできない理由。`binary` / `truncated` / `synthesized` / `whole-file` /
    * `rename` / `combined` / `no-hunk` / `empty-selection` / `no-such-hunk` に加えて、
-   * `alignment`（改行変換 / LFS で全文と diff が食い違う）と `no-diff`。
+   * `alignment`（改行変換 / LFS で全文と diff が食い違う）と `no-diff`、`conflict`（未マージ）。
    */
   readonly refusal: string | null;
   readonly changedNodeCount: number;
+  /**
+   * 未マージ（コンフリクト中）のときだけ非 null。このときの旧側は自分側（`:2:`）、
+   * 新側は相手側（`:3:`）で、ステージはできない。
+   */
+  readonly conflict: UnityConflictDto | null;
+}
+
+export interface UnityConflictDto {
+  /** 削除との衝突では片方の段が欠ける（その側ではファイルが削除されている）。 */
+  readonly ours: 'present' | 'absent';
+  readonly theirs: 'present' | 'absent';
+  /** 作業ツリーに `<<<<<<<` が残っているか。 */
+  readonly worktreeHasMarkers: boolean;
+  /**
+   * GameObject 単位で解消できるか。片側で削除された・バイナリなら false
+   * （そのときは units / entries は空）。
+   */
+  readonly resolvable: boolean;
+  /** 書き出しの要求に添える合言葉。作業ツリーか status が動いたら変わる。 */
+  readonly token: string;
+  /** 自分側か相手側を採用する必要のある単位（GameObject / PrefabInstance などの id）。 */
+  readonly units: readonly string[];
+  /** 自分側と相手側で違うノードだけ。どの単位に属し、自動でどちらに決まったか。 */
+  readonly entries: readonly UnityConflictEntryDto[];
+}
+
+export interface UnityConflictEntryDto {
+  readonly id: string;
+  /** 属する単位。`units` に入っていれば、採用側は利用者の選択で決まる。 */
+  readonly unit: string;
+  /** 片側だけが変えたので自動で決まった側。衝突（両側が変えた）なら null。 */
+  readonly auto: 'ours' | 'theirs' | null;
+}
+
+export type UnityConflictSideDto = 'ours' | 'theirs';
+
+/** GameObject 単位の解消の書き出し（画面の「適用」）。本文は送らない（main が index の段から組み立てる）。 */
+export interface UnityResolveRequestDto {
+  readonly path: string;
+  readonly token: string;
+  readonly choices: readonly { readonly unit: string; readonly side: UnityConflictSideDto }[];
+}
+
+export interface UnityResolveResultDto {
+  readonly statusSeq: number;
 }
 
 export type UnityRowStateDto = 'same' | 'changed' | 'added' | 'removed';
@@ -1329,6 +1377,18 @@ export interface FeatherTreeBridge {
    * 1 度作ったらセッションの間は使い回す。
    */
   unityIndexScripts(id: string): Promise<Result<UnityScriptIndexDto>>;
+  /**
+   * 未マージの Prefab / シーンを、GameObject 単位の選択で作業ツリーへ書き出す（2026-10-10）。
+   * **git は 0 プロセス。index には触れない**（解決済みにするのは利用者のステージ）。
+   * 作業ツリーを手で編集していたら 'needs-confirmation'（overwrite-conflict-worktree）。
+   */
+  unityResolveConflict(
+    id: string,
+    req: UnityResolveRequestDto,
+    confirmed?: boolean,
+  ): Promise<Result<UnityResolveResultDto>>;
+  /** 試行中のマージを取り消す（対応表 #51）。確認が必要（abort-merge）。 */
+  mergeAbort(id: string, confirmed?: boolean): Promise<Result<BranchMergeResultDto>>;
   /**
    * Excel ファイルの一覧（決定 33）。status のスナップショットを拡張子で絞るだけで、**git は 0 プロセス**。
    * `~$` で始まるロックファイルは出さない。

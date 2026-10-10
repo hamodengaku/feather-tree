@@ -1,4 +1,5 @@
 import {
+  abortMerge as gitAbortMerge,
   applyHunks,
   applyStash as gitApplyStash,
   canBuildPatch,
@@ -441,6 +442,23 @@ export class SessionOperations {
   }
 
   /**
+   * 対応表 #51。試行中のマージを取り消す（Unity モードの「マージをキャンセル」）。確認が必要。
+   *
+   * HEAD もブランチの先端も動かないので #3 は打たない。作業ツリーと index が戻るので #2 だけ取り直す。
+   * 失敗（マージ中ではない）でも何も動いていないが、一覧を実際に合わせるため静かに取り直す。
+   */
+  async abortMerge(signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
+    try {
+      await this.#session.track(['merge', '--abort'], () => gitAbortMerge(this.#session.context(signal)));
+    } catch (err) {
+      await this.#refreshStatusQuietly(signal);
+      throw err;
+    }
+    await this.#session.refreshStatus(signal);
+    return { statusSeq: this.#session.statusSeq };
+  }
+
+  /**
    * 対応表 #16。ローカルブランチだけを消す（リモートには触れない）。
    *
    * `force` が偽なら `-d`。未マージで断られたら git の `BranchNotMergedError` をそのまま投げ、
@@ -696,6 +714,7 @@ export class SessionOperations {
       | 'deleteUntracked'
       | 'commit'
       | 'merge'
+      | 'abortMerge'
       | 'deleteBranch'
       | 'stashSave'
       | 'stashApply'
@@ -711,6 +730,8 @@ export class SessionOperations {
         return context.amend === true ? 'amend-pushed-commit' : null;
       case 'merge':
         return 'merge-branch';
+      case 'abortMerge':
+        return 'abort-merge';
       // 呼ぶのは `-d` が未マージで断ったときだけ（マージ済みの削除は確認しない。対応表 #16）
       case 'deleteBranch':
         return 'delete-unmerged-branch';

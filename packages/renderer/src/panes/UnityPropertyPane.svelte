@@ -14,12 +14,53 @@
    * なったときに仮想化と両立しない。grid なら `grid-column: span 2` で同じ見た目になる。
    */
   import { app } from '../lib/appState.svelte.js';
+  import { adoptedSide, conflictEntryIndex, isConflictNode, unityColumnLabels } from '../lib/unityConflict.js';
   import type { UnityRowDto } from '@feathertree/ipc';
 
   const detail = $derived(app.unityNode);
   const view = $derived(app.unityView);
   const staged = $derived(view?.staged ?? false);
+  // 未マージなら 変更前 / 変更後 ではなく 自分側 / 相手側
+  const columns = $derived(unityColumnLabels(view?.conflict ?? null));
+  /*
+   * 未マージ（2026-10-10）。決まるまでは自分側と相手側を対等に出す（斜線を引かない）。
+   * 決まったら（選んだ・自動で決まった）採用側を強調し、棄却側に斜線を引く。
+   */
+  const conflict = $derived(view?.conflict ?? null);
+  const conflictIndex = $derived(conflictEntryIndex(conflict));
+  const adopted = $derived(
+    detail === null ? null : adoptedSide(conflict, conflictIndex, app.unityChoices, detail.nodeId),
+  );
+  // 両側が変えた衝突のノードなら、変わった行を強調色（コンフリ色）で出す
+  const conflictNode = $derived(detail === null ? false : isConflictNode(conflict, conflictIndex, detail.nodeId));
   const actionLabel = $derived(staged ? 'アンステージ' : 'ステージ');
+
+  /*
+   * 列幅の変更（2026-10-10）。見出しの縦線を掴んで動かす。本体の行には縦線を出さない。
+   * 3 列目は残り全部（minmax(0, 1fr)）。
+   */
+  const COLUMN_MIN = 60;
+  const COLUMN_MAX = 1200;
+  let resizing: { column: 'key' | 'old'; startX: number; startWidth: number } | null = null;
+
+  function startResize(event: PointerEvent, column: 'key' | 'old'): void {
+    const startWidth = column === 'key' ? app.unityKeyColumnWidth : app.unityOldColumnWidth;
+    resizing = { column, startX: event.clientX, startWidth };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function moveResize(event: PointerEvent): void {
+    if (resizing === null) return;
+    const width = Math.min(COLUMN_MAX, Math.max(COLUMN_MIN, resizing.startWidth + event.clientX - resizing.startX));
+    if (resizing.column === 'key') app.unityKeyColumnWidth = width;
+    else app.unityOldColumnWidth = width;
+  }
+
+  function endResize(event: PointerEvent): void {
+    if (resizing === null) return;
+    resizing = null;
+    (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+  }
 
   /** 選択中のノードの名前（見出しに出す）。 */
   const nodeName = $derived(
@@ -67,11 +108,43 @@
   {:else if detail === null || detail.rows.length === 0}
     <p class="empty">表示できる変数がありません。</p>
   {:else}
-    <div class="table" role="table" aria-label="コンポーネントの差分">
+    <div
+      class="table"
+      class:conflict-mode={conflict !== null}
+      class:adopt-ours={adopted === 'ours'}
+      class:adopt-theirs={adopted === 'theirs'}
+      class:conflict-node={conflictNode}
+      style:--col-key="{app.unityKeyColumnWidth}px"
+      style:--col-old="{app.unityOldColumnWidth}px"
+      role="table"
+      aria-label="コンポーネントの差分"
+    >
       <div class="thead" role="row">
-        <span role="columnheader">変数</span>
-        <span role="columnheader">変更前</span>
-        <span role="columnheader">変更後</span>
+        <span role="columnheader" class="th">
+          変数
+          <span
+            class="resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="変数の列の幅"
+            onpointerdown={(event) => startResize(event, 'key')}
+            onpointermove={moveResize}
+            onpointerup={endResize}
+          ></span>
+        </span>
+        <span role="columnheader" class="th">
+          {columns[0]}
+          <span
+            class="resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="{columns[0]}の列の幅"
+            onpointerdown={(event) => startResize(event, 'old')}
+            onpointermove={moveResize}
+            onpointerup={endResize}
+          ></span>
+        </span>
+        <span role="columnheader" class="th">{columns[1]}</span>
         <span role="columnheader" class="sr-only">操作</span>
       </div>
 
@@ -156,14 +229,51 @@
     font-size: var(--app-font-size-ui);
   }
 
+  /*
+    変数 / 変更前 / 変更後。**列の幅は全行で同じ値**（見出しの縦線で変える）。
+    以前は行ごとの grid に操作ボタンの列（auto）があり、ボタンの有無で行ごとに列幅が変わって
+    縦列が乱れていた。操作ボタンは列から外して行の右端に重ねる（.ops）。
+  */
   .thead,
   .tr {
+    position: relative;
     display: grid;
-    /* 変数 / 変更前 / 変更後 / 操作 */
-    grid-template-columns: minmax(140px, 1.2fr) minmax(80px, 1fr) minmax(80px, 1fr) auto;
+    grid-template-columns: var(--col-key) var(--col-old) minmax(0, 1fr);
     align-items: baseline;
     gap: 8px;
     padding: 2px 8px;
+  }
+
+  .th {
+    position: relative;
+    min-width: 0;
+    overflow: visible;
+    white-space: nowrap;
+  }
+
+  /* 見出しの縦線。列の右端（gap の真ん中）に置き、掴んで幅を変える */
+  .resizer {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    right: -7px;
+    width: 6px;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .resizer::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 2px;
+    width: 1px;
+    background: var(--app-border-subtle);
+  }
+
+  .resizer:hover::after {
+    background: var(--app-accent);
   }
 
   .thead {
@@ -179,6 +289,7 @@
   }
 
   .key {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -186,6 +297,7 @@
   }
 
   .value {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -216,6 +328,26 @@
     color: var(--app-text-removed);
   }
 
+  /* 未マージ: 決まるまでは対等（同じ色・斜線なし） */
+  .table.conflict-mode .value.before,
+  .table.conflict-mode .tr .value.after {
+    color: var(--app-text-modified);
+    text-decoration: none;
+  }
+
+  /* 決まったら採用側を強調、棄却側に斜線 */
+  .table.conflict-mode.adopt-ours .value.before,
+  .table.conflict-mode.adopt-theirs .tr .value.after {
+    font-weight: 700;
+  }
+
+  .table.conflict-mode.adopt-ours .tr .value.after,
+  .table.conflict-mode.adopt-theirs .value.before {
+    color: var(--app-text-secondary);
+    font-weight: 400;
+    text-decoration: line-through;
+  }
+
   .tr.changed,
   .tr.added,
   .tr.removed {
@@ -226,8 +358,39 @@
     background: var(--app-diff-removed-bg);
   }
 
+  /*
+    衝突（両側が変えた）ノードの変わった行は、変数名・自分側・相手側をすべてコンフリ色にし、
+    行の色も追加（緑）・削除（赤）とは別のコンフリ色にする（2026-10-10、利用者の指示）。
+    背景はテーマの --app-text-conflict を薄めて作る（テーマに色を足さない）。
+  */
+  .table.conflict-node .tr:not(.same) {
+    background: color-mix(in srgb, var(--app-text-conflict) 14%, transparent);
+  }
+
+  .table.conflict-node .tr:not(.same) .key,
+  .table.conflict-node .tr:not(.same) .value.before,
+  .table.conflict-node .tr:not(.same) .value.after {
+    color: var(--app-text-conflict);
+  }
+
+  /* 採用・棄却が決まったら、棄却側は斜線＋弱色（コンフリ色より優先） */
+  .table.conflict-node.adopt-ours .tr:not(.same) .value.after,
+  .table.conflict-node.adopt-theirs .tr:not(.same) .value.before {
+    color: var(--app-text-secondary);
+  }
+
+  /* 操作ボタンは列に入れず、行の右端に重ねる（列幅を行ごとに変えないため） */
   .ops {
-    min-width: 0;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 8px;
+    display: flex;
+    align-items: center;
+  }
+
+  .row-stage {
+    background: var(--app-bg-raised);
   }
 
   /*

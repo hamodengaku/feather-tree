@@ -114,6 +114,17 @@ export async function mergeBranch(ctx: GitContext, branchName: string): Promise<
   if (exit.code !== 0) throw new GitCommandError(['merge'], exit.code, exit.stderr, stdout);
 }
 
+/**
+ * 対応表 #51: 試行中のマージを取り消す（Unity モードの「マージをキャンセル」。2026-10-10）。
+ *
+ * マージ中でなければ（リベース・stash の適用・cherry-pick の衝突）git が
+ * `There is no merge to abort` で断るので、そのまま失敗として返す。
+ */
+export async function abortMerge(ctx: GitContext): Promise<void> {
+  const { exit, stdout } = await runGitText(commandFor(ctx, [...WRITE_PREFIX, 'merge', '--abort']), ctx.signal);
+  if (exit.code !== 0) throw new GitCommandError(['merge', '--abort'], exit.code, exit.stderr, stdout);
+}
+
 /** `branch -d` が「未マージ」を理由に断った（`-D` なら消せる）。 */
 export class BranchNotMergedError extends Error {
   readonly branchName: string;
