@@ -115,10 +115,11 @@ export async function mergeBranch(ctx: GitContext, branchName: string): Promise<
 }
 
 /**
- * 対応表 #51: マージを取り消す（`merge --abort`。決定 34）。
+ * 対応表 #51: 試行中のマージを取り消す（`merge --abort`。Unity モード・Excel 差分モードの「マージをキャンセル」。
+ * 決定 32・34）。
  *
- * 作業ツリーと index をマージを始める前に戻す。取り消せるマージが無い（MERGE_HEAD が無い。stash の適用や
- * rebase による衝突）と git が断るので、そのまま GitCommandError にする（errorMapping が文言にする）。
+ * 作業ツリーと index をマージを始める前に戻す。取り消せるマージが無い（MERGE_HEAD が無い。リベース・stash の適用・
+ * cherry-pick による衝突）と git が断るので、そのまま GitCommandError にする（errorMapping が文言にする）。
  * 名前を渡さないので `--` は要らない。
  */
 export async function abortMerge(ctx: GitContext): Promise<void> {

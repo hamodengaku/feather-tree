@@ -1,4 +1,5 @@
 import {
+  abortMerge as gitAbortMerge,
   applyHunks,
   applyStash as gitApplyStash,
   canBuildPatch,
@@ -9,7 +10,6 @@ import {
   dropStash as gitDropStash,
   fetchRemote,
   mergeBranch as gitMergeBranch,
-  abortMerge as gitAbortMerge,
   pullCurrent,
   pushBranch,
   pushStagedStash,
@@ -442,10 +442,11 @@ export class SessionOperations {
   }
 
   /**
-   * 対応表 #51: マージを取り消す（決定 34）。**不可逆なので確認必須**（解消の途中経過とマージで入った変更が消える）。
+   * 対応表 #51: 試行中のマージを取り消す（Unity モード・Excel 差分モードの「マージをキャンセル」。決定 32・34）。
+   * **確認必須**（解消の途中経過とマージで入った変更が消える）。
    *
    * 作業ツリーと index がマージ前に戻るので status は取り直す（#51 → #2）。HEAD は動かないので #3 は打たない。
-   * 失敗しても（取り消せるマージが無い等）status は取り直す——git が途中まで戻していることがあるため。
+   * 失敗しても（取り消せるマージが無い等）status は静かに取り直す——git が途中まで戻していることがあるため。
    */
   async abortMerge(signal?: AbortSignal): Promise<{ readonly statusSeq: number }> {
     try {
@@ -454,8 +455,8 @@ export class SessionOperations {
       await this.#refreshStatusQuietly(signal);
       throw err;
     }
-    // マージ前に戻ったので、抱えている Excel の比較も古い（index の段が消えた）
-    this.#session.releaseExcel();
+    // マージ前に戻ったので、抱えている未マージの比較（Excel・Unity）も古い（index の段が消えた）
+    this.#session.releaseConflictViews();
     await this.#session.refreshStatus(signal);
     return { statusSeq: this.#session.statusSeq };
   }
@@ -716,6 +717,7 @@ export class SessionOperations {
       | 'deleteUntracked'
       | 'commit'
       | 'merge'
+      | 'abortMerge'
       | 'deleteBranch'
       | 'stashSave'
       | 'stashApply'
@@ -731,6 +733,8 @@ export class SessionOperations {
         return context.amend === true ? 'amend-pushed-commit' : null;
       case 'merge':
         return 'merge-branch';
+      case 'abortMerge':
+        return 'abort-merge';
       // 呼ぶのは `-d` が未マージで断ったときだけ（マージ済みの削除は確認しない。対応表 #16）
       case 'deleteBranch':
         return 'delete-unmerged-branch';

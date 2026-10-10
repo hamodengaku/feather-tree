@@ -202,6 +202,11 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     service.unityGetNode(id, path, staged, nodeId),
   );
   bind(CHANNELS.unityIndexScripts, (id: string) => service.unityIndexScripts(id));
+  bind(
+    CHANNELS.unityResolveConflict,
+    (id: string, req: Parameters<Service['unityResolveConflict']>[1], confirmed?: boolean) =>
+      service.unityResolveConflict(id, req, confirmed),
+  );
   bind(CHANNELS.excelListFiles, (id: string) => service.excelListFiles(id));
   bind(CHANNELS.excelGetView, (id: string, path: string) => service.excelGetView(id, path));
   bind(CHANNELS.excelGetSheet, (id: string, token: string, sheet: number) =>
@@ -214,7 +219,6 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
     service.excelGetCell(id, token, sheet, row, col),
   );
   bind(CHANNELS.excelGetRowDiff, (id: string, path: string) => service.excelGetRowDiff(id, path));
-  bind(CHANNELS.mergeAbort, (id: string, confirmed?: boolean) => service.mergeAbort(id, confirmed));
   bind(
     CHANNELS.excelResolveConflict,
     (id: string, req: Parameters<Service['excelResolveConflict']>[1], confirmed?: boolean) =>
@@ -237,6 +241,7 @@ export function registerHandlers(ctx: AppContext, getWindow: () => BrowserWindow
   bind(CHANNELS.branchMerge, (id: string, branchName: string, confirmed?: boolean) =>
     service.branchMerge(id, branchName, confirmed),
   );
+  bind(CHANNELS.mergeAbort, (id: string, confirmed?: boolean) => service.mergeAbort(id, confirmed));
   bind(CHANNELS.branchDelete, (id: string, branchName: string, confirmed?: boolean) =>
     service.branchDelete(id, branchName, confirmed),
   );

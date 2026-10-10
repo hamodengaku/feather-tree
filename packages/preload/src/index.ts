@@ -16,6 +16,7 @@ import {
   type CommandStartEvent,
   type ConflictResolveRequest,
   type ExcelResolveRequestDto,
+  type UnityResolveRequestDto,
   type HunkStageRequest,
   type CommitRequest,
   type FeatherTreeBridge,
@@ -90,6 +91,8 @@ const bridge: FeatherTreeBridge = {
   unityGetNode: (id: string, path: string, staged: boolean, nodeId: string) =>
     ipcRenderer.invoke(CHANNELS.unityGetNode, id, path, staged, nodeId),
   unityIndexScripts: (id: string) => ipcRenderer.invoke(CHANNELS.unityIndexScripts, id),
+  unityResolveConflict: (id: string, req: UnityResolveRequestDto, confirmed?: boolean) =>
+    ipcRenderer.invoke(CHANNELS.unityResolveConflict, id, req, confirmed),
   excelListFiles: (id: string) => ipcRenderer.invoke(CHANNELS.excelListFiles, id),
   excelGetView: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.excelGetView, id, path),
   excelGetSheet: (id: string, token: string, sheet: number) =>
@@ -101,7 +104,6 @@ const bridge: FeatherTreeBridge = {
   excelGetRowDiff: (id: string, path: string) => ipcRenderer.invoke(CHANNELS.excelGetRowDiff, id, path),
   excelResolveConflict: (id: string, req: ExcelResolveRequestDto, confirmed?: boolean) =>
     ipcRenderer.invoke(CHANNELS.excelResolveConflict, id, req, confirmed),
-  mergeAbort: (id: string, confirmed?: boolean) => ipcRenderer.invoke(CHANNELS.mergeAbort, id, confirmed),
   conflictResolve: (id: string, req: ConflictResolveRequest) =>
     ipcRenderer.invoke(CHANNELS.conflictResolve, id, req),
   logGetPage: (id: string, skip: number) => ipcRenderer.invoke(CHANNELS.logGetPage, id, skip),
@@ -115,6 +117,7 @@ const bridge: FeatherTreeBridge = {
   branchCreate: (id: string, req: BranchCreateRequest) => ipcRenderer.invoke(CHANNELS.branchCreate, id, req),
   branchMerge: (id: string, branchName: string, confirmed?: boolean) =>
     ipcRenderer.invoke(CHANNELS.branchMerge, id, branchName, confirmed),
+  mergeAbort: (id: string, confirmed?: boolean) => ipcRenderer.invoke(CHANNELS.mergeAbort, id, confirmed),
   branchDelete: (id: string, branchName: string, confirmed?: boolean) =>
     ipcRenderer.invoke(CHANNELS.branchDelete, id, branchName, confirmed),
   stashList: (id: string) => ipcRenderer.invoke(CHANNELS.stashList, id),

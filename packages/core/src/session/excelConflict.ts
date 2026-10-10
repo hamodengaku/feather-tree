@@ -35,6 +35,7 @@ import {
   WorktreeFileLockedError,
   readBlobFiltered,
   readWorktreeBytes,
+  revisionSpec,
   writeWorktreeBytes,
   type GitContext,
 } from '@feathertree/git';
@@ -371,7 +372,7 @@ export async function resolveExcelConflict(
   }
 
   const readStage = async (side: ExcelConflictSide): Promise<Uint8Array> => {
-    const read = await source.track(['cat-file', (side === 'ours' ? ':2:' : ':3:') + path], () =>
+    const read = await source.track(['cat-file', revisionSpec(side) + path], () =>
       readBlobFiltered(ctx, side, path, { maxBytes }),
     );
     if (read === null) throw new StaleDiffError();

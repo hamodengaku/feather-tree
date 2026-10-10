@@ -27,6 +27,8 @@ import {
   type TerminalLaunch,
   rowsFor,
   selectionForNode,
+  unityConflictToken,
+  type UnityView,
   EXCEL_LIMITS,
   geometryOf,
   rowDiffOf,
@@ -75,7 +77,10 @@ import type {
   StatusPageDto,
   StatusPageRequest,
   StatusSummaryDto,
+  UnityConflictDto,
   UnityNodeDetailDto,
+  UnityResolveRequestDto,
+  UnityResolveResultDto,
   UnityScriptIndexDto,
   UnityViewDto,
   ExcelCellDetailDto,
@@ -232,6 +237,7 @@ export interface Service {
     nodeId: string,
   ): Promise<UnityNodeDetailDto | null>;
   unityIndexScripts(id: string): Promise<UnityScriptIndexDto>;
+  unityResolveConflict(id: string, req: UnityResolveRequestDto, confirmed?: boolean): Promise<UnityResolveResultDto>;
   excelListFiles(id: string): Promise<ExcelFileListDto>;
   excelGetView(id: string, path: string): Promise<ExcelViewDto>;
   excelGetSheet(id: string, token: string, sheet: number): Promise<ExcelSheetLayoutDto>;
@@ -239,7 +245,6 @@ export interface Service {
   excelGetCell(id: string, token: string, sheet: number, row: number, col: number): Promise<ExcelCellDetailDto>;
   excelGetRowDiff(id: string, path: string): Promise<ExcelRowDiffDto>;
   excelResolveConflict(id: string, req: ExcelResolveRequestDto, confirmed?: boolean): Promise<ExcelResolveResultDto>;
-  mergeAbort(id: string, confirmed?: boolean): Promise<ExcelResolveResultDto>;
   logGetPage(id: string, skip: number): Promise<readonly CommitSummaryDto[]>;
   logHeadMessage(id: string): Promise<string | null>;
   commitGetFiles(id: string, oid: string): Promise<readonly CommitFileChangeDto[]>;
@@ -248,6 +253,7 @@ export interface Service {
   branchSwitch(id: string, branchName: string): Promise<BranchSwitchResultDto>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<BranchCreateResultDto>;
   branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<BranchMergeResultDto>;
+  mergeAbort(id: string, confirmed?: boolean): Promise<BranchMergeResultDto>;
   branchDelete(id: string, branchName: string, confirmed?: boolean): Promise<BranchDeleteResultDto>;
   stashList(id: string): Promise<readonly StashEntryDto[]>;
   stashSave(id: string, message: string): Promise<StashResultDto>;
@@ -703,10 +709,56 @@ export function createService(deps: ServiceDeps): Service {
     return found;
   };
 
+  /** 未マージビューの付帯情報を DTO にする。計画は単位と「違うノード」だけに絞る（全ノードは送らない）。 */
+  const toUnityConflictDto = (view: UnityView): UnityConflictDto | null => {
+    const conflict = view.conflict;
+    if (conflict === null) return null;
+    const plan = conflict.plan;
+    const entries: UnityConflictDto['entries'][number][] = [];
+    if (plan !== null) {
+      for (const [anchor, resolution] of plan.docs) {
+        entries.push({
+          id: anchor,
+          unit: plan.unitOf.get(anchor) ?? anchor,
+          auto: resolution === 'conflict' ? null : resolution,
+        });
+      }
+    }
+    return {
+      ours: conflict.ours,
+      theirs: conflict.theirs,
+      worktreeHasMarkers: conflict.worktreeHasMarkers,
+      resolvable: plan !== null,
+      token: unityConflictToken(view),
+      units: plan?.conflictUnits ?? [],
+      entries,
+    };
+  };
+
   /**
-   * Excel のコンフリクトの採用（excelResolveConflict）の入力検証（決定 34）。
-   *
-   * 決定 30 の採用と同じく**作業ツリーのファイルを直接書く**ので、パス（文字列と実体）・未マージであること・
+   * 未マージのファイルへ作業ツリーを直接書く操作（Excel の採用・Unity の適用。決定 30・32・34）の共通の門。
+   * パス（文字列と実体）がリポジトリの中で、status のスナップショットで未マージと報告されていることを確かめる。
+   * 表示中の比較（トークン）の照合と、座標・側の検証は呼び出し側。
+   */
+  const requireConflictTarget = async (
+    id: string,
+    req: { readonly path?: unknown; readonly token?: unknown } | null | undefined,
+    label: string,
+  ): Promise<{ readonly session: RepositorySession; readonly path: string; readonly token: string }> => {
+    const session = requireSession(id);
+    const path = req?.path;
+    const token = req?.token;
+    if (typeof path !== 'string' || typeof token !== 'string') {
+      throw new HandlerError({ kind: 'internal', message: label + 'の指定が不正です。' });
+    }
+    assertInsideRoot(session.root, path);
+    await assertRealPathInsideRoot(session.root, join(session.root, path));
+    requireUnmerged(id, path);
+    return { session, path, token };
+  };
+
+  /**
+   * Excel のコンフリクトの採用（excelResolveConflict）の入力検証（決定 34）。共通の門に加えて、
    * 表示中の比較（トークン）を確かめる。座標・側の検証は excelValidation.ts（純関数）。
    * 渡すのは座標と側だけで、本文は core が読み直したものから作る。
    */
@@ -714,13 +766,7 @@ export function createService(deps: ServiceDeps): Service {
     id: string,
     req: ExcelResolveRequestDto,
   ): Promise<[ExcelComparison, ExcelResolveRequest]> => {
-    const session = requireSession(id);
-    if (typeof req?.path !== 'string' || typeof req.token !== 'string') {
-      throw new HandlerError({ kind: 'internal', message: '採用の指定が不正です。' });
-    }
-    assertInsideRoot(session.root, req.path);
-    await assertRealPathInsideRoot(session.root, join(session.root, req.path));
-    requireUnmerged(id, req.path);
+    await requireConflictTarget(id, req, '採用');
     const view = requireExcel(id, req.token);
     if (view.path !== req.path || view.conflict === null) {
       throw new HandlerError({
@@ -1175,6 +1221,7 @@ export function createService(deps: ServiceDeps): Service {
         stageable: view.stageable,
         refusal: view.refusal,
         changedNodeCount: view.nodes.reduce((n, node) => (node.mark === 'same' ? n : n + 1), 0),
+        conflict: toUnityConflictDto(view),
       };
     },
 
@@ -1215,6 +1262,41 @@ export function createService(deps: ServiceDeps): Service {
       const session = requireSession(id);
       const index = await withSignal(id, (signal) => session.indexUnityScripts(signal));
       return { resolved: index.names.size };
+    },
+
+    /*
+     * GameObject 単位の解消の書き出し（画面の「適用」。2026-10-10）。**git は 0 プロセス。index には触れない。**
+     *
+     * 門は Excel の採用と同じ 3 つ（パス文字列・実体パス・スナップショットで未マージ）に加えて、
+     * 合言葉で「画面が見ているビュー＝今のキャッシュ」を確かめる。本文は受け取らず、
+     * 受け取るのは単位の id と側だけ（単位は計画に載っているものしか受け付けない）。
+     */
+    unityResolveConflict: async (id, req, confirmed) => {
+      const { session, path, token } = await requireConflictTarget(id, req, '適用');
+      if (!Array.isArray(req.choices)) throw new HandlerError({ kind: 'internal', message: '適用の指定が不正です。' });
+      const view = session.unityConflictByToken(path, token);
+      const plan = view?.conflict?.plan ?? null;
+      if (view === null || plan === null) {
+        throw new HandlerError({
+          kind: 'diff-stale',
+          message: '表示中の Prefab の比較が古くなっています。取り直してください。',
+        });
+      }
+      const choices = new Map<string, 'ours' | 'theirs'>();
+      for (const choice of req.choices as readonly unknown[]) {
+        const unit = (choice as { unit?: unknown } | null)?.unit;
+        const side = (choice as { side?: unknown } | null)?.side;
+        if (typeof unit !== 'string' || !plan.conflictSet.has(unit) || (side !== 'ours' && side !== 'theirs')) {
+          throw new HandlerError({ kind: 'internal', message: '適用の指定が不正です。' });
+        }
+        choices.set(unit, side);
+      }
+      // 手で編集した（自分側・相手側・前回の書き出しのどれとも違う）なら、黙って消さない
+      if (view.conflict?.worktree === 'neither' && !session.isOwnUnityWrite(view)) {
+        requireConfirmed('overwrite-conflict-worktree', confirmed);
+      }
+      await withSignal(id, (signal) => session.resolveUnityConflict(view, choices, signal));
+      return { statusSeq: session.statusSeq };
     },
 
     /*
@@ -1268,13 +1350,6 @@ export function createService(deps: ServiceDeps): Service {
       assertInsideRoot(session.root, path);
       const view = await latestExcel(id, (signal) => session.getExcelComparison(path, signal));
       return toRowDiffDto(view, rowDiffOf(view, deps.settings().diffContextLines));
-    },
-
-    /* 対応表 #51: マージを取り消す（決定 34）。不可逆なので確認必須（決定 16） */
-    mergeAbort: async (id, confirmed) => {
-      const ops = opsFor(id);
-      requireConfirmed('abort-merge', confirmed);
-      return withSignal(id, (signal) => ops.abortMerge(signal));
     },
 
     /*
@@ -1356,6 +1431,16 @@ export function createService(deps: ServiceDeps): Service {
       const ops = opsFor(id);
       requireConfirmed(SessionOperations.confirmationFor('merge'), confirmed);
       return ops.mergeBranch(known);
+    },
+
+    /*
+     * 対応表 #51: 試行中のマージを取り消す（Unity モード・Excel 差分モードの「マージをキャンセル」。決定 32・34）。
+     * 解消の途中経過が消えるので確認必須（決定 16）。
+     */
+    mergeAbort: async (id, confirmed) => {
+      const ops = opsFor(id);
+      requireConfirmed(SessionOperations.confirmationFor('abortMerge'), confirmed);
+      return withSignal(id, (signal) => ops.abortMerge(signal));
     },
 
     branchDelete: async (id, branchName, confirmed) => {

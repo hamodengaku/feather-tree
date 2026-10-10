@@ -74,9 +74,10 @@ const RULES: readonly Rule[] = [
     message: '他の git プロセスが実行中です。少し待ってからやり直してください。',
   },
   {
-    // 対応表 #51（merge --abort）で、取り消せるマージが無い（stash の適用・rebase による衝突）
+    // 対応表 #51（merge --abort）で、取り消せるマージが無い。CONFLICT の行より前に置く
+    // （stderr に "merge" を含むため、下の行に吸われないように）
     test: /MERGE_HEAD missing|There is no merge to abort/i,
-    message: '取り消せるマージがありません（stash の適用や rebase による衝突は、マージの取り消しでは戻せません）。',
+    message: '取り消せるマージがありません（リベースや stash の適用で起きた衝突は、マージの取り消しでは戻せません）。',
   },
   {
     test: /CONFLICT|Automatic merge failed|needs merge/i,

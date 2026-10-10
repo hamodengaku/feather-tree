@@ -27,6 +27,8 @@ export type { GuidResolver, NodeKind, SideNode, SideTree } from './tree/build.js
 export { buildSideTree } from './tree/build.js';
 export type { MergedNode, NodeMark } from './tree/merge.js';
 export { mergeTrees } from './tree/merge.js';
+export type { ComposeProblem, ComposeResult, ConflictPlan, ConflictSide, DocResolution } from './resolve/conflict.js';
+export { composeResolution, planConflict, resolvedSide } from './resolve/conflict.js';
 export type { FlatProperty } from './props/flat.js';
 export type { PropertyRow, RowState } from './props/rows.js';
 export { buildRows, flattenDocument } from './props/rows.js';

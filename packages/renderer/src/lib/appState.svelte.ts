@@ -31,6 +31,7 @@ import type {
   StatusSummaryDto,
   UnityNodeDetailDto,
   UnityNodeDto,
+  UnityResolveRequestDto,
   UnityViewDto,
   UpdateStateDto,
 } from '@feathertree/ipc';
@@ -1349,17 +1350,6 @@ export class AppState {
     );
   }
 
-  /**
-   * マージを取り消す（対応表 #51。決定 34）。main が 'needs-confirmation'（abort-merge）で断ってくるので、
-   * 確認してから送り直す。作業ツリーと index がマージ前に戻るので、status と表示中のものを読み直す。
-   */
-  abortMerge(): Promise<void> {
-    return this.#operate(
-      (confirmed) => this.#ft.mergeAbort(this.#id(), confirmed),
-      () => this.#operate(() => this.#ft.mergeAbort(this.#id(), true)),
-    );
-  }
-
   /** 差分ペインの「Excel モードで開く」。main のキャッシュに当たるので git は走らない。 */
   async openInExcelMode(path: string): Promise<void> {
     this.excel.preselect(path);
@@ -1404,6 +1394,19 @@ export class AppState {
   unityError = $state<FtErrorDto | null>(null);
   /** guid の索引を作っている最中か（要件 11）。 */
   unityScriptsIndexing = $state(false);
+  /**
+   * 未マージの GameObject 単位の解消で、利用者が選んだ側（単位の id → ours / theirs。2026-10-10）。
+   * **書き出した後の取り直しでも消さない**（同じファイルを見ている間は持ち続ける）。
+   * 別のファイルへ移った・未マージでなくなったら捨てる。
+   */
+  readonly unityChoices = new SvelteMap<string, 'ours' | 'theirs'>();
+  /**
+   * 差分ペインの列幅（px。2026-10-10、利用者の指示で可変に）。3 列目（変更後／相手側）は残り全部。
+   * アプリを開いている間だけ覚える（設定ファイルには書かない）。
+   */
+  unityKeyColumnWidth = $state(180);
+  unityOldColumnWidth = $state(220);
+  #unityChoicesPath: string | null = null;
   /** 索引で名前を引けるようになった guid の数。null なら未実施。 */
   unityScriptsResolved = $state<number | null>(null);
 
@@ -1478,8 +1481,24 @@ export class AppState {
         this.unityError = result.error;
         return;
       }
+      const previous = this.unityView;
+      const previousNode = this.#unityKeptNode;
       this.unityView = result.value;
       this.unityError = null;
+      this.#keepUnityChoices(result.value);
+      /*
+       * 同じ未マージファイルの取り直し（書き出しの後など）は、開閉と選択をそのまま残す。
+       * 選んでいる途中で木が畳まれ直すと、どこまで選んだか見失う。
+       */
+      const sameConflict =
+        previous !== null &&
+        previous.path === result.value.path &&
+        previous.conflict !== null &&
+        result.value.conflict !== null;
+      if (sameConflict && previousNode !== null && result.value.nodes.some((n) => n.id === previousNode)) {
+        await this.selectUnityNode(previousNode);
+        return;
+      }
       this.#replaceUnityExpansion(initialUnityExpansion(result.value.nodes));
       // 最初に目がいくノード（最初の変更）を選んでおく。何も変わっていなければ先頭
       const first =
@@ -1591,8 +1610,67 @@ export class AppState {
     }
   }
 
+  /** 取り直しの前に選んでいたノード（`#invalidateUnity` が選択を消す前に控える）。 */
+  #unityKeptNode: string | null = null;
+
+  /** 選択を、新しいビューの単位に合わせて残す／捨てる。 */
+  #keepUnityChoices(view: UnityViewDto): void {
+    const conflict = view.conflict;
+    if (conflict === null || this.#unityChoicesPath !== view.path) {
+      this.unityChoices.clear();
+      this.#unityChoicesPath = conflict === null ? null : view.path;
+      return;
+    }
+    for (const unit of [...this.unityChoices.keys()]) {
+      if (!conflict.units.includes(unit)) this.unityChoices.delete(unit);
+    }
+  }
+
+  /** ヒエラルキーの ours / theirs ボタン。同じ側をもう一度押したら選択を外す。 */
+  chooseUnityUnit(unit: string, side: 'ours' | 'theirs'): void {
+    if (this.unityChoices.get(unit) === side) this.unityChoices.delete(unit);
+    else this.unityChoices.set(unit, side);
+  }
+
+  /**
+   * 「書き出し」。選んだ側で組み立てた結果を作業ツリーへ書く（index には触れない）。
+   *
+   * 手で編集した作業ツリーを上書きするときは main が 'needs-confirmation' で断ってくるので、
+   * 確認してから送り直す。書いた後は #operate の取り直し（reloadActive → loadUnity）でビューを作り直す。
+   */
+  writeUnityResolution(): Promise<void> {
+    const view = this.unityView;
+    const conflict = view?.conflict ?? null;
+    if (view === null || conflict === null) return Promise.resolve();
+    const req: UnityResolveRequestDto = {
+      path: view.path,
+      token: conflict.token,
+      choices: [...this.unityChoices].map(([unit, side]) => ({ unit, side })),
+    };
+    return this.#operate(
+      (confirmed) => this.#ft.unityResolveConflict(this.#id(), req, confirmed),
+      () => this.#operate(() => this.#ft.unityResolveConflict(this.#id(), req, true)),
+    );
+  }
+
+  /**
+   * 「マージをキャンセル」（対応表 #51。Unity モード・Excel 差分モードで共有。決定 32・34）。main が
+   * 'needs-confirmation'（abort-merge）で断ってくるので、確認してから送り直す。作業ツリーと index がマージ前に
+   * 戻るので status と表示中のものを読み直す（失敗しても読み直す）。HEAD は動かないのでブランチ一覧・履歴は取り直さない。
+   */
+  abortMerge(): Promise<void> {
+    const options = { reloadOnFailure: 'active' } as const;
+    return this.#operate(
+      (confirmed) => this.#ft.mergeAbort(this.#id(), confirmed),
+      () => this.#operate(() => this.#ft.mergeAbort(this.#id(), true), undefined, undefined, options),
+      undefined,
+      options,
+    );
+  }
+
   /** ビューの世代を進め、ノード側も無効にする。 */
   #invalidateUnity(): number {
+    this.#unityKeptNode = this.unitySelectedNode;
     this.#unityNodeSeq += 1;
     this.unityNode = null;
     this.unitySelectedNode = null;
@@ -1601,6 +1679,8 @@ export class AppState {
 
   /** Unity モードを離れたときに持ち物を手放す（100MB のシーンを掴み続けない）。 */
   releaseUnity(): void {
+    this.unityChoices.clear();
+    this.#unityChoicesPath = null;
     this.#invalidateUnity();
     this.unityView = null;
     this.unityError = null;

@@ -125,6 +125,96 @@ describe('Unity モードの IPC ハンドラ', () => {
     return (await service.sessionOpen(dir)).id;
   }
 
+  it('未マージなら自分側と相手側を比べ、conflict を載せてステージ不可で返す', async () => {
+    await write('Assets/Player.prefab', prefab('1'));
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', 'base']);
+    await git(dir, ['switch', '-c', 'topic']);
+    await write('Assets/Player.prefab', prefab('2'));
+    await git(dir, ['commit', '-am', 'topic']);
+    await git(dir, ['switch', 'main']);
+    await write('Assets/Player.prefab', prefab('3'));
+    await git(dir, ['commit', '-am', 'main']);
+    await git(dir, ['merge', 'topic']).catch(() => undefined);
+    const id = (await service.sessionOpen(dir)).id;
+
+    const view = await service.unityGetView(id, 'Assets/Player.prefab', false);
+    expect(view.format).toBe('yaml');
+    expect(view.stageable).toBe(false);
+    expect(view.refusal).toBe('conflict');
+    expect(view.conflict).toMatchObject({
+      ours: 'present',
+      theirs: 'present',
+      worktreeHasMarkers: true,
+      resolvable: true,
+      // Transform（101）だけを両側が変えた。単位は持ち主の GameObject（100）
+      units: ['100'],
+      entries: [{ id: '101', unit: '100', auto: null }],
+    });
+
+    const scale = (await service.unityGetNode(id, 'Assets/Player.prefab', false, '101'))?.rows.find(
+      (r) => r.key === 'm_LocalScale.x',
+    );
+    expect(scale).toMatchObject({ state: 'changed', before: '3', after: '2', selection: null });
+
+    // 書き出し。計画に無い単位・古い合言葉は断る
+    const token = view.conflict?.token ?? '';
+    await expect(
+      service.unityResolveConflict(id, { path: 'Assets/Player.prefab', token, choices: [{ unit: '101', side: 'ours' }] }),
+    ).rejects.toThrow();
+    await expect(
+      service.unityResolveConflict(id, { path: 'Assets/Player.prefab', token: 'stale', choices: [{ unit: '100', side: 'ours' }] }),
+    ).rejects.toMatchObject({ dto: { kind: 'diff-stale' } });
+
+    await service.unityResolveConflict(id, {
+      path: 'Assets/Player.prefab',
+      token,
+      choices: [{ unit: '100', side: 'theirs' }],
+    });
+    const after = await service.unityGetView(id, 'Assets/Player.prefab', false);
+    expect(after.conflict?.worktreeHasMarkers).toBe(false);
+    expect(after.conflict?.token).not.toBe(token);
+  });
+
+  it('作業ツリーを手で編集していたら、書き出しは確認を求める', async () => {
+    await write('Assets/Player.prefab', prefab('1'));
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', 'base']);
+    await git(dir, ['switch', '-c', 'topic']);
+    await write('Assets/Player.prefab', prefab('2'));
+    await git(dir, ['commit', '-am', 'topic']);
+    await git(dir, ['switch', 'main']);
+    await write('Assets/Player.prefab', prefab('3'));
+    await git(dir, ['commit', '-am', 'main']);
+    await git(dir, ['merge', 'topic']).catch(() => undefined);
+    await write('Assets/Player.prefab', prefab('7'));
+    const id = (await service.sessionOpen(dir)).id;
+    const view = await service.unityGetView(id, 'Assets/Player.prefab', false);
+    const req = { path: 'Assets/Player.prefab', token: view.conflict?.token ?? '', choices: [{ unit: '100', side: 'ours' as const }] };
+
+    await expect(service.unityResolveConflict(id, req)).rejects.toMatchObject({ dto: { kind: 'needs-confirmation' } });
+    await service.unityResolveConflict(id, req, true);
+  });
+
+  it('マージをキャンセルは確認を求め、承認すれば #51 を打つ', async () => {
+    await write('Assets/Player.prefab', prefab('1'));
+    await git(dir, ['add', '-A']);
+    await git(dir, ['commit', '-m', 'base']);
+    await git(dir, ['switch', '-c', 'topic']);
+    await write('Assets/Player.prefab', prefab('2'));
+    await git(dir, ['commit', '-am', 'topic']);
+    await git(dir, ['switch', 'main']);
+    await write('Assets/Player.prefab', prefab('3'));
+    await git(dir, ['commit', '-am', 'main']);
+    await git(dir, ['merge', 'topic']).catch(() => undefined);
+    const id = (await service.sessionOpen(dir)).id;
+
+    await expect(service.mergeAbort(id)).rejects.toMatchObject({ dto: { kind: 'needs-confirmation' } });
+    await service.mergeAbort(id, true);
+    const ran = service.commandLogRecent(50).some((e) => e.args[0] === 'merge' && e.args[1] === '--abort');
+    expect(ran).toBe(true);
+  });
+
   it('ヒエラルキーを返す。プロパティの表は含めない（DTO を小さく保つ）', async () => {
     const id = await openWithEdit();
     const view = await service.unityGetView(id, 'Assets/Player.prefab', false);

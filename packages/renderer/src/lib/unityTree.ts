@@ -20,8 +20,18 @@ export interface UnityRowView {
   readonly expanded: boolean;
   /** コンポーネントを持つか（componentsShown を渡したときだけ意味を持つ）。 */
   readonly hasComponents: boolean;
-  /** 畳まれているコンポーネントの中に変更があるか（行の印に使う）。 */
+  /** 直下のコンポーネントの数（コンポーネントのボタンに出す）。 */
+  readonly componentCount: number;
+  /** 畳まれているコンポーネントの中に変更があるか。 */
   readonly hiddenComponentChange: boolean;
+  /**
+   * **今は見えていない**子孫（畳まれた子 GameObject の下・畳まれたコンポーネント）に変更があるか。
+   * 行の「この下に変更あり」の印に使う。開けば見える変更（既に表に出ている行）では立てない——
+   * 開いても何も増えない印を出すと、たどった先で迷う。
+   */
+  readonly hiddenChange: boolean;
+  /** 畳まれた子 GameObject の下に変更があるか（行の右端の ●。コンポーネントの変更はボタン側の ●）。 */
+  readonly hiddenChildChange: boolean;
 }
 
 /**
@@ -72,13 +82,22 @@ export function visibleUnityRows(
     shown[index] = visible;
     if (!visible) return;
     const componentsOpen = separate && componentsShown.has(node.id);
+    const isExpanded = expanded.has(node.id);
+    const hiddenComponentChange = separate && !componentsOpen && flags.changedComponents[index] === true;
+    // コンポーネントを別に畳まないときは、twisty が子もコンポーネントも一緒に開閉する
+    const hiddenChildChange =
+      !isExpanded &&
+      (flags.changedChildren[index] === true || (!separate && flags.changedComponents[index] === true));
     out.push({
       node,
       index,
       hasChildren: separate ? flags.otherChildren[index] === true : flags.anyChildren[index] === true,
-      expanded: expanded.has(node.id),
-      hasComponents: flags.components[index] === true,
-      hiddenComponentChange: separate && !componentsOpen && flags.changedComponents[index] === true,
+      expanded: isExpanded,
+      hasComponents: (flags.components[index] ?? 0) > 0,
+      componentCount: flags.components[index] ?? 0,
+      hiddenComponentChange,
+      hiddenChange: hiddenChildChange || hiddenComponentChange,
+      hiddenChildChange,
     });
   });
 
@@ -106,25 +125,31 @@ interface ChildFlags {
   readonly anyChildren: readonly boolean[];
   /** コンポーネント以外（GameObject / PrefabInstance）の子を持つか。 */
   readonly otherChildren: readonly boolean[];
-  readonly components: readonly boolean[];
+  /** 直下のコンポーネントの数。 */
+  readonly components: readonly number[];
   /** 直下のコンポーネントのどれかに変更の印があるか。 */
   readonly changedComponents: readonly boolean[];
+  /** 直下のコンポーネント以外の子（とその下）のどれかに変更があるか。 */
+  readonly changedChildren: readonly boolean[];
 }
 
 function childFlags(nodes: readonly UnityNodeDto[]): ChildFlags {
   const anyChildren = new Array<boolean>(nodes.length).fill(false);
   const otherChildren = new Array<boolean>(nodes.length).fill(false);
-  const components = new Array<boolean>(nodes.length).fill(false);
+  const components = new Array<number>(nodes.length).fill(0);
   const changedComponents = new Array<boolean>(nodes.length).fill(false);
+  const changedChildren = new Array<boolean>(nodes.length).fill(false);
   for (const node of nodes) {
     if (node.parent < 0) continue;
     anyChildren[node.parent] = true;
+    const changed = node.mark !== 'same' || node.hasChangedDescendant;
     if (node.kind === 'component') {
-      components[node.parent] = true;
-      if (node.mark !== 'same' || node.hasChangedDescendant) changedComponents[node.parent] = true;
+      components[node.parent] = (components[node.parent] ?? 0) + 1;
+      if (changed) changedComponents[node.parent] = true;
     } else {
       otherChildren[node.parent] = true;
+      if (changed) changedChildren[node.parent] = true;
     }
   }
-  return { anyChildren, otherChildren, components, changedComponents };
+  return { anyChildren, otherChildren, components, changedComponents, changedChildren };
 }

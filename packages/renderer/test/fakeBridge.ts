@@ -23,6 +23,7 @@ import type {
   UnityFormatDto,
   UnityNodeDetailDto,
   UnityNodeDto,
+  UnityResolveRequestDto,
   UnityViewDto,
   FtErrorDto,
   GitIdentityDto,
@@ -404,6 +405,9 @@ export class FakeBridge {
   /** unityGetNode が返す表。ノード id で引く。 */
   unityNodeDetails = new Map<string, UnityNodeDetailDto>();
 
+  /** 未マージを装うときに立てる（決定 32 の未マージ表示）。 */
+  unityConflict: UnityViewDto['conflict'] = null;
+
   unityViewFor(path: string, staged: boolean): UnityViewDto {
     return {
       path,
@@ -416,6 +420,7 @@ export class FakeBridge {
         this.unityFormat === 'yaml'
           ? this.unityHierarchy.filter((n) => n.mark !== 'same').length
           : 0,
+      conflict: this.unityConflict,
     };
   }
 
@@ -969,13 +974,18 @@ export class FakeBridge {
         if (this.excelToken === '') this.excelViewFor(path);
         return this.#later(ok(this.excelRowDiffFor(path)));
       },
-      mergeAbort: (id: string, confirmed?: boolean) => {
-        this.record('mergeAbort', id, confirmed);
-        return Promise.resolve(this.guard('mergeAbort', 'abort-merge', confirmed, { statusSeq: 1 }));
-      },
       excelResolveConflict: (id: string, req: ExcelResolveRequestDto, confirmed?: boolean) => {
         this.record('excelResolveConflict', id, req, confirmed);
         return Promise.resolve(this.guard('excelResolveConflict', 'overwrite-conflict-worktree', confirmed, { statusSeq: 1 }));
+      },
+      unityResolveConflict: (id: string, req: UnityResolveRequestDto, confirmed?: boolean) => {
+        this.record('unityResolveConflict', id, req, confirmed);
+        // 手で編集した作業ツリーを装うときは requireConfirmation = 'unityResolveConflict'
+        return Promise.resolve(this.guard('unityResolveConflict', 'overwrite-conflict-worktree', confirmed, { statusSeq: this.seq }));
+      },
+      mergeAbort: (id: string, confirmed?: boolean) => {
+        this.record('mergeAbort', id, confirmed);
+        return Promise.resolve(this.guard('mergeAbort', 'abort-merge', confirmed, { statusSeq: this.seq + 1 }));
       },
       unityIndexScripts: (id: string) => {
         this.record('unityIndexScripts', id);

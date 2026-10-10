@@ -13,6 +13,7 @@
   import UnityHierarchyPane from './UnityHierarchyPane.svelte';
   import UnityPropertyPane from './UnityPropertyPane.svelte';
   import { app } from '../lib/appState.svelte.js';
+  import { unchosenCount, writeBlocker } from '../lib/unityConflict.js';
 
   let liveWidth = $state<number | null>(null);
   const width = $derived(liveWidth ?? app.settings?.unityHierarchyWidth ?? 320);
@@ -45,6 +46,9 @@
         return 'リネームを含むため、ファイル単位でのみステージできます。';
       case 'combined':
         return 'マージの衝突中はここからステージできません。';
+      // 未マージは帯（コンフリクト）が状況を言うので、重ねて言わない（2026-10-10、利用者の指示）
+      case 'conflict':
+        return '';
       case 'alignment':
         return '改行変換または LFS フィルタが入っているため、パラメータ単位のステージができません（表示は可能です）。';
       case 'no-diff':
@@ -56,6 +60,9 @@
   }
 
   const notice = $derived(view === null ? '' : refusalText(view.refusal));
+  const conflict = $derived(view?.conflict ?? null);
+  const rest = $derived(unchosenCount(conflict, app.unityChoices));
+  const blocker = $derived(writeBlocker(conflict, app.unityChoices));
 </script>
 
 <section class="unity-pane" aria-label="Unity Prefab 差分">
@@ -69,35 +76,64 @@
     <p class="empty">読み込み中…</p>
   {:else if view.format === 'not-prefab'}
     <p class="empty">Prefab ではありません。差分は差分モードで確認してください。</p>
-  {:else if view.format === 'binary'}
-    <p class="empty">バイナリ形式のため展開できません。</p>
-  {:else if view.nodes.length === 0}
-    <p class="empty">表示できるゲームオブジェクトがありません。</p>
   {:else}
-    {#if notice !== ''}
-      <p class="notice">{notice}</p>
+    {#if conflict !== null}
+      <!--
+        案内文は出さない（2026-10-10、利用者の指示）。右端に「マージをキャンセル」と「適用」。
+        「適用」は衝突した GameObject すべてで自分側か相手側を採用するまで押せない。押せない理由は title に出す。
+        「解決」という語は使わない（ステージ・コミットまで行うように読めるため。利用者の指示）。
+      -->
+      <div class="notice conflict">
+        <span class="badge">コンフリクト</span>
+        {#if conflict.resolvable && rest > 0}
+          <span class="rest" title="自分側・相手側のどちらもまだ採用していない GameObject の数">未選択 {rest} 件</span>
+        {/if}
+        <span class="push"></span>
+        <button
+          type="button"
+          disabled={app.busy}
+          title="試行中のマージを取り消し、マージ前の状態に戻します（git merge --abort）"
+          onclick={() => void app.abortMerge()}>マージをキャンセル</button
+        >
+        <button
+          type="button"
+          class="primary"
+          disabled={app.busy || blocker !== null}
+          title={blocker ?? '採用した側で組み立てた結果を、作業ツリーのファイルに書き込みます（ステージはしません）'}
+          onclick={() => void app.writeUnityResolution()}>適用</button
+        >
+      </div>
     {/if}
-    <!--
-      読み込み直し（ステージの直後など）の間も、前の中身を出したまま帯だけ出す。
-      消してから出し直すとヒエラルキーのスクロールが毎回先頭へ戻る。
-    -->
-    {#if app.unityLoading}
-      <p class="notice">読み込み中…</p>
+    {#if view.format === 'binary'}
+      <p class="empty">バイナリ形式のため展開できません。</p>
+    {:else if view.nodes.length === 0}
+      <p class="empty">表示できるゲームオブジェクトがありません。</p>
+    {:else}
+      {#if notice !== ''}
+        <p class="notice">{notice}</p>
+      {/if}
+      <!--
+        読み込み直し（ステージの直後など）の間も、前の中身を出したまま帯だけ出す。
+        消してから出し直すとヒエラルキーのスクロールが毎回先頭へ戻る。
+      -->
+      {#if app.unityLoading}
+        <p class="notice">読み込み中…</p>
+      {/if}
+      <div class="split" style:grid-template-columns="{width}px 6px minmax(240px, 1fr)">
+        <UnityHierarchyPane />
+        <PaneSplitter
+          value={width}
+          min={160}
+          max={1200}
+          onchange={(w) => (liveWidth = w)}
+          oncommit={(w) => {
+            liveWidth = null;
+            void app.setUnityHierarchyWidth(w);
+          }}
+        />
+        <UnityPropertyPane />
+      </div>
     {/if}
-    <div class="split" style:grid-template-columns="{width}px 6px minmax(240px, 1fr)">
-      <UnityHierarchyPane />
-      <PaneSplitter
-        value={width}
-        min={160}
-        max={1200}
-        onchange={(w) => (liveWidth = w)}
-        oncommit={(w) => {
-          liveWidth = null;
-          void app.setUnityHierarchyWidth(w);
-        }}
-      />
-      <UnityPropertyPane />
-    </div>
   {/if}
 </section>
 
@@ -138,5 +174,39 @@
     background: var(--app-bg-raised);
     color: var(--app-text-secondary);
     font-size: var(--app-font-size-ui);
+  }
+
+  .notice.conflict {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .notice.conflict .push {
+    flex: 1 1 auto;
+  }
+
+  .notice.conflict .rest {
+    color: var(--app-text-secondary);
+  }
+
+  .notice.conflict button {
+    flex: 0 0 auto;
+    font-size: calc(var(--app-font-size-ui) * 0.9);
+  }
+
+  .notice.conflict button.primary:not(:disabled) {
+    border-color: var(--app-accent);
+    color: var(--app-accent);
+    font-weight: 700;
+  }
+
+  .badge {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: var(--app-metric-radius);
+    border: 1px solid var(--app-text-conflict);
+    color: var(--app-text-conflict);
+    font-weight: 700;
   }
 </style>

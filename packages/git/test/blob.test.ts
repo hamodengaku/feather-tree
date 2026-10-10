@@ -97,3 +97,46 @@ describe('blob の全文取得（対応表 #48）', () => {
     expect((await readBlobText(fx.ctx, 'HEAD', 'a.prefab'))?.text).toBe('one' + LF + 'two' + LF);
   });
 });
+
+describe('blob の全文取得の index の段（対応表 #48 の :<n>:、Unity の未マージ表示）', () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await createFixture();
+  });
+
+  afterEach(async () => {
+    await fx.cleanup();
+  });
+
+  /** base → topic（相手側）と main（自分側）で書き換えて、マージで衝突させる。null はその側で削除。 */
+  async function conflict(file: string, base: string, theirs: string | null, ours: string | null): Promise<void> {
+    await fx.write(file, base);
+    await fx.run('add', '-A');
+    await fx.run('commit', '-m', 'base');
+    await fx.run('switch', '-c', 'topic');
+    if (theirs === null) await fx.run('rm', '-q', file);
+    else await fx.write(file, theirs);
+    await fx.run('commit', '-am', 'topic');
+    await fx.run('switch', 'main');
+    if (ours === null) await fx.run('rm', '-q', file);
+    else await fx.write(file, ours);
+    await fx.run('commit', '-am', 'main');
+    await fx.run('merge', 'topic').catch(() => undefined);
+  }
+
+  it('共通祖先・自分側・相手側をそれぞれ読める', async () => {
+    await conflict('a.prefab', 'base' + LF, 'theirs' + LF, 'ours' + LF);
+    expect((await readBlobText(fx.ctx, 'base', 'a.prefab'))?.text).toBe('base' + LF);
+    expect((await readBlobText(fx.ctx, 'ours', 'a.prefab'))?.text).toBe('ours' + LF);
+    expect((await readBlobText(fx.ctx, 'theirs', 'a.prefab'))?.text).toBe('theirs' + LF);
+    // stage 0 は無い（未マージ）。失敗ではなく null
+    expect(await readBlobText(fx.ctx, 'index', 'a.prefab')).toBeNull();
+  });
+
+  it('削除との衝突で欠けた段は null', async () => {
+    await conflict('a.prefab', 'base' + LF, null, 'ours' + LF);
+    expect((await readBlobText(fx.ctx, 'ours', 'a.prefab'))?.text).toBe('ours' + LF);
+    expect(await readBlobText(fx.ctx, 'theirs', 'a.prefab')).toBeNull();
+  });
+});

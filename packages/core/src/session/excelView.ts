@@ -13,7 +13,6 @@
  * 持たせ、画面はそれを案内に写す（要件 E7）。
  */
 
-import { createHash } from 'node:crypto';
 import {
   DEFAULT_LIMITS,
   buildGeometry,
@@ -35,8 +34,8 @@ import {
   GitCommandError,
   GitNotFoundError,
   WorktreeFileLockedError,
-  filteredSpec,
   readBlobFiltered,
+  revisionSpec,
   readWorktreeBytes,
   type BlobBytes,
   type FilteredRevision,
@@ -45,6 +44,7 @@ import {
 } from '@feathertree/git';
 import { zlibInflater } from './zlibInflater.js';
 import { isOpenableExcelPath } from './excelFiles.js';
+import { contentHash } from './contentHash.js';
 
 /** 側ごとの状態。ok 以外は画面で案内に写す。 */
 export type ExcelSideState =
@@ -258,7 +258,7 @@ async function readGitSide(
   signal: AbortSignal | undefined,
 ): Promise<ReadSide> {
   try {
-    const read = await source.track(['cat-file', filteredSpec(revision) + path], () =>
+    const read = await source.track(['cat-file', revisionSpec(revision) + path], () =>
       readBlobFiltered(ctx, revision, path, { maxBytes: limits.maxFileBytes }),
     );
     return { side: await openSide(path, read, limits, signal), raw: read?.kind === 'ok' ? read.bytes : null };
@@ -295,14 +295,14 @@ async function readWorktreeSide(
 
 /** バイト列のハッシュ（無ければ null）。 */
 export function hashOf(bytes: Uint8Array | null): string | null {
-  return bytes === null ? null : createHash('sha1').update(bytes).digest('hex');
+  return bytes === null ? null : contentHash(bytes);
 }
 
 /** 作業ツリーの指紋。無ければ 'absent'、大きすぎる・読めなければ 'unknown'。 */
 export function worktreeFingerprint(read: BlobBytes | null | 'locked'): string {
   if (read === null) return 'absent';
   if (read === 'locked' || read.kind !== 'ok') return 'unknown';
-  return createHash('sha1').update(read.bytes).digest('hex');
+  return contentHash(read.bytes);
 }
 
 function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {

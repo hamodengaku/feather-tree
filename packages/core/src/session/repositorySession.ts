@@ -39,7 +39,9 @@ import { redactUrl } from '../policy/redactUrl.js';
 import type { AppSettings } from '../settings/schema.js';
 import { pageEntries, type StatusFilter, type StatusPage, type StatusSummary } from './statusView.js';
 import { buildScriptIndex, type ScriptIndex } from './scriptIndex.js';
-import { buildUnityView, type UnityView } from './unityView.js';
+import { buildUnityView, unityConflictToken, type UnityView } from './unityView.js';
+import { resolveUnityConflict } from './unityConflict.js';
+import type { ConflictSide } from '@feathertree/unity';
 import { buildExcelComparison, excelToken, type ExcelComparison } from './excelView.js';
 import { isExcelPath, listExcelFiles, type ExcelFileList } from './excelFiles.js';
 import { resolveExcelConflict, type ExcelResolveRequest } from './excelConflict.js';
@@ -113,6 +115,8 @@ export class RepositorySession {
    * それだけでヒープが数百 MB になるため（F-1）。別のファイルを選んだ時点で捨てる。
    */
   #unityView: UnityView | null = null;
+  /** Unity の書き出しで最後に書いた中身の指紋（パスごと）。同じなら次の書き出しで上書きの確認を出さない。 */
+  readonly #unityWritten = new Map<string, string>();
 
   /**
    * guid -> スクリプト名 / Prefab 名（要件 11）。**セッションの間は持ち続ける。**
@@ -378,6 +382,48 @@ export class RepositorySession {
     // 既に組んだビューには古い名前が焼き付いているので、次の取得で作り直させる
     this.#unityView = null;
     return this.#scriptIndex;
+  }
+
+  /** トークンが今の未マージビューを指していればそれを返す。作り直されていれば null（呼び出し側は diff-stale）。 */
+  unityConflictByToken(path: string, token: string): UnityView | null {
+    const cached = this.#unityView;
+    if (cached === null || cached.path !== path || cached.statusSeq !== this.#statusSeq) return null;
+    return unityConflictToken(cached) === token ? cached : null;
+  }
+
+  /** 作業ツリーが、このアプリが前回書き出したものそのままか（上書きの確認を省いてよいか）。 */
+  isOwnUnityWrite(view: UnityView): boolean {
+    const fingerprint = view.conflict?.fingerprint ?? null;
+    return fingerprint !== null && this.#unityWritten.get(view.path) === fingerprint;
+  }
+
+  /**
+   * Unity の GameObject 単位の解消を作業ツリーへ書き出す。index には触れない。
+   *
+   * **書いたらビューのキャッシュを捨てる。** index を動かさないので status の世代は進まず、
+   * 世代を鍵にしたキャッシュのままだと、書く前の作業ツリーの指紋を持ち続ける。
+   */
+  async resolveUnityConflict(
+    view: UnityView,
+    choices: ReadonlyMap<string, ConflictSide>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      const written = await resolveUnityConflict(this, view, choices, signal);
+      this.#unityWritten.set(view.path, written);
+    } finally {
+      this.#unityView = null;
+    }
+  }
+
+  /**
+   * 未マージの比較（Excel・Unity）と、Unity の書き出しの記録を手放す。マージを取り消した（対応表 #51）ときに呼ぶ
+   * ——index の段が消えたので、どれも古い。
+   */
+  releaseConflictViews(): void {
+    this.#dropExcel();
+    this.#unityView = null;
+    this.#unityWritten.clear();
   }
 
   /** Unity モードを離れたときに持ち物を手放す（100MB を掴み続けない）。 */

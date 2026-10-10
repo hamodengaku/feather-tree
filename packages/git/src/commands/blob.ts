@@ -10,16 +10,34 @@ import type { GitContext } from './context.js';
 /**
  * 対応表 #48: blob の全文取得（Unity 展開用。決定 32）。
  *
- * どの版を読むかは 2 通りしかない。
+ * どの版を読むか。
  *   - `'HEAD'` … HEAD のその時点の内容（ステージ済みを見ているときの「変更前」）
  *   - `'index'`… インデックスの内容（未ステージの「変更前」／ステージ済みの「変更後」）
+ *   - `'base'` / `'ours'` / `'theirs'` … 未マージのときの index の段 `:1:` / `:2:` / `:3:`
+ *     （コンフリクト中の比較用。段が欠けていれば「その版に無い」で null）
  *
  * **`--` を置けない**（`<rev>:<path>` は 1 トークンで、`show -- HEAD:x` はパス扱いになる）。
  * 代わりに**このトークンは必ず `HEAD:` か `:` で始まる**——`<rev>` はここにある固定文字列で
  * renderer からは渡らないので、先頭が `-` になる余地が構造的に無い
  * （docs/02-git-command-map.md「名前渡しの規則」の注記）。
  */
-export type BlobRevision = 'HEAD' | 'index';
+export type BlobRevision = 'HEAD' | 'index' | 'base' | 'ours' | 'theirs';
+
+const REVISION_SPEC: Record<BlobRevision, string> = {
+  HEAD: 'HEAD:',
+  index: ':',
+  base: ':1:',
+  ours: ':2:',
+  theirs: ':3:',
+};
+
+/**
+ * 版のトークンの頭（`<rev>:<path>` の `<rev>:` 部分）。#48 の `show` と #49 の `cat-file --filters` で共有し、
+ * 実行ログに出すトークンもここから作る（引数と同じ形）。固定表なので先頭が `-` になる余地が無い。
+ */
+export function revisionSpec(revision: BlobRevision): string {
+  return REVISION_SPEC[revision];
+}
 
 export interface BlobText {
   /** バイナリ（先頭に NUL がある）なら null。LFS のポインタは「テキスト」として返る。 */
@@ -39,7 +57,7 @@ export async function readBlobText(
   revision: BlobRevision,
   path: string,
 ): Promise<BlobText | null> {
-  const spec = (revision === 'HEAD' ? 'HEAD:' : ':') + path;
+  const spec = revisionSpec(revision) + path;
   const chunks: Buffer[] = [];
 
   const { exit, result } = await runGitStream(
@@ -163,18 +181,8 @@ export function readHeadBlobFiltered(
  *   - `theirs` … `:3:` 相手側
  * 共通祖先（`:1:`）は読まない（2026-10-09 に値バーの表示をやめた）。
  */
-export type FilteredRevision = 'HEAD' | 'ours' | 'theirs';
-
-const FILTERED_SPEC: Record<FilteredRevision, string> = {
-  HEAD: 'HEAD:',
-  ours: ':2:',
-  theirs: ':3:',
-};
-
-/** 実行ログに出すトークンの頭（#49 の引数と同じ形）。 */
-export function filteredSpec(revision: FilteredRevision): string {
-  return FILTERED_SPEC[revision];
-}
+/** #49 で読む版（Excel は共通祖先を読まない。index の段 0 は作業ツリーと同じなので要らない）。 */
+export type FilteredRevision = Extract<BlobRevision, 'HEAD' | 'ours' | 'theirs'>;
 
 /**
  * 対応表 #49 の本体。版ごとの違いはトークンの頭と「無い」の文面だけ。
@@ -199,7 +207,7 @@ export async function readBlobFiltered(
   let overflow = false;
   try {
     const { exit } = await runGitStream(
-      commandFor(ctx, [...READ_PREFIX, 'cat-file', '--filters', FILTERED_SPEC[revision] + path], {
+      commandFor(ctx, [...READ_PREFIX, 'cat-file', '--filters', revisionSpec(revision) + path], {
         timeoutMs: DIFF_TIMEOUT_MS,
       }),
       {

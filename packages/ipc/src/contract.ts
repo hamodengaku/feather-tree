@@ -61,6 +61,8 @@ export const CHANNELS = {
   branchSwitch: 'branch:switch',
   branchCreate: 'branch:create',
   branchMerge: 'branch:merge',
+  // 試行中のマージの取り消し（対応表 #51。Unity モード・Excel 差分モードの「マージをキャンセル」）
+  mergeAbort: 'merge:abort',
 
   stashList: 'stash:list',
   stashSave: 'stash:save',
@@ -73,6 +75,7 @@ export const CHANNELS = {
   unityGetView: 'unity:getView',
   unityGetNode: 'unity:getNode',
   unityIndexScripts: 'unity:indexScripts',
+  unityResolveConflict: 'unity:resolveConflict',
 
   // Excel 差分モード（決定 33）
   excelListFiles: 'excel:listFiles',
@@ -83,8 +86,6 @@ export const CHANNELS = {
   excelGetRowDiff: 'excel:getRowDiff',
   // Excel 差分モードのコンフリクトの採用（決定 34）
   excelResolveConflict: 'excel:resolveConflict',
-  // マージを取り消す（対応表 #51。決定 34）
-  mergeAbort: 'merge:abort',
 
   remoteList: 'remote:list',
   remoteFetch: 'remote:fetch',
@@ -548,10 +549,55 @@ export interface UnityViewDto {
   /**
    * ステージできない理由。`binary` / `truncated` / `synthesized` / `whole-file` /
    * `rename` / `combined` / `no-hunk` / `empty-selection` / `no-such-hunk` に加えて、
-   * `alignment`（改行変換 / LFS で全文と diff が食い違う）と `no-diff`。
+   * `alignment`（改行変換 / LFS で全文と diff が食い違う）と `no-diff`、`conflict`（未マージ）。
    */
   readonly refusal: string | null;
   readonly changedNodeCount: number;
+  /**
+   * 未マージ（コンフリクト中）のときだけ非 null。このときの旧側は自分側（`:2:`）、
+   * 新側は相手側（`:3:`）で、ステージはできない。
+   */
+  readonly conflict: UnityConflictDto | null;
+}
+
+export interface UnityConflictDto {
+  /** 削除との衝突では片方の段が欠ける（その側ではファイルが削除されている）。 */
+  readonly ours: 'present' | 'absent';
+  readonly theirs: 'present' | 'absent';
+  /** 作業ツリーに `<<<<<<<` が残っているか。 */
+  readonly worktreeHasMarkers: boolean;
+  /**
+   * GameObject 単位で解消できるか。片側で削除された・バイナリなら false
+   * （そのときは units / entries は空）。
+   */
+  readonly resolvable: boolean;
+  /** 書き出しの要求に添える合言葉。作業ツリーか status が動いたら変わる。 */
+  readonly token: string;
+  /** 自分側か相手側を採用する必要のある単位（GameObject / PrefabInstance などの id）。 */
+  readonly units: readonly string[];
+  /** 自分側と相手側で違うノードだけ。どの単位に属し、自動でどちらに決まったか。 */
+  readonly entries: readonly UnityConflictEntryDto[];
+}
+
+export interface UnityConflictEntryDto {
+  readonly id: string;
+  /** 属する単位。`units` に入っていれば、採用側は利用者の選択で決まる。 */
+  readonly unit: string;
+  /** 片側だけが変えたので自動で決まった側。衝突（両側が変えた）なら null。 */
+  readonly auto: 'ours' | 'theirs' | null;
+}
+
+export type UnityConflictSideDto = 'ours' | 'theirs';
+
+/** GameObject 単位の解消の書き出し（画面の「適用」）。本文は送らない（main が index の段から組み立てる）。 */
+export interface UnityResolveRequestDto {
+  readonly path: string;
+  readonly token: string;
+  readonly choices: readonly { readonly unit: string; readonly side: UnityConflictSideDto }[];
+}
+
+export interface UnityResolveResultDto {
+  readonly statusSeq: number;
 }
 
 export type UnityRowStateDto = 'same' | 'changed' | 'added' | 'removed';
@@ -1330,6 +1376,16 @@ export interface FeatherTreeBridge {
    */
   unityIndexScripts(id: string): Promise<Result<UnityScriptIndexDto>>;
   /**
+   * 未マージの Prefab / シーンを、GameObject 単位の選択で作業ツリーへ書き出す（2026-10-10）。
+   * **git は 0 プロセス。index には触れない**（解決済みにするのは利用者のステージ）。
+   * 作業ツリーを手で編集していたら 'needs-confirmation'（overwrite-conflict-worktree）。
+   */
+  unityResolveConflict(
+    id: string,
+    req: UnityResolveRequestDto,
+    confirmed?: boolean,
+  ): Promise<Result<UnityResolveResultDto>>;
+  /**
    * Excel ファイルの一覧（決定 33）。status のスナップショットを拡張子で絞るだけで、**git は 0 プロセス**。
    * `~$` で始まるロックファイルは出さない。
    */
@@ -1371,11 +1427,6 @@ export interface FeatherTreeBridge {
     req: ExcelResolveRequestDto,
     confirmed?: boolean,
   ): Promise<Result<ExcelResolveResultDto>>;
-  /**
-   * 対応表 #51: マージを取り消す（`merge --abort`）。確認が要る（abort-merge）。作業ツリーと index が
-   * マージ前に戻るので status を取り直して返す。取り消せるマージが無ければ git-failed。
-   */
-  mergeAbort(id: string, confirmed?: boolean): Promise<Result<ExcelResolveResultDto>>;
   logGetPage(id: string, skip: number): Promise<Result<readonly CommitSummaryDto[]>>;
   /** 対応表 #49: HEAD のメッセージ全文（amend の初期値）。コミットが無ければ null。 */
   logHeadMessage(id: string): Promise<Result<string | null>>;
@@ -1421,6 +1472,12 @@ export interface FeatherTreeBridge {
   branchSwitch(id: string, branchName: string): Promise<Result<BranchSwitchResultDto>>;
   branchCreate(id: string, req: BranchCreateRequest): Promise<Result<BranchCreateResultDto>>;
   branchMerge(id: string, branchName: string, confirmed?: boolean): Promise<Result<BranchMergeResultDto>>;
+  /**
+   * 対応表 #51: 試行中のマージを取り消す（`merge --abort`。Unity モード・Excel 差分モードの「マージをキャンセル」）。
+   * 確認が要る（abort-merge）。作業ツリーと index がマージ前に戻るので status を取り直して返す。
+   * 取り消せるマージが無ければ git-failed。
+   */
+  mergeAbort(id: string, confirmed?: boolean): Promise<Result<BranchMergeResultDto>>;
   /** リモート名の一覧（対応表 #4 の結果のキャッシュ。git は走らない）。 */
   remoteList(id: string): Promise<Result<readonly string[]>>;
   remoteFetch(id: string, remote: string): Promise<Result<RemoteResultDto>>;

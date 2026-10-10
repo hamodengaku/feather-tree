@@ -156,7 +156,7 @@ function makeNode(
  * 1 ドキュメントぶんの `slice` を 2 つ作ると 145,000 ノードで効いてくる。
  * 行末の CR は落として比べる（CRLF と LF の違いだけで「変更」にしない。F-6）。
  */
-function documentEquals(
+export function documentEquals(
   oldFile: UnityFile,
   oldDoc: UnityDocument,
   newFile: UnityFile,
