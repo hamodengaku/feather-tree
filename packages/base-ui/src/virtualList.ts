@@ -40,3 +40,19 @@ export function computeWindow(
     totalHeight: totalCount * rowHeight,
   };
 }
+
+/**
+ * 描画範囲 `[startIndex, endIndex)` の中で、最初に未取得（undefined）の位置を返す。全て取得済みなら null。
+ *
+ * 範囲の先頭だけを見ると、取得済みの行が先頭に残っている間は後ろの未取得行が
+ * 「読み込み中…」のまま取りに行かれず、画面が未取得行で埋まるまで読み込みが再開しない。
+ */
+export function firstMissingIndex(
+  entries: readonly unknown[],
+  window: Pick<VirtualWindow, 'startIndex' | 'endIndex'>,
+): number | null {
+  for (let i = window.startIndex; i < window.endIndex; i++) {
+    if (entries[i] === undefined) return i;
+  }
+  return null;
+}

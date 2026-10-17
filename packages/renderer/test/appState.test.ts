@@ -2879,6 +2879,8 @@ describe('busy（並行する操作）', () => {
 });
 
 describe('選択の維持（ページング）と diff の失敗', () => {
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
   it('2 ページ目以降を選んでいても、更新で選択が外れない', async () => {
     const { app } = await boot((b) => {
       b.changes = Array.from({ length: 300 }, (_, i) => entry(`f${String(i).padStart(3, '0')}.txt`));
@@ -2890,6 +2892,44 @@ describe('選択の維持（ページング）と diff の失敗', () => {
     await app.refresh('full');
 
     expect(app.selected).toEqual({ path: 'f250.txt', staged: false });
+  });
+
+  it('追加ページの要求中に来た次の要求は捨てる（スクロール中に要求が重ならない）', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = Array.from({ length: 700 }, (_, i) => entry(`f${String(i).padStart(3, '0')}.txt`));
+    });
+    const pageCalls = (): number => bridge.calls.filter((c) => c.name === 'statusGetPage').length;
+    const before = pageCalls();
+
+    bridge.holdCall('statusGetPage');
+    const first = app.loadMore('changes', 200);
+    await flush();
+    // 描画範囲が動いて別の offset を求めても、要求中の間は飛ばさない
+    await app.loadMore('changes', 210);
+    await app.loadMore('changes', 400);
+    expect(pageCalls()).toBe(before + 1);
+
+    bridge.releaseCall('statusGetPage');
+    await first;
+    expect(app.changes.entries[200]?.path).toBe('f200.txt');
+
+    // 応答が返った後は次の要求が通る
+    await app.loadMore('changes', 400);
+    expect(pageCalls()).toBe(before + 2);
+    expect(app.changes.entries[400]?.path).toBe('f400.txt');
+  });
+
+  it('追加ページの取得が失敗しても、次の要求は通る', async () => {
+    const { app, bridge } = await boot((b) => {
+      b.changes = Array.from({ length: 300 }, (_, i) => entry(`f${String(i).padStart(3, '0')}.txt`));
+    });
+    bridge.statusPageError = { kind: 'internal', message: 'セッションが見つかりません。' };
+    await app.loadMore('changes', 200);
+    expect(app.changes.entries[200]).toBeUndefined();
+
+    bridge.statusPageError = null;
+    await app.loadMore('changes', 200);
+    expect(app.changes.entries[200]?.path).toBe('f200.txt');
   });
 
   it('全件が読めているときは、消えたファイルの選択を外す', async () => {

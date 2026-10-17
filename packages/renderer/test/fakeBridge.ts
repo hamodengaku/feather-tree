@@ -185,7 +185,7 @@ export class FakeBridge {
   }
 
   /**
-   * 名前を指定した呼び出しを releaseCall() まで返さない（今は sessionActivate / remoteFetch）。
+   * 名前を指定した呼び出しを releaseCall() まで返さない（今は sessionActivate / remoteFetch / statusGetPage）。
    * 「main が応答するまでの間に renderer がどう見えるか」を観察するために使う。
    */
   readonly #held = new Set<string>();
@@ -257,6 +257,8 @@ export class FakeBridge {
   };
   /** 保存を失敗させる（値の検証違反の再現）。 */
   gitIdentityError: FtErrorDto | null = null;
+  /** null でなければ statusGetPage はこのエラーで失敗する。 */
+  statusPageError: FtErrorDto | null = null;
   /** sessionCloneAndCreate の結果。session が null でなければタブが立つ（main と同じ）。 */
   cloneOutcome: CloneOutcomeDto = {
     result: 'succeeded',
@@ -863,17 +865,18 @@ export class FakeBridge {
           ok({ seq: this.seq, counts: this.counts(), head: this.head, hasSnapshot: true }),
         );
       },
-      statusGetPage: (id: string, req: StatusPageRequest) => {
+      statusGetPage: async (id: string, req: StatusPageRequest) => {
         this.record('statusGetPage', id, req);
+        // 「要求中に次の要求が来たら捨てる」の検証に要る
+        await this.#gate('statusGetPage');
+        if (this.statusPageError !== null) return { ok: false as const, error: this.statusPageError };
         const source = req.filter?.group === 'staged' ? this.staged : this.changes;
-        return Promise.resolve(
-          ok({
-            seq: this.seq,
-            offset: req.offset,
-            entries: source.slice(req.offset, req.offset + req.limit),
-            filteredTotal: source.length,
-          }),
-        );
+        return ok({
+          seq: this.seq,
+          offset: req.offset,
+          entries: source.slice(req.offset, req.offset + req.limit),
+          filteredTotal: source.length,
+        });
       },
       stage: (id: string, target: OperationTargetDto) => {
         this.record('stage', id, target);

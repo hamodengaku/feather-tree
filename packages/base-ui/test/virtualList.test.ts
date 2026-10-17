@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeWindow } from '../src/index.js';
+import { computeWindow, firstMissingIndex } from '../src/index.js';
 
 /**
  * 仮想化リストの範囲計算（土台）。
@@ -67,5 +67,41 @@ describe('computeWindow', () => {
   it('rowHeight が 0 でも 0 除算にならない', () => {
     const w = computeWindow(100, 0, 100, { rowHeight: 0 });
     expect(Number.isFinite(w.endIndex)).toBe(true);
+  });
+});
+
+/**
+ * 追加ページを要求する位置。描画範囲の先頭だけでなく、範囲内の未取得行を拾うこと。
+ * 先頭だけ見ると、画面が「読み込み中…」で埋まるまで読み込みが再開しない。
+ */
+describe('firstMissingIndex', () => {
+  /** 先頭 `loaded` 件だけ取得済みの疎な配列（loadMore が作るのと同じ形）。 */
+  function sparse(loaded: number): (string | undefined)[] {
+    const a: (string | undefined)[] = [];
+    for (let i = 0; i < loaded; i++) a[i] = `f${i}`;
+    return a;
+  }
+
+  it('範囲の先頭が取得済みでも、範囲内の最初の未取得行を返す', () => {
+    // 0〜199 取得済みで、描画範囲が 182〜230
+    expect(firstMissingIndex(sparse(200), { startIndex: 182, endIndex: 230 })).toBe(200);
+  });
+
+  it('範囲の先頭が未取得ならその位置を返す', () => {
+    expect(firstMissingIndex(sparse(200), { startIndex: 500, endIndex: 540 })).toBe(500);
+  });
+
+  it('途中の穴も拾う', () => {
+    const a = sparse(300);
+    a[250] = undefined;
+    expect(firstMissingIndex(a, { startIndex: 240, endIndex: 280 })).toBe(250);
+  });
+
+  it('範囲内が全て取得済みなら null', () => {
+    expect(firstMissingIndex(sparse(200), { startIndex: 0, endIndex: 28 })).toBeNull();
+  });
+
+  it('空の範囲なら null', () => {
+    expect(firstMissingIndex([], { startIndex: 0, endIndex: 0 })).toBeNull();
   });
 });

@@ -248,6 +248,12 @@ export class AppState {
   /** 最後に取りに行ったファイル（diffKeyOf）。読み込み中の要求がどのファイルのものかを見分ける。 */
   #diffRequestedKey: string | null = null;
   /**
+   * 追加ページを要求中のタブとグループ（`${id}:${group}`）。loadMore の重複要求を捨てるのに使う。
+   * **反応的にしない。** loadMore は仮想リストの $effect から同期的に呼ばれるので、反応的だと
+   * その効果の依存になり、応答（失敗を含む）のたびに効果が走り直して取り直しを繰り返す。
+   */
+  readonly #pagesInFlight: string[] = [];
+  /**
    * diff の取得に失敗したときの理由。成功なら null。
    *
    * 失敗で `diff` を null に戻すだけだと、画面には「差分はありません。」と出てしまい
@@ -1044,16 +1050,29 @@ export class AppState {
     if (this.viewMode === 'excel' && id === this.activeId) await this.excel.reload();
   }
 
-  /** 仮想リストのスクロールに応じて追加のページを取る。 */
+  /**
+   * 仮想リストのスクロールに応じて追加のページを取る。
+   *
+   * **同じタブ・同じグループで要求中なら新しい要求は捨てる。** スクロール中は描画範囲が
+   * 毎フレーム変わるので、捨てないと offset の違う要求が重なって飛ぶ。捨てた範囲は、
+   * 応答で entries が変わったときに仮想リストが改めて要求する。
+   */
   async loadMore(group: StatusGroupDto, offset: number): Promise<void> {
     const id = this.activeId;
     if (id === null) return;
+    const before = group === 'staged' ? this.staged : this.changes;
+    if (offset >= before.total || before.entries[offset] !== undefined) return;
+
+    const key = `${id}:${group}`;
+    if (this.#pagesInFlight.includes(key)) return;
+    this.#pagesInFlight.push(key);
+    const page = await this.#ft
+      .statusGetPage(id, { offset, limit: PAGE_LIMIT, filter: { group } })
+      .finally(() => this.#pagesInFlight.splice(this.#pagesInFlight.indexOf(key), 1));
+    if (!page.ok || this.activeId !== id) return;
+
+    // 待っている間に一覧が取り直されていることがあるので、応答時点の中身に重ねる
     const section = group === 'staged' ? this.staged : this.changes;
-    if (offset >= section.total || section.entries[offset] !== undefined) return;
-
-    const page = await this.#ft.statusGetPage(id, { offset, limit: PAGE_LIMIT, filter: { group } });
-    if (!page.ok) return;
-
     const merged = [...section.entries];
     page.value.entries.forEach((entry, i) => {
       merged[page.value.offset + i] = entry;

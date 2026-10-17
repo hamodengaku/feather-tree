@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { FileEntryDto, StatusGroupDto } from '@feathertree/ipc';
-  import { computeWindow } from '@feathertree/base-ui';
+  import { computeWindow, firstMissingIndex } from '@feathertree/base-ui';
   import FileRow from './FileRow.svelte';
 
   interface Props {
@@ -80,11 +80,10 @@
     })),
   );
 
-  // 未取得の範囲に入ったら次のページを要求する
+  // 描画範囲に未取得の行が入ったら、その最初の行からページを要求する
   $effect(() => {
-    if (view.endIndex > view.startIndex && entries[view.startIndex] === undefined) {
-      onneedpage(view.startIndex);
-    }
+    const missing = firstMissingIndex(entries, view);
+    if (missing !== null) onneedpage(missing);
   });
 
   function handleScroll(event: Event): void {

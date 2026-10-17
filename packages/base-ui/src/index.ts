@@ -3,7 +3,7 @@
 // 基本スタイルは `@feathertree/base-ui/src/base.css` を import して使う。
 export { applyTokens } from './theme.js';
 export type { ApplyThemeOptions, ThemeTokens } from './theme.js';
-export { computeWindow } from './virtualList.js';
+export { computeWindow, firstMissingIndex } from './virtualList.js';
 export type { VirtualListOptions, VirtualWindow } from './virtualList.js';
 export { buildOffsets, indexAtOffset, rangeAtOffset } from './variableWindow.js';
 export type { VariableRange } from './variableWindow.js';
